@@ -45,6 +45,13 @@ T = TypeVar("T")
 INTERRUPTIBLE = ("running", "planning", "queued", "waiting", "verifying", "pending")
 
 
+def _file_size(p: Path) -> int | None:
+    try:
+        return p.stat().st_size if p.is_file() else None
+    except OSError:
+        return None
+
+
 class ShortTermMemory:
     """Working memory for the current session."""
 
@@ -285,7 +292,7 @@ class MemoryManager:
 
     async def interrupted_tasks(self) -> list[TaskRecord]:
         """Tasks that were in progress when JARVIS stopped (crash, shutdown, power loss)."""
-        return await self.tasks(statuses=list(INTERRUPTIBLE) + ["interrupted"], limit=100)
+        return await self.tasks(statuses=[*INTERRUPTIBLE, "interrupted"], limit=100)
 
     async def set_task_context(self, task_id: str, key: str, value: Any) -> None:
         await self._run(self.store.set_context, task_id, key, self.redactor.redact(value))
@@ -306,10 +313,7 @@ class MemoryManager:
     async def record_file(self, path: str | Path, *, task_id: str | None = None, agent_id: str | None = None,
                           project_id: str | None = None, kind: str = "created", important: bool = False) -> FileRecord:
         p = Path(path)
-        try:
-            size = p.stat().st_size if p.is_file() else None
-        except OSError:
-            size = None
+        size = await self._run(_file_size, p)
         rec = FileRecord(path=str(p), name=p.name, size=size, kind=kind, task_id=task_id, agent_id=agent_id,
                          project_id=project_id, important=important)
         await self._run(self.store.add_file, rec)

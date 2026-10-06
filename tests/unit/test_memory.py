@@ -10,6 +10,10 @@ from jarvis.memory import ChatRecord, ResultRecord, TaskRecord, create_memory
 from jarvis.security.redaction import Redactor
 
 
+def _db_bytes(folder: Path) -> bytes:
+    return b"".join(p.read_bytes() for p in folder.glob("jarvis.db*"))
+
+
 @pytest.fixture
 async def memory(tmp_path: Path):
     redactor = Redactor()
@@ -38,9 +42,7 @@ class TestLongTerm:
         await memory.add_chat(ChatRecord(role="user", text=f"use {key}"))
         await memory.save_task(TaskRecord(id="task_1", goal=f"call api with {key}", data={"k": key}))
         await memory.close()
-        raw = (tmp_path / "jarvis.db").read_bytes() + b"".join(
-            p.read_bytes() for p in tmp_path.glob("jarvis.db-*"))
-        assert key.encode() not in raw
+        assert key.encode() not in _db_bytes(tmp_path)
 
 
 class TestSearchAndRecall:
