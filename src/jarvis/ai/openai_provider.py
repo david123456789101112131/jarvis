@@ -1,0 +1,243 @@
+"""OpenAI provider and OpenAI-compatible local models (Ollama, LM Studio, llama.cpp server).
+
+Both use the Chat Completions API, which every OpenAI-compatible local server implements.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import logging
+from collections.abc import Callable
+from typing import Any
+
+from jarvis.ai.base import AIProvider
+from jarvis.ai.types import AIMessage, AIResponse, CompletionRequest, Refusal, ToolCall, Usage, strict_schema
+from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable
+from jarvis.config.settings import LocalModelSettings, OpenAISettings
+
+log = logging.getLogger(__name__)
+
+_REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
+_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
+_FINISH = {"stop": "end", "tool_calls": "tool_use", "function_call": "tool_use", "length": "max_tokens",
+           "content_filter": "refusal"}
+
+
+class OpenAICompatibleProvider(AIProvider):
+    name = "openai"
+    supports_server_web = False
+    #: "strict" = response_format json_schema; "json_object" = JSON mode + schema in the prompt.
+    json_mode = "strict"
+    max_tokens_param = "max_completion_tokens"
+
+    def __init__(self, *, model: str, base_url: str | None, api_key: Callable[[], str | None],
+                 timeout_s: float, max_retries: int = 2, client_factory: Callable[[str], Any] | None = None) -> None:
+        super().__init__()
+        self._model = model
+        self._base_url = base_url or None
+        self._api_key = api_key
+        self._timeout_s = timeout_s
+        self._max_retries = max_retries
+        self._client_factory = client_factory
+        self._client: Any = None
+        self._fingerprint: str | None = None
+
+    @property
+    def model(self) -> str:
+        return self._model
+
+    def available(self) -> bool:
+        return bool(self._api_key())
+
+    def _get_client(self) -> Any:
+        key = self._api_key()
+        if not key:
+            raise ProviderUnavailable(f"{self.name}: no API key configured.")
+        fingerprint = hashlib.sha256(f"{key}|{self._base_url}".encode()).hexdigest()
+        if self._client is None or fingerprint != self._fingerprint:
+            if self._client_factory is not None:
+                self._client = self._client_factory(key)
+            else:
+                import openai
+
+                self._client = openai.AsyncOpenAI(api_key=key, base_url=self._base_url, timeout=self._timeout_s,
+                                                  max_retries=self._max_retries)
+            self._fingerprint = fingerprint
+        return self._client
+
+    async def aclose(self) -> None:
+        client, self._client = self._client, None
+        if client is not None and hasattr(client, "close"):
+            try:
+                await client.close()
+            except Exception:  # pragma: no cover
+                log.debug("closing client failed", exc_info=True)
+
+    # -- request building ----------------------------------------------------------------------
+    def build_messages(self, req: CompletionRequest) -> list[dict[str, Any]]:
+        system = req.system
+        if req.json_schema is not None and self.json_mode == "json_object":
+            system = (system + "\n\n" if system else "") + (
+                "Reply with one JSON object only (no prose, no code fences) that follows this JSON schema:\n"
+                + json.dumps(strict_schema(req.json_schema), ensure_ascii=False)
+            )
+        out: list[dict[str, Any]] = [{"role": "system", "content": system}] if system else []
+        for m in req.messages:
+            if m.role == "assistant":
+                entry: dict[str, Any] = {"role": "assistant", "content": m.text or None}
+                if m.tool_calls:
+                    entry["tool_calls"] = [
+                        {"id": c.id, "type": "function",
+                         "function": {"name": c.name, "arguments": json.dumps(c.input, ensure_ascii=False)}}
+                        for c in m.tool_calls
+                    ]
+                if entry["content"] is None and "tool_calls" not in entry:
+                    continue
+                out.append(entry)
+            else:
+                for r in m.tool_results:
+                    content = r.content or "(empty)"
+                    out.append({"role": "tool", "tool_call_id": r.tool_call_id,
+                                "content": f"ERROR: {content}" if r.is_error else content})
+                if m.text or not m.tool_results:
+                    out.append({"role": "user", "content": m.text or "(empty)"})
+        return out
+
+    def build_request(self, req: CompletionRequest) -> dict[str, Any]:
+        model = req.model or self.model
+        kwargs: dict[str, Any] = {"model": model, "messages": self.build_messages(req)}
+        kwargs[self.max_tokens_param] = req.max_tokens
+        if req.tools:
+            kwargs["tools"] = [
+                {"type": "function",
+                 "function": {"name": t.name, "description": t.description, "parameters": t.input_schema}}
+                for t in req.tools
+            ]
+        if req.json_schema is not None:
+            if self.json_mode == "strict":
+                kwargs["response_format"] = {
+                    "type": "json_schema",
+                    "json_schema": {"name": req.schema_name or "result", "schema": strict_schema(req.json_schema),
+                                    "strict": True},
+                }
+            else:
+                kwargs["response_format"] = {"type": "json_object"}
+        if model.startswith(_REASONING_PREFIXES):
+            kwargs["reasoning_effort"] = _EFFORT.get(req.effort, "medium")
+        if req.timeout_s:
+            kwargs["timeout"] = req.timeout_s
+        return kwargs
+
+    # -- call ------------------------------------------------------------------------------------
+    async def complete(self, request: CompletionRequest) -> AIResponse:
+        client = self._get_client()
+        kwargs = self.build_request(request)
+        try:
+            completion = await client.chat.completions.create(**kwargs)
+        except ProviderError:
+            raise
+        except Exception as exc:
+            err = self._map_error(exc)
+            self.errors += 1
+            self.last_error = err.message
+            raise err from exc
+        response = self._to_response(completion)
+        if response.stop_reason == "refusal":
+            self.errors += 1
+            raise ProviderRefusal(f"{self.name} declined this request.", details={"provider": self.name})
+        self.last_error = None
+        return self._account(response)
+
+    def _map_error(self, exc: Exception) -> ProviderError:
+        try:
+            import openai
+        except ImportError:  # pragma: no cover
+            return ProviderError(str(exc))
+        if isinstance(exc, openai.AuthenticationError):
+            return ProviderUnavailable(f"{self.name} rejected the API key (401).", details={"status": 401})
+        if isinstance(exc, openai.PermissionDeniedError):
+            return ProviderUnavailable(f"{self.name} denied access (403).", details={"status": 403})
+        if isinstance(exc, openai.NotFoundError):
+            return ProviderError(f"{self.name}: model {self.model!r} not found (404).", details={"status": 404})
+        if isinstance(exc, openai.RateLimitError):
+            return ProviderError(f"{self.name} rate limit reached (429).", retryable=True, details={"status": 429})
+        if isinstance(exc, openai.BadRequestError):
+            return ProviderError(f"{self.name} rejected the request (400): {str(exc)[:400]}", details={"status": 400})
+        if isinstance(exc, openai.APITimeoutError):
+            return ProviderError(f"{self.name} request timed out.", retryable=True, details={"status": "timeout"})
+        if isinstance(exc, openai.APIConnectionError):
+            return ProviderUnavailable(f"Cannot reach {self.name} ({self._base_url or 'api.openai.com'}).",
+                                       retryable=True, details={"status": "connection"})
+        if isinstance(exc, openai.APIStatusError):
+            status = getattr(exc, "status_code", 0) or 0
+            return ProviderError(f"{self.name} API error ({status}).", retryable=status >= 500,
+                                 details={"status": status})
+        return ProviderError(f"{self.name} failed: {type(exc).__name__}: {exc}")
+
+    def _to_response(self, completion: Any) -> AIResponse:
+        choice = completion.choices[0]
+        message = choice.message
+        text = (message.content or "").strip()
+        calls: list[ToolCall] = []
+        for tc in getattr(message, "tool_calls", None) or []:
+            fn = getattr(tc, "function", None)
+            if fn is None:
+                continue
+            try:
+                args = json.loads(fn.arguments or "{}")
+                if not isinstance(args, dict):
+                    args = {"value": args}
+            except json.JSONDecodeError:
+                args = {"_raw_arguments": fn.arguments}
+            calls.append(ToolCall(id=tc.id, name=fn.name, input=args))
+        stop = _FINISH.get(str(choice.finish_reason), "end")
+        if calls and stop == "end":
+            stop = "tool_use"
+        refusal_text = getattr(message, "refusal", None)
+        if refusal_text:
+            stop = "refusal"
+        usage = getattr(completion, "usage", None)
+        cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+        return AIResponse(
+            text=text,
+            tool_calls=calls,
+            stop_reason=stop,  # type: ignore[arg-type]
+            message=AIMessage(role="assistant", text=text, tool_calls=calls),
+            usage=Usage(input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+                        output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+                        cache_read_tokens=int(cached)),
+            provider=self.name,
+            model=str(getattr(completion, "model", self.model)),
+            refusal=Refusal(explanation=refusal_text) if refusal_text else None,
+        )
+
+
+class OpenAIProvider(OpenAICompatibleProvider):
+    name = "openai"
+
+    def __init__(self, settings: OpenAISettings, api_key: Callable[[], str | None], *,
+                 client_factory: Callable[[str], Any] | None = None) -> None:
+        super().__init__(model=settings.model, base_url=settings.base_url or None, api_key=api_key,
+                         timeout_s=settings.timeout_s, max_retries=settings.max_retries,
+                         client_factory=client_factory)
+
+
+class LocalModelProvider(OpenAICompatibleProvider):
+    """A model served on this computer through an OpenAI-compatible endpoint (e.g. Ollama)."""
+
+    name = "local"
+    json_mode = "json_object"
+    max_tokens_param = "max_tokens"
+
+    def __init__(self, settings: LocalModelSettings, *, client_factory: Callable[[str], Any] | None = None) -> None:
+        self.settings = settings
+        super().__init__(model=settings.model, base_url=settings.base_url, api_key=self._local_key,
+                         timeout_s=settings.timeout_s, max_retries=1, client_factory=client_factory)
+
+    def _local_key(self) -> str | None:
+        # Local servers ignore the key, but the client library requires one.
+        return "local" if self.settings.enabled else None
+
+    def available(self) -> bool:
+        return bool(self.settings.enabled and self.settings.base_url)

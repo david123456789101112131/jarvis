@@ -66,11 +66,17 @@ def _default_roles() -> dict[str, AIRoleSettings]:
 
 class AnthropicSettings(_Section):
     model: str = "claude-opus-5-5"
+    # Server-side fallback: a request the model declines is retried on Anthropic's recommended
+    # fallback model instead of failing.
     fallbacks: bool = True
+    # Short progress notes between tool calls (shown in the activity log).
+    progress_updates: bool = True
+    prompt_caching: bool = True
     timeout_s: float = 300.0
     max_retries: int = 2
     base_url: str = ""
     use_server_web_search: bool = True
+    web_search_max_uses: int = 8
 
 
 class OpenAISettings(_Section):
