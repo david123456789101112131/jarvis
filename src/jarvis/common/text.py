@@ -46,14 +46,14 @@ def strip_niqqud(text: str) -> str:
     return _NIQQUD_RE.sub("", text)
 
 
-def normalize(text: str) -> str:
-    """Lower-case, unify quotes/geresh, strip niqqud and collapse whitespace."""
+def normalize(text: str, *, lower: bool = True) -> str:
+    """Unify quotes/geresh, strip niqqud, collapse whitespace and (by default) lower-case."""
     text = unicodedata.normalize("NFKC", text or "")
     text = strip_niqqud(text)
     text = text.replace("׳", "'").replace("’", "'").replace("`", "'").replace("״", '"')
     text = text.replace("“", '"').replace("”", '"')
     text = re.sub(r"\s+", " ", text).strip()
-    return text.lower()
+    return text.lower() if lower else text
 
 
 def strip_wake_word(text: str) -> tuple[str, bool]:
