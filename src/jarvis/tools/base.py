@@ -115,6 +115,11 @@ class ToolContext:
         special = self.services.special_folder(text)
         if special is not None:
             return special
+        head, sep, rest = text.replace("\\", "/").partition("/")
+        if sep and head and not head.endswith(":"):
+            folder = self.services.special_folder(head)
+            if folder is not None:  # "desktop/report.txt", "workspace/site"
+                return normalize_path(folder / rest)
         base = self.cwd or self.services.paths.workspace
         return normalize_path(text, base=base)
 

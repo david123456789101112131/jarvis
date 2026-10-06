@@ -218,6 +218,9 @@ def sanitized_env(extra: dict[str, str] | None = None, environ: dict[str, str] |
     """Environment for child processes with every secret-looking variable removed."""
     source = dict(os.environ if environ is None else environ)
     clean = {k: v for k, v in source.items() if k not in KNOWN_SECRETS and not looks_like_secret_name(k)}
+    # Git reads GIT_CONFIG_COUNT/KEY_n/VALUE_n as a set (values can carry auth headers): drop them together.
+    for k in [k for k in clean if k.startswith("GIT_CONFIG_")]:
+        clean.pop(k)
     clean["PYTHONIOENCODING"] = "utf-8"
     clean["PYTHONUTF8"] = "1"
     if extra:

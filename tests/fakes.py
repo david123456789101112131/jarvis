@@ -131,3 +131,128 @@ def api_error(cls_name: str, status: int, message: str) -> Exception:
     cls = getattr(anthropic, cls_name)
     return cls(message, response=response,
                body={"type": "error", "error": {"type": "invalid_request_error", "message": message}})
+
+
+class FakeHost:
+    """In-memory HostAdapter: records every call instead of touching the desktop."""
+
+    platform = "fake"
+
+    def __init__(self, apps: dict[str, str] | None = None) -> None:
+        from jarvis.host.base import InstalledApp
+
+        self.calls: list[tuple] = []
+        self.volume = 50
+        self.brightness = 70
+        self.muted = False
+        self.clipboard = ""
+        self.running: dict[str, list[str]] = {}
+        self._apps = {
+            name: InstalledApp(name=display, target=f"C:/Apps/{name}.exe", kind="exe", id=name,
+                               process_names=(f"{name}.exe",))
+            for name, display in (apps or {"chrome": "Google Chrome", "notepad": "Notepad",
+                                           "calculator": "Calculator"}).items()
+        }
+
+    def special_folder(self, key: str):
+        return None
+
+    async def installed_apps(self, refresh: bool = False):
+        return list(self._apps.values())
+
+    async def find_app(self, name: str):
+        from jarvis.host import catalog
+
+        entry = catalog.find_app(name)
+        key = entry.id if entry else name.lower()
+        return self._apps.get(key)
+
+    async def launch_app(self, app, args=()):
+        from jarvis.host.base import LaunchResult
+
+        self.calls.append(("launch", app.name, tuple(args)))
+        self.running.setdefault(app.id or app.name, []).append(app.process_names[0] if app.process_names else app.name)
+        return LaunchResult(ok=True, app=app.name, method="fake", pid=4242)
+
+    async def open_url(self, url: str) -> None:
+        self.calls.append(("open_url", url))
+
+    async def open_path(self, path) -> None:
+        self.calls.append(("open_path", str(path)))
+
+    async def reveal(self, path) -> None:
+        self.calls.append(("reveal", str(path)))
+
+    async def close_app(self, name: str, *, force: bool = False) -> list[str]:
+        from jarvis.host import catalog
+
+        entry = catalog.find_app(name)
+        key = entry.id if entry else name.lower()
+        self.calls.append(("close", key, force))
+        return self.running.pop(key, [])
+
+    async def running_apps(self):
+        return [{"name": k, "pid": 1, "memory_mb": 10.0} for k in self.running]
+
+    async def get_volume(self):
+        return self.volume
+
+    async def set_volume(self, level: int):
+        self.volume = level
+        self.calls.append(("volume", level))
+        return level
+
+    async def change_volume(self, delta: int):
+        return await self.set_volume(max(0, min(100, self.volume + delta)))
+
+    async def set_mute(self, mute: bool) -> None:
+        self.muted = mute
+        self.calls.append(("mute", mute))
+
+    async def get_brightness(self):
+        return self.brightness
+
+    async def set_brightness(self, level: int):
+        self.brightness = level
+        self.calls.append(("brightness", level))
+        return level
+
+    async def media(self, action: str) -> None:
+        self.calls.append(("media", action))
+
+    async def lock_screen(self) -> None:
+        self.calls.append(("lock",))
+
+    async def power(self, action: str, delay_s: int = 0) -> None:
+        self.calls.append(("power", action, delay_s))
+
+    async def cancel_power(self) -> None:
+        self.calls.append(("cancel_power",))
+
+    async def screenshot(self, path):
+        import asyncio
+        from pathlib import Path
+
+        await asyncio.to_thread(Path(path).write_bytes, b"\x89PNG\r\n\x1a\n")
+        self.calls.append(("screenshot", str(path)))
+        return Path(path)
+
+    async def notify(self, title: str, message: str) -> None:
+        self.calls.append(("notify", title, message))
+
+    async def get_clipboard(self) -> str:
+        return self.clipboard
+
+    async def set_clipboard(self, text: str) -> None:
+        self.clipboard = text
+
+    def shell_argv(self, command: str, shell: str | None = None) -> list[str]:
+        import sys
+
+        if sys.platform == "win32":
+            return ["powershell", "-NoProfile", "-Command", command]
+        return ["bash", "-c", command]
+
+    @property
+    def default_shell(self) -> str:
+        return "bash"
