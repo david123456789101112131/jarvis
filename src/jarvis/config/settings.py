@@ -137,8 +137,9 @@ class MemorySettings(_Section):
 
 
 def _default_thresholds() -> dict[str, int]:
+    # CHAT mode refuses every non-read-only tool before this threshold is consulted.
     return {
-        Mode.CHAT.value: int(RiskLevel.SAFE),
+        Mode.CHAT.value: int(RiskLevel.HIGH),
         Mode.NORMAL.value: int(RiskLevel.HIGH),
         Mode.TASK.value: int(RiskLevel.HIGH),
         Mode.AUTONOMOUS.value: int(RiskLevel.HIGH),
@@ -156,6 +157,13 @@ class SecuritySettings(_Section):
     max_output_chars: int = 20000
     command_timeout_s: float = 300.0
     broad_delete_threshold: int = 20
+    # AUTONOMOUS mode may run HIGH-risk actions without asking when this is on; CRITICAL always asks.
+    autonomous_preapprove_high: bool = False
+    # Highest risk each agent may ever reach (0 SAFE .. 4 CRITICAL); above it the action is refused.
+    agent_risk_ceilings: dict[str, int] = Field(
+        default_factory=lambda: {"research": 3, "system": 4, "development": 4, "creative": 3, "planner": 2}
+    )
+    use_recycle_bin: bool = True
 
 
 class VoiceSettings(_Section):

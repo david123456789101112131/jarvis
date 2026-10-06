@@ -20,6 +20,7 @@ dependencies = [
   "platformdirs>=4",
   "tomli-w>=1.0",
   "beautifulsoup4>=4.12",
+  "send2trash>=1.8",
 ]
 
 [project.optional-dependencies]
@@ -37,7 +38,7 @@ voice = [
 ]
 desktop = ["pywebview>=5.0"]
 windows = ["pywin32>=306; sys_platform == 'win32'", "comtypes>=1.2; sys_platform == 'win32'"]
-creative = ["pillow>=10"]
+creative = ["pillow>=10", "python-pptx>=1.0"]
 all = ["jarvis-assistant[ai,voice,desktop,windows,creative]"]
 dev = [
   "pytest>=8",
