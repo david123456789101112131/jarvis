@@ -8,6 +8,8 @@ import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from jarvis.tools.project_tools import command_line
+
 if TYPE_CHECKING:
     from jarvis.agents.base import AgentResult, AgentRuntime, AgentTask, RunContext
 
@@ -140,15 +142,6 @@ async def project_details(runtime: AgentRuntime, name_or_path: str | None) -> tu
         meta = {**await asyncio.to_thread(detect_run_spec, folder), **meta}
     meta.setdefault("name", folder.name)
     return folder, meta
-
-
-def command_line(argv: list[str]) -> str:
-    """A run spec's argv as a command line ({python} and {node} become the plain program names)."""
-    parts = []
-    for part in argv:
-        part = {"{python}": "python", "{node}": "node"}.get(part, part)
-        parts.append(f'"{part}"' if " " in part else part)
-    return " ".join(parts)
 
 
 _MISSING_MODULE = re.compile(r"No module named ['\"]?([\w.\-]+)")

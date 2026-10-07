@@ -65,7 +65,9 @@ class ActionRequest(BaseModel):
     risk_reasons: list[str] = Field(default_factory=list)
     outbound: str | None = None                    # payload that leaves the machine (scanned for secrets)
     destination: str | None = None                 # host / URL the payload goes to
-    always_confirm: bool = False
+    always_confirm: bool = False                    # asked in every mode, never remembered
+    irreversible: bool = False                      # the tool knows it cannot be undone
+    sends_data: bool = False                        # carries data out of the computer (body, query, long path)
     params: dict[str, Any] = Field(default_factory=dict)
     lang: str = "en"                               # language for the reasons a person will read
 
@@ -77,6 +79,8 @@ class Decision(BaseModel):
     reasons: list[str] = Field(default_factory=list)
     grant_ids: list[str] = Field(default_factory=list)
     blocked: bool = False          # hard block (cannot be confirmed), e.g. secrets leaving the machine
+    irreversible: bool = False     # cannot be undone: asked in every mode, never remembered, never approved by voice
+    always_ask: bool = False       # asked in every mode and never covered by a remembered approval
 
     @property
     def reason(self) -> str:

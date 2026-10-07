@@ -23,9 +23,11 @@ from pydantic import BaseModel, Field
 from jarvis.common.enums import Capability, RiskLevel
 from jarvis.common.errors import PermissionDenied
 from jarvis.permissions.models import PathUse
+from jarvis.permissions.risk import command_scope
 from jarvis.security.secrets import sanitized_env
 from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
-from jarvis.tools.dev import find_python, venv_python
+from jarvis.tools.dev import changed_since_check, find_python, venv_python
+from jarvis.tools.web import url_payload, url_risk
 
 C = Capability
 IS_WINDOWS = sys.platform == "win32"
@@ -35,6 +37,15 @@ TemplateKind = Literal["website", "store", "webapp", "game", "api", "script", "b
 def project_slug(name: str) -> str:
     slug = re.sub(r"[^\w\-]+", "-", name.strip().lower(), flags=re.UNICODE).strip("-")
     return slug[:60] or f"project-{datetime.now():%Y%m%d-%H%M}"
+
+
+def command_line(argv: list[str]) -> str:
+    """A run spec's argv as a command line ({python} and {node} become the plain program names)."""
+    parts = []
+    for part in argv:
+        part = {"{python}": "python", "{node}": "node"}.get(part, part)
+        parts.append(f'"{part}"' if " " in part else part)
+    return " ".join(parts)
 
 
 def resolve_argv(argv: list[str], project: Path) -> list[str] | None:
@@ -125,6 +136,14 @@ class CreateProjectTool(Tool):
         memory = ctx.services.memory
         run_spec = _as_dict(info.run)
         test_spec = _as_dict(info.test) if info.test else None
+        # Exactly what the built-in template generated (no variables from the model): its tests and its own
+        # start command may run without asking for as long as nobody changes a file (see CodeTrust).
+        trusted = False
+        if not params.variables:
+            commands = [command_line(info.run.argv)] if info.run.kind != "static" and info.run.argv else []
+            trusted = await asyncio.to_thread(ctx.services.code_trust.trust, dest, result.files, commands)
+        else:
+            ctx.services.code_trust.forget(dest)
         if memory is not None:
             await memory.upsert_project(params.name, path=dest, description=params.description or info.description,
                                         meta={"kind": params.kind, "language": info.language, "entry": info.entry,
@@ -135,7 +154,7 @@ class CreateProjectTool(Tool):
                           f"Created {info.name} '{params.name}' with {len(files)} file{'' if len(files) == 1 else 's'} in {dest}"),
             files_created=files, actions=[f"create {params.kind} project {dest}"],
             data={"path": str(dest), "kind": params.kind, "entry": info.entry, "run": run_spec, "test": test_spec,
-                  "language": info.language, "files": len(files)},
+                  "language": info.language, "files": len(files), "as_generated": trusted},
         )
 
 
@@ -199,12 +218,25 @@ class StartProcessTool(Tool):
         if not ctx.services.settings.security.shell_enabled:
             raise PermissionDenied(ctx.t("הרצת תוכנות מושבתת בהגדרות האבטחה.", "Running programs is disabled in the security settings."))
         cwd = self._cwd(params, ctx)
+        # A generated project's own start command, while the project is exactly as generated, is not a
+        # command line to vet: it starts known code. Anything else is checked like run_command.
+        known = await asyncio.to_thread(ctx.services.code_trust.allows_command, cwd, params.command)
+        ctx.extra["trusted_run"] = known
+        # The address it opens afterwards is checked like open_url: what is in it goes to that site.
+        carried, sends = url_payload(params.url) if params.url else (None, False)
+        risk, reasons = url_risk(ctx, params.url) if params.url else (None, [])
         return ActionPlan(summary=ctx.t(f"הפעלה ברקע: {params.command[:160]}", f"Start in the background: {params.command[:160]}"),
                           paths=[PathUse(path=str(cwd), access="read")],
-                          details={"command": params.command, "cwd": str(cwd)})
+                          capabilities=[C.PROCESS_LAUNCH] if known else None,
+                          details={"command": params.command, "cwd": str(cwd), **({"url": params.url} if params.url else {})},
+                          destination=params.url or None, outbound=carried, sends_data=sends, risk=risk,
+                          risk_reasons=reasons, remember_scope=command_scope(params.command))
 
     async def run(self, params: StartProcessParams, ctx: ToolContext) -> ToolResult:
         cwd = self._cwd(params, ctx)
+        if ctx.extra.get("trusted_run") and not await asyncio.to_thread(
+                ctx.services.code_trust.allows_command, cwd, params.command):
+            return changed_since_check(ctx)
         prepared = await asyncio.to_thread(_prepare, params, cwd, ctx.services.paths.workspace / "logs")
         if isinstance(prepared, str):
             return ToolResult.fail(prepared)

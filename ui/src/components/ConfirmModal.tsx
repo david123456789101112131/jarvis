@@ -83,7 +83,8 @@ export function ConfirmModal({ request, waiting, onLater }: ConfirmModalProps) {
   const created = Date.parse(request.created_at);
   const total = request.expires_at && Number.isFinite(created) ? Math.max(1, (Date.parse(request.expires_at) - created) / 1000) : null;
   const fraction = left !== null && total ? Math.max(0, Math.min(1, left / total)) : 1;
-  const canRemember = !!request.task_id && request.risk !== 'critical';
+  const canRemember =
+    !!request.task_id && request.risk !== 'critical' && !request.irreversible && !request.always_ask;
   const details = Object.entries(request.details ?? {}).filter(([key]) => key !== 'capability' || request.details.capability !== request.tool);
 
   useEffect(() => {
@@ -150,6 +151,12 @@ export function ConfirmModal({ request, waiting, onLater }: ConfirmModalProps) {
           <p className="confirm__summary bidi" id="confirm-summary">
             <BidiText text={request.summary} />
           </p>
+          {request.irreversible ? (
+            <p className="confirm__irreversible" data-testid="confirm-irreversible">
+              <Icon name="alert" size={14} />
+              <span>{t('confirm.irreversible')}</span>
+            </p>
+          ) : null}
           {request.reasons.length ? (
             <div className="confirm__section">
               <p className="section-label">{t('confirm.reasons')}</p>
@@ -189,7 +196,15 @@ export function ConfirmModal({ request, waiting, onLater }: ConfirmModalProps) {
               <span className="check__box" aria-hidden="true">
                 <Icon name="check" size={12} strokeWidth={2.6} />
               </span>
-              <span>{t('confirm.remember')}</span>
+              <span>
+                {request.scope ? (
+                  <>
+                    {t('confirm.rememberScope')} <bdi dir="ltr" className="mono">{request.scope}</bdi>
+                  </>
+                ) : (
+                  t('confirm.remember')
+                )}
+              </span>
             </label>
           ) : null}
         </div>

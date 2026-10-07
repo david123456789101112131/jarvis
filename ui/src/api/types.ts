@@ -176,6 +176,12 @@ export interface ConfirmationRequest {
   created_at: string;
   expires_at: string | null;
   status: 'pending' | 'approved' | 'denied' | 'expired' | 'cancelled';
+  /** Cannot be undone: always asked, never remembered for the task, approved only by a click or typing. */
+  irreversible?: boolean;
+  /** The tool asks about every call (installing software, power): never remembered for the task. */
+  always_ask?: boolean;
+  /** What "remember" covers within the tool (a program, a project); null = the whole tool. */
+  scope?: string | null;
 }
 
 export interface VoiceInfo {

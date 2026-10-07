@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from jarvis.common.enums import AgentId, Mode, RiskLevel
 
@@ -170,6 +170,31 @@ class SecuritySettings(_Section):
         default_factory=lambda: {"research": 3, "system": 4, "development": 4, "creative": 3, "planner": 2}
     )
     use_recycle_bin: bool = True
+    # Network shares (\\server\share) the agents may use. Any other network path is refused before
+    # Windows opens it, because opening one can hand your Windows sign-in to that server.
+    allowed_network_shares: list[str] = Field(default_factory=list)
+
+    @field_validator("confirm_thresholds")
+    @classmethod
+    def _check_thresholds(cls, value: dict[str, int]) -> dict[str, int]:
+        modes = {m.value for m in Mode}
+        for key, level in value.items():
+            if key not in modes:
+                raise ValueError(f"unknown mode in confirm_thresholds: {key}")
+            if not int(RiskLevel.SAFE) <= int(level) <= int(RiskLevel.CRITICAL):
+                raise ValueError(f"confirm_thresholds.{key} must be between 0 and 4")
+        return value
+
+    @field_validator("agent_risk_ceilings")
+    @classmethod
+    def _check_ceilings(cls, value: dict[str, int]) -> dict[str, int]:
+        agents = {a.value for a in AgentId}
+        for key, level in value.items():
+            if key not in agents:
+                raise ValueError(f"unknown agent in agent_risk_ceilings: {key}")
+            if not int(RiskLevel.SAFE) <= int(level) <= int(RiskLevel.CRITICAL):
+                raise ValueError(f"agent_risk_ceilings.{key} must be between 0 and 4")
+        return value
 
 
 class VoiceSettings(_Section):

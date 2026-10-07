@@ -22,6 +22,19 @@ log = logging.getLogger("jarvis.audit")
 
 Decision = Literal["allowed", "denied", "confirmed", "rejected", "blocked", "error"]
 Sink = Callable[["AuditEntry"], Awaitable[None] | None]
+MAX_PARAM_CHARS = 300      # a file's content or a long text is summarised, not copied into the log
+
+
+def shorten(value: Any, limit: int = MAX_PARAM_CHARS) -> Any:
+    """Long strings in tool parameters become their start plus a length note (recursively)."""
+    if isinstance(value, str):
+        return value if len(value) <= limit else f"{value[:limit]}… [{len(value)} chars]"
+    if isinstance(value, dict):
+        return {k: shorten(v, limit) for k, v in value.items()}
+    if isinstance(value, list | tuple):
+        items = [shorten(v, limit) for v in list(value)[:50]]
+        return items + ([f"… [{len(value)} items]"] if len(value) > 50 else [])
+    return value
 
 
 class AuditEntry(BaseModel):
@@ -54,7 +67,7 @@ class AuditLog:
         self._sinks.append(sink)
 
     async def record(self, entry: AuditEntry) -> AuditEntry:
-        entry.params = self._redactor.redact(entry.params)
+        entry.params = shorten(self._redactor.redact(entry.params))
         entry.action = self._redactor.redact_text(entry.action)
         if entry.error:
             entry.error = self._redactor.redact_text(entry.error)

@@ -16,6 +16,7 @@ import json
 import logging
 import os
 import threading
+from collections import OrderedDict
 from collections.abc import Iterable
 from datetime import timedelta
 from pathlib import Path
@@ -36,6 +37,14 @@ _ACCESS_CAP = {"read": Capability.FS_READ, "write": Capability.FS_WRITE, "delete
 _ACCESS_HE = {"read": "לקרוא", "write": "לכתוב אליהן", "delete": "למחוק מהן"}
 _RISK_HE = {RiskLevel.SAFE: "בטוח", RiskLevel.LOW: "נמוך", RiskLevel.MEDIUM: "בינוני", RiskLevel.HIGH: "גבוה",
             RiskLevel.CRITICAL: "קריטי"}
+
+
+def _level(value: object) -> RiskLevel:
+    """A configured risk number as a level (out-of-range values are clamped, garbage means HIGH)."""
+    try:
+        return RiskLevel(min(max(int(value), int(RiskLevel.SAFE)), int(RiskLevel.CRITICAL)))  # type: ignore[call-overload]
+    except (TypeError, ValueError):
+        return RiskLevel.HIGH
 
 
 def _to(name: str) -> str:
@@ -62,6 +71,8 @@ class PermissionManager:
         self._grants: dict[str, Grant] = {}
         self._task_restrictions: dict[str, str] = {}          # agent -> only this task id
         self._folder_scopes: dict[str, list[str]] = {}        # agent -> only these roots
+        # (agent, task) that read the user's own files: from then on, sending data out asks first.
+        self._private_reads: OrderedDict[tuple[str, str], None] = OrderedDict()
         self._load_policies()
         self._load_store()
 
@@ -183,11 +194,11 @@ class PermissionManager:
         self.settings.agent_risk_ceilings[agent] = int(level)
 
     def risk_ceiling(self, agent_id: str) -> RiskLevel:
-        return RiskLevel(self.settings.agent_risk_ceilings.get(agent_id, int(RiskLevel.HIGH)))
+        return _level(self.settings.agent_risk_ceilings.get(agent_id, int(RiskLevel.HIGH)))
 
     def confirm_threshold(self, mode: Mode | str) -> RiskLevel:
         key = Mode(mode).value
-        return RiskLevel(self.settings.confirm_thresholds.get(key, int(RiskLevel.HIGH)))
+        return _level(self.settings.confirm_thresholds.get(key, int(RiskLevel.HIGH)))
 
     # ------------------------------------------------------------------ decisions
     def _resolve_roots(self, tokens: Iterable[str]) -> list[Path] | None:
@@ -234,6 +245,15 @@ class PermissionManager:
             if self.guard.is_denied(path):
                 return Decision(allowed=False, blocked=True, reasons=[t(lang, f"הגישה למיקום מוגן נחסמה: {path}",
                                                                        f"access to protected location denied: {path}")])
+            problem = self.guard.path_problem(path)
+            if problem is not None:
+                return Decision(allowed=False, blocked=True, reasons=[t(lang, f"הנתיב {path} נחסם: {problem[1]}",
+                                                                       f"the path {path} was refused: {problem[0]}")])
+            managed = self.guard.managed_folder(path, use.access) if use.access != "read" else None
+            if managed is not None:
+                return Decision(allowed=False, blocked=True, reasons=[t(
+                    lang, f"הסוכנים לא כותבים בתוך {managed[1]} ({path}): קוד שמוטמן שם היה רץ בלי שאיש יראה",
+                    f"agents never write inside {managed[0]} ({path}): code planted there would run unseen")])
             cap = _ACCESS_CAP[use.access]
             matches = self._matching_grants(agent, cap, req.task_id)
             if not matches:
@@ -267,6 +287,10 @@ class PermissionManager:
             used.append(ok_grant.id)
 
         assessment = self.assessor.assess(req)
+        if req.sends_data and self.read_private_files(agent, req.task_id):
+            assessment.raise_to(RiskLevel.HIGH, t(
+                lang, "שולח מידע אל מחוץ למחשב אחרי שקרא את הקבצים שלך במשימה הזו",
+                "sends data out of the computer after reading your files in this task"))
         risk = assessment.risk
         reasons.extend(r for r in assessment.reasons if r)
         if assessment.blocked:
@@ -280,11 +304,32 @@ class PermissionManager:
                                      f"risk {risk.name} exceeds what the {agent} agent may do ({ceiling.name})")],
             )
         threshold = self.confirm_threshold(mode)
-        needs = req.always_confirm or risk >= threshold or risk >= RiskLevel.CRITICAL
+        # What cannot be undone (and what a tool always asks about) is asked whatever the mode, the thresholds
+        # or a pre-approval say.
+        irreversible = assessment.irreversible
+        always = irreversible or req.always_confirm
+        needs = always or risk >= threshold or risk >= RiskLevel.CRITICAL
         if Mode(mode) == Mode.AUTONOMOUS and self.settings.autonomous_preapprove_high and risk == RiskLevel.HIGH \
-                and not req.always_confirm:
+                and not always:
             needs = False
-        return Decision(allowed=True, needs_confirmation=needs, risk=risk, reasons=reasons, grant_ids=sorted(set(used)))
+        self._note_private_reads(agent, req)
+        return Decision(allowed=True, needs_confirmation=needs, risk=risk, reasons=reasons, grant_ids=sorted(set(used)),
+                        irreversible=irreversible, always_ask=always)
+
+    def read_private_files(self, agent: str, task_id: str | None) -> bool:
+        with self._lock:
+            return (agent, task_id or "") in self._private_reads
+
+    def _note_private_reads(self, agent: str, req: ActionRequest) -> None:
+        """Remember that this agent read the user's own files (not JARVIS's workspace) in this task."""
+        if not any(use.access == "read" and self.guard.zone(use.path) in ("user", "external", "projects")
+                   for use in req.paths):
+            return
+        with self._lock:
+            self._private_reads[(agent, req.task_id or "")] = None
+            self._private_reads.move_to_end((agent, req.task_id or ""))
+            while len(self._private_reads) > 2000:
+                self._private_reads.popitem(last=False)
 
     def consume(self, decision: Decision) -> None:
         """Count one use against every grant that allowed the action (for max_uses grants)."""

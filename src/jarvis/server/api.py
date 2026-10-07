@@ -120,8 +120,12 @@ def _dump(obj: Any) -> Any:
     return obj.model_dump(mode="json") if isinstance(obj, BaseModel) else obj
 
 
+MAX_BODY = 1_000_000      # bytes; every request body is a small JSON document
+
+
 class GuardMiddleware:
-    """Loopback `Host`, same-origin `Origin`, and the token on everything but the public paths."""
+    """Loopback `Host`, same-origin `Origin`, the token on everything but the public paths, and a
+    size limit on request bodies."""
 
     def __init__(self, app: ASGIApp, auth: ServerAuth) -> None:
         self.app = app
@@ -143,16 +147,60 @@ class GuardMiddleware:
             query = _query_token(scope) if scope["type"] == "websocket" else None
             if not self.auth.authorized(header=headers.get(HEADER), cookie=cookie, query=query):
                 problem = "Missing or wrong JARVIS token."
+        status, code = 403, "forbidden"
+        if problem is None and scope["type"] == "http":
+            length = headers.get("content-length")
+            if length is not None:
+                if not length.strip().isdigit() or int(length) > MAX_BODY:
+                    problem, status, code = "The request is too large.", 413, "too_large"
+            else:
+                # Sent without a length (chunked): read it here, up to the limit, then hand it on.
+                body = await _read_body(receive, MAX_BODY)
+                if body is None:
+                    problem, status, code = "The request is too large.", 413, "too_large"
+                else:
+                    receive = _replay(body, receive)
         if problem is None:
             await self.app(scope, receive, send)
             return
         if scope["type"] == "websocket":
             await send({"type": "websocket.close", "code": 4403, "reason": problem})
             return
-        body = json.dumps({"error": {"code": "forbidden", "message": problem}}).encode()
-        await send({"type": "http.response.start", "status": 403,
+        body = json.dumps({"error": {"code": code, "message": problem}}).encode()
+        await send({"type": "http.response.start", "status": status,
                     "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())]})
         await send({"type": "http.response.body", "body": body})
+
+
+async def _read_body(receive: Receive, limit: int) -> bytes | None:
+    """The whole request body, or None once it passes `limit` bytes (or the client went away)."""
+    chunks: list[bytes] = []
+    size = 0
+    while True:
+        message = await receive()
+        if message.get("type") != "http.request":
+            return None
+        chunk = message.get("body") or b""
+        size += len(chunk)
+        if size > limit:
+            return None
+        chunks.append(chunk)
+        if not message.get("more_body"):
+            return b"".join(chunks)
+
+
+def _replay(body: bytes, receive: Receive) -> Receive:
+    """Hand a body that was already read to the app, then pass on what comes next (a disconnect)."""
+    sent = False
+
+    async def wrapped() -> dict:
+        nonlocal sent
+        if not sent:
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+        return await receive()
+
+    return wrapped
 
 
 def _cookie(header: str | None, name: str) -> str | None:

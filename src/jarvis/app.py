@@ -51,7 +51,7 @@ from jarvis.security.redaction import default_redactor
 from jarvis.security.secrets import KNOWN_SECRETS, SecretStore
 from jarvis.tools import ToolExecutor, ToolServices
 from jarvis.tools.builtin import create_registry
-from jarvis.tools.fs import EXECUTABLE_EXT
+from jarvis.tools.fs import RUNS_CODE_EXT
 
 if TYPE_CHECKING:
     from jarvis.agents.base import BaseAgent
@@ -68,8 +68,7 @@ log = logging.getLogger(__name__)
 STATS_INTERVAL_S = 2.0
 RUNTIME_FILE = "runtime.json"
 # Files the UI only shows in Explorer, never opens: opening them would run code.
-REVEAL_ONLY_EXT = EXECUTABLE_EXT | {".py", ".pyw", ".psm1", ".cpl", ".msc", ".scf", ".inf", ".application",
-                                    ".settingcontent-ms", ".chm", ".iso", ".vhd", ".vhdx", ".url", ".website"}
+REVEAL_ONLY_EXT = RUNS_CODE_EXT
 UI_KEYS = ("theme_color", "orb_size", "orb_opacity", "follow_mouse", "always_active", "mini_orb")
 # Changing these needs a restart (they shape objects built once at start-up).
 RESTART_SECTIONS = ("paths", "server", "memory")
@@ -135,6 +134,7 @@ class JarvisApp:
             denied_roots=default_denied_roots() + extra_denied,
             protected_roots=[self.paths.data, self.paths.logs, self.paths.cache, self.paths.db.parent,
                              self.config_file.parent, *app_protected_roots()],
+            allowed_shares=s.security.allowed_network_shares,
         )
         self.user_roots = default_user_write_roots()
         self.permissions = PermissionManager(self.guard, s.security, store_file=self.paths.data / "permissions.json",

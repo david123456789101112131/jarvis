@@ -131,7 +131,7 @@ class TestRisk:
             ("shutdown /s /t 0", RiskLevel.HIGH),
             ("git push origin main", RiskLevel.HIGH),
             ("npm install", RiskLevel.MEDIUM),
-            ("del notes.txt", RiskLevel.MEDIUM),
+            ("del notes.txt", RiskLevel.HIGH),   # a command skips the Recycle Bin
             ("rmdir /s /q build", RiskLevel.HIGH),
             ("echo %OPENAI_API_KEY%", RiskLevel.CRITICAL),
             ("Set-MpPreference -DisableRealtimeMonitoring $true", RiskLevel.CRITICAL),

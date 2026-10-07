@@ -232,9 +232,11 @@ class PowerTool(Tool):
         delayed = params.delay_s and params.action in ("shutdown", "restart")
         when = f" in {params.delay_s}s" if delayed else ""
         when_he = f" בעוד {params.delay_s} שניות" if delayed else ""
+        # A delayed shutdown can still be cancelled ("cancel the shutdown"); an immediate one or signing out cannot.
+        immediate = params.action == "logoff" or (params.action in ("shutdown", "restart") and not delayed)
         return ActionPlan(summary=ctx.t(f"{_POWER_HE[params.action]}{when_he}", f"{params.action.capitalize()} the computer{when}"),
                           risk_reasons=[ctx.t("עבודה שלא נשמרה בתוכנות פתוחות עלולה ללכת לאיבוד",
-                                              "unsaved work in open apps may be lost")])
+                                              "unsaved work in open apps may be lost")], irreversible=immediate)
 
     async def run(self, params: PowerParams, ctx: ToolContext) -> ToolResult:
         await _host(ctx).power(params.action, params.delay_s)

@@ -3,15 +3,23 @@
 Search uses Brave or Tavily when their API keys are configured, otherwise DuckDuckGo's HTML
 endpoint (no key needed). Page reading extracts the readable text of HTML pages and PDFs.
 Network access can be switched off or limited to an allowlist in the security settings.
+
+A target on this computer or the local network (a router page, a local server) needs the user's
+approval, and every connection is checked again after DNS (see `security.netguard`). What goes
+out in the address itself (path and query) is checked like any outgoing data: no secrets, personal
+data only with approval. Downloads get Windows' "from the internet" mark, so Windows warns before
+running them.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import ipaddress
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, unquote, urlparse
@@ -22,11 +30,13 @@ from pydantic import BaseModel, Field
 from jarvis.common.enums import Capability, RiskLevel
 from jarvis.common.errors import PermissionDenied, ToolError
 from jarvis.permissions.models import PathUse
+from jarvis.security.netguard import LocalAddressRefused, classify_host, local_access
 from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
-from jarvis.tools.fs import EXECUTABLE_EXT
+from jarvis.tools.fs import RUNS_CODE_EXT
 
 C = Capability
 MAX_PAGE_CHARS = 40_000
+LONG_URL = 2000                      # an address longer than this carries data out, not just a request
 
 
 def check_network(ctx: ToolContext, url: str) -> str:
@@ -49,6 +59,71 @@ def check_network(ctx: ToolContext, url: str) -> str:
     if sec.network_allowlist and not any(host == d or host.endswith("." + d) for d in sec.network_allowlist):
         raise PermissionDenied(ctx.t(f"{host} לא ברשימת האתרים המותרים.", f"{host} is not in the network allowlist."))
     return host
+
+
+def url_payload(url: str) -> tuple[str | None, bool]:
+    """(What the address itself carries out: path, query and fragment, decoded; whether that is data
+    rather than a plain page address: any query, or a long path.)"""
+    parsed = urlparse(url)
+    path, query, fragment = unquote(parsed.path.lstrip("/")), unquote(parsed.query), unquote(parsed.fragment)
+    carried = path + (f"?{query}" if query else "") + (f"#{fragment}" if fragment else "")
+    return carried or None, bool(query) or bool(fragment) or len(path) > 100
+
+
+def url_risk(ctx: ToolContext, url: str) -> tuple[RiskLevel | None, list[str]]:
+    if len(url) > LONG_URL:
+        return RiskLevel.HIGH, [ctx.t(f"שולח הרבה מידע בתוך הכתובת ({len(url)} תווים)",
+                                      f"sends a lot of data inside the address ({len(url)} characters)")]
+    return None, []
+
+
+async def guard_target(ctx: ToolContext, url: str) -> tuple[RiskLevel | None, list[str], str | None]:
+    """Plan-time checks of a web address: (risk, reasons, outgoing data in the address).
+
+    A local target (this computer or the local network) needs approval; the approval is recorded in
+    `ctx.extra` so the connection may then go there (see `local_access`)."""
+    host = check_network(ctx, url)
+    parsed = urlparse(url)
+    try:
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ToolError(ctx.t(f"מספר הפורט בכתובת לא תקין: {url}", f"Invalid port in {url}")) from exc
+    kind, addresses = await classify_host(host, port, ctx.services.resolver)
+    own_port = ctx.services.extras.get("server_port")
+    if own_port and port == own_port and any(ipaddress.ip_address(a).is_loopback for a in addresses):
+        raise PermissionDenied(ctx.t("לסוכנים אסור לפנות לשרת הבקרה של JARVIS עצמו.",
+                                     "Agents may not call JARVIS's own control server."))
+    risk: RiskLevel | None = None
+    reasons: list[str] = []
+    if kind == "local":
+        ctx.extra["local_network"] = True
+        risk = RiskLevel.HIGH
+        reasons.append(ctx.t(f"פונה למכשיר או לשירות במחשב שלך או ברשת המקומית ({host})",
+                             f"reaches a device or service on your computer or local network ({host})"))
+    carried, _ = url_payload(url)
+    long_risk, long_reasons = url_risk(ctx, url)
+    return long_risk or risk, reasons + long_reasons, carried
+
+
+def refused_local(ctx: ToolContext, exc: Exception) -> ToolResult | None:
+    """A clear failure when the network guard refused a connection, else None."""
+    cause: BaseException | None = exc
+    while cause is not None:
+        if isinstance(cause, LocalAddressRefused):
+            return ToolResult.fail(ctx.t(f"החיבור נחסם: {cause}", f"The connection was refused: {cause}"),
+                                   denied="blocked")
+        cause = cause.__cause__ or cause.__context__
+    return None
+
+
+def mark_from_internet(path: Path, url: str) -> None:
+    """Windows' Mark of the Web: SmartScreen and Office then treat the file as downloaded."""
+    if sys.platform != "win32":
+        return
+    parsed = urlparse(url)
+    host_url = f"{parsed.scheme}://{parsed.netloc}{parsed.path}"
+    with contextlib.suppress(OSError), open(f"{path}:Zone.Identifier", "w", encoding="utf-8") as fh:
+        fh.write(f"[ZoneTransfer]\r\nZoneId=3\r\nHostUrl={host_url}\r\n")
 
 
 def _is_local(host: str) -> bool:
@@ -231,25 +306,34 @@ class FetchUrlTool(Tool):
 
     async def plan(self, params: FetchParams, ctx: ToolContext) -> ActionPlan:
         url = params.url if "://" in params.url else "https://" + params.url
-        check_network(ctx, url)
-        return ActionPlan(summary=ctx.t(f"קריאת הדף {url}", f"Read {url}"), destination=url)
+        risk, reasons, carried = await guard_target(ctx, url)
+        return ActionPlan(summary=ctx.t(f"קריאת הדף {url}", f"Read {url}"), destination=url, risk=risk,
+                          risk_reasons=reasons, outbound=carried, sends_data=url_payload(url)[1],
+                          remember_scope=urlparse(url).hostname)
 
     async def run(self, params: FetchParams, ctx: ToolContext) -> ToolResult:
         url = params.url if "://" in params.url else "https://" + params.url
         check_network(ctx, url)
         limit = ctx.services.settings.web.max_fetch_bytes
         client = ctx.services.http()
-        async with client.stream("GET", url) as r:
-            if r.status_code >= 400:
-                return ToolResult.fail(ctx.t(f"{url} החזיר HTTP {r.status_code}", f"{url} returned HTTP {r.status_code}"),
-                                       data={"status": r.status_code})
-            ctype = r.headers.get("content-type", "").lower()
-            body = bytearray()
-            async for chunk in r.aiter_bytes():
-                body.extend(chunk)
-                if len(body) > limit:
-                    break
-            final_url = str(r.url)
+        try:
+            with local_access(ctx.extra.get("local_network", False)):
+                async with client.stream("GET", url) as r:
+                    if r.status_code >= 400:
+                        return ToolResult.fail(ctx.t(f"{url} החזיר HTTP {r.status_code}",
+                                                     f"{url} returned HTTP {r.status_code}"), data={"status": r.status_code})
+                    ctype = r.headers.get("content-type", "").lower()
+                    body = bytearray()
+                    async for chunk in r.aiter_bytes():
+                        body.extend(chunk)
+                        if len(body) > limit:
+                            break
+                    final_url = str(r.url)
+        except httpx.ConnectError as exc:
+            refused = refused_local(ctx, exc)
+            if refused is None:
+                raise
+            return refused
         if "pdf" in ctype or final_url.lower().endswith(".pdf"):
             text, title, links = await asyncio.to_thread(_pdf_text, bytes(body)), Path(urlparse(final_url).path).name, []
         elif "html" in ctype or body[:200].lstrip().lower().startswith((b"<!doctype", b"<html")):
@@ -297,24 +381,39 @@ class HttpRequestTool(Tool):
     timeout_s = 90.0
 
     async def plan(self, params: HttpParams, ctx: ToolContext) -> ActionPlan:
-        check_network(ctx, params.url)
+        risk, reasons, carried = await guard_target(ctx, params.url)
         outbound_parts = [json.dumps(params.query, ensure_ascii=False), json.dumps(params.headers, ensure_ascii=False)]
+        if carried:
+            outbound_parts.append(carried)
         if params.json_body is not None:
             outbound_parts.append(json.dumps(params.json_body, ensure_ascii=False, default=str))
         if params.text_body:
             outbound_parts.append(params.text_body)
-        writes = params.method != "GET"
+        if params.method != "GET":
+            # Sending data to a service (or changing data there) always asks: JARVIS cannot tell whether the
+            # data is private, and a web page may have asked for it.
+            risk = RiskLevel.HIGH
+            reasons.append(ctx.t(f"שולח מידע אל {urlparse(params.url).hostname} ועלול לשנות שם נתונים",
+                                 f"sends data to {urlparse(params.url).hostname} and may change data there"))
+        body = params.json_body is not None or bool(params.text_body)
         return ActionPlan(summary=ctx.t(f"פנייה לשירות רשת: {params.method} {params.url}", f"{params.method} {params.url}"),
-                          outbound="\n".join(outbound_parts),
-                          destination=params.url, risk=RiskLevel.HIGH if params.method == "DELETE" else None,
-                          risk_reasons=[ctx.t("משנה מידע בשירות מרוחק", "changes data on a remote service")] if writes else [])
+                          outbound="\n".join(outbound_parts), destination=params.url, risk=risk, risk_reasons=reasons,
+                          sends_data=body or bool(params.query) or url_payload(params.url)[1],
+                          remember_scope=f"{params.method} {urlparse(params.url).hostname}")
 
     async def run(self, params: HttpParams, ctx: ToolContext) -> ToolResult:
         check_network(ctx, params.url)
         client = ctx.services.http()
-        r = await client.request(params.method, params.url, params=params.query or None,
-                                 headers=params.headers or None, json=params.json_body,
-                                 content=params.text_body.encode() if params.text_body else None)
+        try:
+            with local_access(ctx.extra.get("local_network", False)):
+                r = await client.request(params.method, params.url, params=params.query or None,
+                                         headers=params.headers or None, json=params.json_body,
+                                         content=params.text_body.encode() if params.text_body else None)
+        except httpx.ConnectError as exc:
+            refused = refused_local(ctx, exc)
+            if refused is None:
+                raise
+            return refused
         ctype = r.headers.get("content-type", "")
         body: Any
         if "json" in ctype:
@@ -355,13 +454,14 @@ class DownloadFileTool(Tool):
         return p / name if (p.exists() and p.is_dir()) or params.path.endswith(("/", "\\")) else p
 
     async def plan(self, params: DownloadParams, ctx: ToolContext) -> ActionPlan:
-        check_network(ctx, params.url)
+        risk, reasons, carried = await guard_target(ctx, params.url)
         target = self._target(params, ctx)
-        executable = target.suffix.lower() in EXECUTABLE_EXT
+        if target.suffix.lower() in RUNS_CODE_EXT:
+            risk = RiskLevel.HIGH
+            reasons.append(ctx.t("מוריד תוכנה או סקריפט", "downloads a program or script"))
         return ActionPlan(summary=ctx.t(f"הורדת {params.url} אל {target}", f"Download {params.url} to {target}"),
                           destination=params.url, paths=[PathUse(path=str(target), access="write")],
-                          risk=RiskLevel.HIGH if executable else None,
-                          risk_reasons=[ctx.t("מוריד תוכנה או סקריפט", "downloads a program or script")] if executable else [])
+                          risk=risk, risk_reasons=reasons, outbound=carried, sends_data=url_payload(params.url)[1])
 
     async def run(self, params: DownloadParams, ctx: ToolContext) -> ToolResult:
         check_network(ctx, params.url)
@@ -371,20 +471,33 @@ class DownloadFileTool(Tool):
         size = 0
         max_bytes = 2_000_000_000
         client = ctx.services.http()
-        async with client.stream("GET", params.url) as r:
-            if r.status_code >= 400:
-                return ToolResult.fail(ctx.t(f"ההורדה נכשלה: HTTP {r.status_code}", f"Download failed: HTTP {r.status_code}"))
-            total = int(r.headers.get("content-length") or 0)
-            with tmp.open("wb") as fh:
-                async for chunk in r.aiter_bytes(1 << 16):
-                    ctx.check_cancelled()
-                    fh.write(chunk)
-                    size += len(chunk)
-                    if size > max_bytes:
-                        raise ToolError(ctx.t("הקובץ גדול מ-2GB וההורדה נעצרה.", "File is larger than 2 GB; download stopped."))
-                    if total:
-                        await ctx.progress(size / total, f"{size // 1024} KB")
+        try:
+            with local_access(ctx.extra.get("local_network", False)):
+                async with client.stream("GET", params.url) as r:
+                    if r.status_code >= 400:
+                        return ToolResult.fail(ctx.t(f"ההורדה נכשלה: HTTP {r.status_code}",
+                                                     f"Download failed: HTTP {r.status_code}"))
+                    total = int(r.headers.get("content-length") or 0)
+                    with tmp.open("wb") as fh:
+                        async for chunk in r.aiter_bytes(1 << 16):
+                            ctx.check_cancelled()
+                            fh.write(chunk)
+                            size += len(chunk)
+                            if size > max_bytes:
+                                raise ToolError(ctx.t("הקובץ גדול מ-2GB וההורדה נעצרה.",
+                                                      "File is larger than 2 GB; download stopped."))
+                            if total:
+                                await ctx.progress(size / total, f"{size // 1024} KB")
+        except httpx.ConnectError as exc:
+            refused = refused_local(ctx, exc)
+            if refused is None:
+                raise
+            return refused
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
         tmp.replace(target)
+        await asyncio.to_thread(mark_from_internet, target, params.url)
         return ToolResult(summary=ctx.t(f"הורד הקובץ {target.name} ({size // 1024} KB)", f"Downloaded {target.name} ({size // 1024} KB)"),
                           files_created=[str(target)],
                           data={"path": str(target), "bytes": size})

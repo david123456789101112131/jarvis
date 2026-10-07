@@ -96,10 +96,10 @@ class Recall(BaseModel):
         lines: list[str] = []
         if self.preferences:
             lines.append("User preferences:")
-            lines += [f"- {f.text}" for f in self.preferences]
+            lines += [f"- {f.text}{_provenance(f)}" for f in self.preferences]
         if self.facts:
             lines.append("Known facts and decisions:")
-            lines += [f"- [{f.category}] {f.text}" for f in self.facts]
+            lines += [f"- [{f.category}] {f.text}{_provenance(f)}" for f in self.facts]
         if self.projects:
             lines.append("Known projects:")
             lines += [f"- {p.name}" + (f" ({p.path})" if p.path else "") + (f": {p.description}" if p.description else "")
@@ -110,6 +110,13 @@ class Recall(BaseModel):
             lines += [f"- ({h.layer}) {h.text[:220]}" for h in related]
         text = "\n".join(lines)
         return text if len(text) <= max_chars else text[: max_chars - 1] + "…"
+
+
+def _provenance(fact: Fact) -> str:
+    """Who saved a note: an agent's note may come from a web page or a file, not from the user."""
+    if fact.source in ("user", "ui", "voice", "text"):
+        return ""
+    return f" (noted by the {fact.source} agent, not said by the user)"
 
 
 class MemoryManager:

@@ -1481,6 +1481,19 @@ button.kill:hover {
   overflow-wrap: anywhere;
 }
 
+.confirm__irreversible {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 7px 10px;
+  border: 1px solid rgba(var(--tone-danger), 0.45);
+  border-radius: 8px;
+  background: rgba(var(--tone-danger), 0.1);
+  color: var(--danger);
+  font-size: 13px;
+}
+
 .confirm__section .section-label {
   margin-bottom: 6px;
 }

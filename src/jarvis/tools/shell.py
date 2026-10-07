@@ -19,6 +19,7 @@ from jarvis.common.enums import Capability, RiskLevel
 from jarvis.common.errors import PermissionDenied
 from jarvis.common.i18n import t
 from jarvis.permissions.models import PathUse
+from jarvis.permissions.risk import command_scope
 from jarvis.security.process import ProcessResult, run_process
 from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
 
@@ -93,7 +94,8 @@ class RunCommandTool(Tool):
         cwd = ctx.resolve(params.cwd) if params.cwd else (ctx.cwd or ctx.services.paths.workspace)
         short = params.command if len(params.command) <= 160 else params.command[:157] + "…"
         return ActionPlan(summary=ctx.t(f"הרצת פקודה: {short}", f"Run: {short}"), paths=[PathUse(path=str(cwd), access="read")],
-                          details={"command": params.command, "shell": params.shell, "cwd": str(cwd)})
+                          details={"command": params.command, "shell": params.shell, "cwd": str(cwd)},
+                          remember_scope=command_scope(params.command))
 
     async def run(self, params: RunCommandParams, ctx: ToolContext) -> ToolResult:
         cwd = ctx.resolve(params.cwd) if params.cwd else (ctx.cwd or ctx.services.paths.workspace)

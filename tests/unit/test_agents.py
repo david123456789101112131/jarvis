@@ -423,7 +423,14 @@ class TestDevelopment:
         html = index.read_text(encoding="utf-8")
         index.write_text(html.replace("</head>", '<link rel="stylesheet" href="css/missing.css">\n</head>', 1),
                          encoding="utf-8")
-        verified = await env.run("development", skill="verify_project", params={"path": str(index.parent)})
+        # The project is no longer exactly as JARVIS generated it, so running its tests asks first.
+        verifying = asyncio.create_task(env.run("development", skill="verify_project",
+                                                params={"path": str(index.parent)}))
+        req = await env.pending()
+        assert req.tool == "run_tests" and req.risk == "high" and not req.irreversible
+        assert req.scope == str(index.parent)
+        env.kit.broker.respond(req.id, True)
+        verified = await verifying
         assert verified.status == S.FAILED and "missing.css" in (verified.details or "")
         assert any(p["kind"] == "missing" for p in verified.result["static"]["problems"])
 
@@ -444,6 +451,10 @@ class TestDevelopment:
         (project / "tests" / "test_calc.py").write_text("import jarvis_missing_mod_xyz\n\n\ndef test_x():\n"
                                                         "    assert jarvis_missing_mod_xyz\n", encoding="utf-8")
         job = asyncio.ensure_future(env.run("development", skill="run_tests", params={"path": str(project)}))
+        tests = await env.pending()    # the project's own code: JARVIS did not generate it, so it asks first
+        assert tests.tool == "run_tests" and tests.risk == "high"
+        env.kit.broker.respond(tests.id, True)
+        await until(lambda: bool(env.kit.broker.pending()) and env.kit.broker.pending()[0].id != tests.id)
         req = await env.pending()
         assert req.tool == "install_packages" and req.agent_id == "development"
         env.kit.broker.respond(req.id, False)

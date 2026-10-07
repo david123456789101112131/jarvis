@@ -10,6 +10,8 @@ import httpx
 
 from jarvis.config.paths import AppPaths
 from jarvis.config.settings import Settings
+from jarvis.security.codetrust import CodeTrust
+from jarvis.security.netguard import GuardedBackend, Resolver, guard_transport, hop_check
 from jarvis.security.path_guard import PathGuard, normalize_path
 from jarvis.security.process import ProcessRegistry
 from jarvis.security.redaction import Redactor, default_redactor
@@ -46,16 +48,30 @@ class ToolServices:
     memory: MemoryManager | None = None
     ai: ProviderRouter | None = None
     bus: MessageBus | None = None
+    code_trust: CodeTrust = field(default_factory=CodeTrust)   # generated projects that are still as generated
+    resolver: Resolver | None = None                          # DNS for the network guard (None = the system's)
     extras: dict[str, Any] = field(default_factory=dict)
     _http: httpx.AsyncClient | None = None
 
     def http(self) -> httpx.AsyncClient:
+        """The web tools' client. Every request and redirect is checked (`hop_check`), and direct
+        connections go through the network guard, which refuses local addresses unless the user approved
+        them for the call. Proxies the system names (HTTPS_PROXY, the Windows proxy settings) still apply."""
         if self._http is None or self._http.is_closed:
-            self._http = httpx.AsyncClient(
+            def own_port() -> int | None:
+                return self.extras.get("server_port")
+
+            client = httpx.AsyncClient(
                 timeout=self.settings.web.timeout_s,
                 follow_redirects=True,
                 headers={"User-Agent": self.settings.web.user_agent},
+                event_hooks={"request": [hop_check(own_port)]},
             )
+            # The direct transport (the one for every host no proxy covers) connects through the guard.
+            if not guard_transport(client._transport, lambda inner: GuardedBackend(
+                    inner, resolver=self.resolver, own_port=own_port)):
+                raise RuntimeError("the network guard could not be installed on the web client")
+            self._http = client
         return self._http
 
     async def aclose(self) -> None:

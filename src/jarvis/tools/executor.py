@@ -144,6 +144,8 @@ class ToolExecutor:
             outbound=plan.outbound,
             destination=plan.destination,
             always_confirm=tool.always_confirm or plan.always_confirm,
+            irreversible=plan.irreversible,
+            sends_data=plan.sends_data,
             params=req_params,
             lang=lang,
         )
@@ -165,6 +167,7 @@ class ToolExecutor:
             creq = ConfirmationRequest(
                 agent_id=agent, task_id=task_id, tool=tool_name, summary=plan.summary, reasons=decision.reasons,
                 risk=decision.risk.name.lower(), details=self._approval_details(plan, req_params),
+                irreversible=decision.irreversible, always_ask=decision.always_ask, scope=plan.remember_scope,
             )
             approval = asyncio.ensure_future(self.broker.request(creq))
             approved = await self._wait_cancellable(approval, cancel, agent)

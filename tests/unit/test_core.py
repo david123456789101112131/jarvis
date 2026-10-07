@@ -201,6 +201,18 @@ class TestFastPath:
         await until(lambda: c.jarvis("result"))
         assert c.jarvis("result")[-1]["text"] == "מחקתי לצמיתות את התיקייה ישן."
 
+    async def test_a_spoken_yes_is_not_enough_for_what_cannot_be_undone(self, c: C) -> None:
+        desktop = c.host.folders["desktop"] = c.env.kit.user_docs / "Desktop"
+        (desktop / "ישן").mkdir(parents=True)
+        await c.say("תמחק לצמיתות את התיקייה ישן", source="voice")
+        res = await c.say("משולחן העבודה", source="voice")
+        assert "לאשר" in res.reply["text"] and c.env.kit.broker.pending()
+        res = await c.say("כן", source="voice")              # a video or the TV could say it
+        assert "אי אפשר לבטל" in res.reply["text"] and "בלחיצה" in res.reply["text"]
+        assert c.env.kit.broker.pending() and (desktop / "ישן").exists()
+        await c.say("כן")                                    # typed: approved
+        await until(lambda: not (desktop / "ישן").exists())
+
     async def test_a_new_command_is_not_taken_as_the_answer(self, c: C) -> None:
         await c.say("תמחק את הקובץ ישן.txt")                       # "where is it?"
         res = await c.say("permanently delete the folder demo")     # said in full: a command of its own

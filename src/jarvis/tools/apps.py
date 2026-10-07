@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 
 from jarvis.common.enums import Capability, RiskLevel
 from jarvis.host import catalog
+from jarvis.permissions.risk import analyze_command
 from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
 
 C = Capability
@@ -54,7 +55,21 @@ class OpenAppTool(Tool):
     timeout_s = 45.0
 
     async def plan(self, params: OpenAppParams, ctx: ToolContext) -> ActionPlan:
-        return ActionPlan(summary=ctx.t(f"פתיחת {params.name}", f"Open {params.name}"))
+        name = params.name.strip()
+        if catalog.find_site(name) is None and catalog.looks_like_url(name) and catalog.find_app(name) is None:
+            return _browser_plan(ctx, catalog.to_url(name))
+        if not params.args:
+            return ActionPlan(summary=ctx.t(f"פתיחת {params.name}", f"Open {params.name}"))
+        # With arguments, a program (PowerShell, cmd, Python…) can be told to run anything: judged like a command.
+        shown = " ".join(params.args)
+        a = analyze_command(f"{params.name} {shown}", ctx.lang)
+        return ActionPlan(
+            summary=ctx.t(f"פתיחת {params.name} עם: {shown}", f"Open {params.name} with: {shown}"),
+            capabilities=[C.PROCESS_LAUNCH, C.SHELL_EXECUTE], risk=max(RiskLevel.HIGH, a.risk),
+            risk_reasons=[ctx.t("תוכנה שמופעלת עם פרמטרים יכולה להריץ כל פקודה",
+                                "a program started with arguments can run any command"), *a.reasons[1:]],
+            irreversible=a.irreversible, details={"args": params.args}, remember_scope=params.name.strip().lower(),
+        )
 
     async def run(self, params: OpenAppParams, ctx: ToolContext) -> ToolResult:
         host = ctx.services.host
@@ -94,8 +109,7 @@ class OpenUrlTool(Tool):
     Params = OpenUrlParams
 
     async def plan(self, params: OpenUrlParams, ctx: ToolContext) -> ActionPlan:
-        url = catalog.to_url(params.url)
-        return ActionPlan(summary=ctx.t(f"פתיחת {url}", f"Open {url}"))
+        return _browser_plan(ctx, catalog.to_url(params.url))
 
     async def run(self, params: OpenUrlParams, ctx: ToolContext) -> ToolResult:
         host = ctx.services.host
@@ -107,6 +121,16 @@ class OpenUrlTool(Tool):
         await host.open_url(url)
         _note(ctx, "last_url", url)
         return ToolResult(summary=ctx.t(f"נפתח {url}", f"Opened {url}"), actions=[f"open {url}"], data={"url": url})
+
+
+def _browser_plan(ctx: ToolContext, url: str) -> ActionPlan:
+    """Opening an address sends what is in it to that site: checked like the web tools' requests."""
+    from jarvis.tools.web import url_payload, url_risk
+
+    carried, sends = url_payload(url)
+    risk, reasons = url_risk(ctx, url)
+    return ActionPlan(summary=ctx.t(f"פתיחת {url}", f"Open {url}"), destination=url, outbound=carried,
+                      sends_data=sends, risk=risk, risk_reasons=reasons)
 
 
 class CloseAppParams(BaseModel):

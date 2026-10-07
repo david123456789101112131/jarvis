@@ -2,8 +2,10 @@
 
 A request is published on the bus (`confirm.request`) so the UI shows a dialog and the voice
 pipeline can ask out loud. The tool call stays suspended until someone answers. No answer
-before the timeout means DENY. Approvals can optionally be remembered for the rest of the
-same task (never for CRITICAL actions).
+before the timeout means DENY. An approval can be remembered for the rest of the same task:
+it then covers the same agent, tool and scope (one program, one project…) up to the risk the
+user saw. It is never remembered for CRITICAL actions, for ones that cannot be undone or for
+tools that always ask (installing software, power).
 """
 
 from __future__ import annotations
@@ -44,9 +46,27 @@ class ConfirmationRequest(BaseModel):
     status: ConfirmStatus = "pending"
     decided_by: str | None = None
     remember: bool = False
+    irreversible: bool = False      # cannot be undone: never remembered, and approved only by a click or typing
+    always_ask: bool = False        # never remembered (the tool asks about every call)
+    scope: str | None = None        # what a remembered approval covers within the tool (None = the whole tool)
 
     def public(self) -> dict[str, Any]:
         return self.model_dump(mode="json")
+
+    @property
+    def rememberable(self) -> bool:
+        return (self.task_id is not None and not self.irreversible and not self.always_ask
+                and self.risk != RiskLevel.CRITICAL.name.lower())
+
+    def memory_key(self) -> tuple[str, str, str, str]:
+        return (self.agent_id, self.task_id or "", self.tool, self.scope or "")
+
+
+def _rank(risk: str) -> int:
+    try:
+        return int(RiskLevel[risk.upper()])
+    except KeyError:
+        return int(RiskLevel.CRITICAL)
 
 
 class ConfirmationBroker:
@@ -54,7 +74,8 @@ class ConfirmationBroker:
         self.bus = bus
         self.timeout_s = timeout_s
         self._pending: dict[str, tuple[ConfirmationRequest, asyncio.Future[bool]]] = {}
-        self._remembered: set[tuple[str, str | None, str]] = set()
+        # (agent, task, tool, scope) -> the highest risk the user approved with "remember"
+        self._remembered: dict[tuple[str, str, str, str], int] = {}
         self._listeners: list[Listener] = []
         self.history: list[ConfirmationRequest] = []
 
@@ -68,11 +89,13 @@ class ConfirmationBroker:
         items = self.pending()
         return max(items, key=lambda r: r.created_at) if items else None
 
-    def is_remembered(self, agent_id: str, task_id: str | None, tool: str) -> bool:
-        return task_id is not None and (agent_id, task_id, tool) in self._remembered
+    def is_remembered(self, req: ConfirmationRequest) -> bool:
+        if not req.rememberable:
+            return False
+        return self._remembered.get(req.memory_key(), -1) >= _rank(req.risk)
 
     async def request(self, req: ConfirmationRequest, *, timeout_s: float | None = None) -> bool:
-        if req.risk != RiskLevel.CRITICAL.name.lower() and self.is_remembered(req.agent_id, req.task_id, req.tool):
+        if self.is_remembered(req):
             req.status, req.decided_by = "approved", "remembered"
             self.history.append(req)
             return True
@@ -105,9 +128,10 @@ class ConfirmationBroker:
         req, fut = item
         req.status = "approved" if approved else "denied"
         req.decided_by = by
-        req.remember = bool(remember and approved and req.risk != RiskLevel.CRITICAL.name.lower())
-        if req.remember and req.task_id:
-            self._remembered.add((req.agent_id, req.task_id, req.tool))
+        req.remember = bool(remember and approved and req.rememberable)
+        if req.remember:
+            key = req.memory_key()
+            self._remembered[key] = max(self._remembered.get(key, -1), _rank(req.risk))
         if not fut.done():
             fut.set_result(approved)
         return True
@@ -119,7 +143,7 @@ class ConfirmationBroker:
                 req.status, req.decided_by = "cancelled", reason
                 fut.set_result(False)
                 n += 1
-        self._remembered = {k for k in self._remembered if k[1] != task_id}
+        self.forget_task(task_id)
         return n
 
     def deny_all(self, reason: str = "kill switch") -> int:
@@ -132,7 +156,7 @@ class ConfirmationBroker:
         return n
 
     def forget_task(self, task_id: str) -> None:
-        self._remembered = {k for k in self._remembered if k[1] != task_id}
+        self._remembered = {k: v for k, v in self._remembered.items() if k[1] != task_id}
 
     async def _announce(self, topic: str, req: ConfirmationRequest) -> None:
         if self.bus is not None:

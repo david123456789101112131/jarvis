@@ -29,8 +29,59 @@ C = Capability
 TEXT_LIMIT = 60_000
 EXECUTABLE_EXT = {".exe", ".bat", ".cmd", ".ps1", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".msi", ".msix", ".scr",
                   ".com", ".lnk", ".reg", ".hta", ".jar", ".appx", ".appxbundle"}
+# Opening one of these with its default program runs code or changes the system: scripts, installers,
+# shortcuts, control-panel items, disk images, help files that run scripts, search and library links.
+RUNS_CODE_EXT = EXECUTABLE_EXT | {
+    ".py", ".pyw", ".psm1", ".psd1", ".ps1xml", ".cpl", ".msc", ".scf", ".inf", ".application", ".appref-ms",
+    ".settingcontent-ms", ".chm", ".iso", ".img", ".vhd", ".vhdx", ".url", ".website", ".library-ms", ".search-ms",
+    ".searchconnector-ms", ".pif", ".wsh", ".msp", ".diagcab", ".xll", ".gadget", ".jnlp", ".mde", ".ade", ".adp",
+}
 SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "$recycle.bin", "system volume information",
              ".cache", ".idea", ".vs", "dist", "build"}
+
+
+def to_recycle_bin(path: Path) -> None:
+    from send2trash import send2trash
+
+    send2trash(str(path))
+
+
+def keeps_old_version(ctx: ToolContext, target: Path) -> bool:
+    """Replacing a file in the user's own folders first moves the old one to the Recycle Bin, so an
+    overwrite can always be undone. (JARVIS's workspace and projects are the agents' working area.)"""
+    return ctx.services.guard.zone(target) == "user" and ctx.services.settings.security.use_recycle_bin
+
+
+def overwrite_risk(ctx: ToolContext, targets: list[Path]) -> tuple[RiskLevel | None, list[str], bool]:
+    """(risk, reasons, irreversible) for replacing existing files in the user's folders."""
+    existing = [t for t in targets if t.exists() and ctx.services.guard.zone(t) == "user"]
+    if not existing:
+        return None, [], False
+    names = ", ".join(t.name for t in existing[:3]) + ("…" if len(existing) > 3 else "")
+    if ctx.services.settings.security.use_recycle_bin:
+        return None, [ctx.t(f"הגרסה הקודמת של {names} תעבור לסל המחזור", f"the old {names} goes to the Recycle Bin")], False
+    return RiskLevel.HIGH, [ctx.t(f"דורס את {names} בלי אפשרות לשחזר (סל המחזור כבוי בהגדרות)",
+                                  f"replaces {names} for good (the Recycle Bin is off in the settings)")], True
+
+
+def program_landing(ctx: ToolContext, src: Path | None, target: Path) -> list[str]:
+    """Why to ask when programs, scripts or shortcuts would land in the user's own folders, where a
+    double-click runs them (a planted "invoice.pdf.lnk" on the Desktop is a classic trick)."""
+    if ctx.services.guard.zone(target) != "user":
+        return []
+    names: list[str] = []
+    if src is not None and src.is_dir():
+        for i, (_folder, _dirs, files) in enumerate(os.walk(src)):
+            names.extend(n for n in files if Path(n).suffix.lower() in RUNS_CODE_EXT)
+            if len(names) > 3 or i >= 500:
+                break
+    elif target.suffix.lower() in RUNS_CODE_EXT:
+        names.append(target.name)
+    if not names:
+        return []
+    shown = ", ".join(names[:3]) + ("…" if len(names) > 3 else "")
+    return [ctx.t(f"שם בתיקיות שלך קובץ של תוכנה, סקריפט או קיצור דרך ({shown})",
+                  f"puts a program, script or shortcut in your folders ({shown})")]
 
 
 def _fmt_size(n: int | None) -> str:
@@ -219,13 +270,19 @@ class WriteFileTool(Tool):
     async def plan(self, params: WriteFileParams, ctx: ToolContext) -> ActionPlan:
         p = ctx.resolve(params.path)
         exists = await asyncio.to_thread(p.exists)
+        risk, reasons, irreversible = None, [], False
         if params.mode == "append":
             summary = ctx.t(f"הוספת תוכן לקובץ {p.name}", f"Append to {p.name}")
         elif exists:
             summary = ctx.t(f"שכתוב הקובץ {p.name}", f"Overwrite {p.name}")
+            risk, reasons, irreversible = await asyncio.to_thread(overwrite_risk, ctx, [p])
         else:
             summary = ctx.t(f"יצירת הקובץ {p.name}", f"Create {p.name}")
-        return ActionPlan(summary=summary, paths=[PathUse(path=str(p), access="write")],
+        landing = await asyncio.to_thread(program_landing, ctx, None, p)
+        if landing:
+            risk, reasons = RiskLevel.HIGH, [*reasons, *landing]
+        return ActionPlan(summary=summary, paths=[PathUse(path=str(p), access="write")], risk=risk,
+                          risk_reasons=reasons, irreversible=irreversible,
                           details={"bytes": len(params.content.encode(params.encoding, errors="replace")),
                                    "exists": exists})
 
@@ -243,6 +300,8 @@ class WriteFileTool(Tool):
             else:
                 tmp = p.with_name(p.name + ".jarvis-tmp")
                 tmp.write_text(params.content, encoding=params.encoding, newline="")
+                if existed and keeps_old_version(ctx, p):
+                    to_recycle_bin(p)
                 os.replace(tmp, p)
             return existed
 
@@ -297,9 +356,18 @@ class CopyPathTool(Tool):
     async def plan(self, params: CopyMoveParams, ctx: ToolContext) -> ActionPlan:
         src, dst = ctx.resolve(params.source), ctx.resolve(params.destination)
         n = await asyncio.to_thread(count_files, src)
+        risk, reasons, irreversible = None, [], False
+        if params.overwrite:
+            replaced = await asyncio.to_thread(_replaced_files, src, dst)
+            risk, reasons, irreversible = await asyncio.to_thread(overwrite_risk, ctx, replaced)
+        target = dst / src.name if dst.is_dir() else dst
+        landing = await asyncio.to_thread(program_landing, ctx, src, target)
+        if landing:
+            risk, reasons = RiskLevel.HIGH, [*reasons, *landing]
         return ActionPlan(summary=ctx.t(f"העתקת {src.name} אל {dst}", f"Copy {src.name} to {dst}"),
-                          affected_count=n if params.overwrite else None,
-                          paths=[PathUse(path=str(src), access="read"), PathUse(path=str(dst), access="write")])
+                          affected_count=n if params.overwrite else None, risk=risk, risk_reasons=reasons,
+                          irreversible=irreversible,
+                          paths=[PathUse(path=str(src), access="read"), PathUse(path=str(target), access="write")])
 
     async def run(self, params: CopyMoveParams, ctx: ToolContext) -> ToolResult:
         src, dst = ctx.resolve(params.source), ctx.resolve(params.destination)
@@ -312,6 +380,10 @@ class CopyPathTool(Tool):
                 raise ToolError(ctx.t(f"{target} כבר קיים (כדי להחליף אותו צריך overwrite)",
                                       f"{target} already exists (set overwrite to replace it)"))
             target.parent.mkdir(parents=True, exist_ok=True)
+            if params.overwrite:
+                for old in _replaced_files(src, dst):
+                    if keeps_old_version(ctx, old):
+                        to_recycle_bin(old)
             if src.is_dir():
                 shutil.copytree(src, target, dirs_exist_ok=params.overwrite)
             else:
@@ -333,9 +405,17 @@ class MovePathTool(Tool):
     async def plan(self, params: CopyMoveParams, ctx: ToolContext) -> ActionPlan:
         src, dst = ctx.resolve(params.source), ctx.resolve(params.destination)
         n = await asyncio.to_thread(count_files, src)
+        risk, reasons, irreversible = None, [], False
+        target = dst / src.name if dst.is_dir() else dst
+        if params.overwrite:
+            risk, reasons, irreversible = await asyncio.to_thread(overwrite_risk, ctx, [target])
+        landing = await asyncio.to_thread(program_landing, ctx, src, target)
+        if landing:
+            risk, reasons = RiskLevel.HIGH, [*reasons, *landing]
         # The data is relocated, not destroyed: both ends are judged as writes (broad moves still ask).
         return ActionPlan(summary=ctx.t(f"העברת {src} אל {dst}", f"Move {src} to {dst}"), affected_count=n,
-                          paths=[PathUse(path=str(src), access="write"), PathUse(path=str(dst), access="write")])
+                          risk=risk, risk_reasons=reasons, irreversible=irreversible,
+                          paths=[PathUse(path=str(src), access="write"), PathUse(path=str(target), access="write")])
 
     async def run(self, params: CopyMoveParams, ctx: ToolContext) -> ToolResult:
         src, dst = ctx.resolve(params.source), ctx.resolve(params.destination)
@@ -348,12 +428,28 @@ class MovePathTool(Tool):
                 raise ToolError(ctx.t(f"{target} כבר קיים (כדי להחליף אותו צריך overwrite)",
                                       f"{target} already exists (set overwrite to replace it)"))
             target.parent.mkdir(parents=True, exist_ok=True)
+            if target.exists() and keeps_old_version(ctx, target):
+                to_recycle_bin(target)            # replaced, so the move puts src exactly at target
             return Path(shutil.move(str(src), str(target)))
 
         target = await asyncio.to_thread(move)
         return ToolResult(summary=ctx.t(f"הועבר {src.name} אל {target}", f"Moved {src.name} to {target}"),
                           files_created=[str(target)],
                           files_deleted=[str(src)], data={"path": str(target)})
+
+
+def _replaced_files(src: Path, dst: Path) -> list[Path]:
+    """The existing files a copy of `src` to `dst` would replace."""
+    target = dst / src.name if dst.is_dir() else dst
+    if not src.is_dir():
+        return [target] if target.is_file() else []
+    out: list[Path] = []
+    for folder, _dirs, files in os.walk(src):
+        for name in files:
+            existing = target / Path(folder).relative_to(src) / name
+            if existing.is_file():
+                out.append(existing)
+    return out
 
 
 # ------------------------------------------------------------------------------------------ delete
@@ -383,7 +479,7 @@ class DeletePathTool(Tool):
             affected_count=total,
             risk=RiskLevel.HIGH if permanent else None,
             risk_reasons=[ctx.t("מחיקה לצמיתות (אי אפשר לבטל אותה)", "permanent delete (cannot be undone)")] if permanent else [],
-            always_confirm=permanent,
+            irreversible=permanent,
             details={"items": total, "permanent": permanent},
         )
 
@@ -560,7 +656,7 @@ class OpenPathTool(Tool):
 
     async def plan(self, params: OpenPathParams, ctx: ToolContext) -> ActionPlan:
         p = ctx.resolve(params.path)
-        runs_code = p.suffix.lower() in EXECUTABLE_EXT and not params.reveal
+        runs_code = p.suffix.lower() in RUNS_CODE_EXT and not params.reveal
         return ActionPlan(
             summary=ctx.t(f"{'הצגה בסייר הקבצים' if params.reveal else 'פתיחה'}: {p}", f"{'Show' if params.reveal else 'Open'} {p}"),
             paths=[PathUse(path=str(p), access="read")],

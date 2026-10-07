@@ -13,14 +13,27 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 from jarvis.common.enums import Capability, RiskLevel
+from jarvis.common.errors import PermissionDenied
 from jarvis.permissions import analyze_command
 from jarvis.permissions.models import PathUse
-from jarvis.permissions.risk import SHELL_COMMAND_REASON
+from jarvis.permissions.risk import SHELL_COMMAND_REASON, command_scope
+from jarvis.security.codecheck import pure_python_problem
+from jarvis.security.gitcheck import (
+    GIT_SAFETY_CONFIG,
+    GIT_SAFETY_ENV,
+    GitRefused,
+    check_git_args,
+    find_repo,
+    push_destination,
+    repo_config_risks,
+)
+from jarvis.security.path_guard import _key, normalize_path
 from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
 from jarvis.tools.shell import process_result, run_in_context
 
 C = Capability
 IS_WINDOWS = sys.platform == "win32"
+_ABSOLUTE_ARG = re.compile(r"^(?:[a-zA-Z]:|[\\/]|~)")
 
 
 def _usable(path: str | None) -> bool:
@@ -69,10 +82,23 @@ class RunPythonParams(BaseModel):
     timeout_s: float = Field(120, ge=1, le=1800)
 
 
+MAX_CHECKED_FILE = 200_000          # a .py file up to this size is read and checked before it runs
+
+
+def _read_code(path: Path) -> str | None:
+    try:
+        if path.is_file() and path.stat().st_size <= MAX_CHECKED_FILE:
+            return path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        pass
+    return None
+
+
 class RunPythonTool(Tool):
     name = "run_python"
     description = ("Run Python code or a .py file and return stdout/stderr. Uses the project's virtual "
-                   "environment when the folder has one.")
+                   "environment when the folder has one. Pure calculations run at once; code that can touch "
+                   "files, programs or the network asks the user first.")
     capabilities = (C.CODE_EXECUTE,)
     Params = RunPythonParams
     risk = RiskLevel.MEDIUM
@@ -88,25 +114,59 @@ class RunPythonTool(Tool):
     async def plan(self, params: RunPythonParams, ctx: ToolContext) -> ActionPlan:
         cwd = self._cwd(params, ctx)
         paths = [PathUse(path=str(cwd), access="read")]
+        code: str | None = params.code
         if params.file:
-            paths.append(PathUse(path=str(ctx.resolve(params.file)), access="read"))
-        risky = re.search(r"\b(shutil\.rmtree|os\.remove|os\.unlink|subprocess|os\.system|winreg|ctypes|requests\.post|"
-                          r"httpx\.post|urllib\.request|socket\.)", params.code)
+            target = ctx.resolve(params.file)
+            paths.append(PathUse(path=str(target), access="read"))
+            code = await asyncio.to_thread(_read_code, target)
+        problem = pure_python_problem(code) if code is not None else "the file could not be checked"
+        # The run executes exactly the code that was checked here (a file could change in between).
+        ctx.extra["checked_code"] = code if problem is None else None
         summary = ctx.t(f"הרצת הקובץ {Path(params.file).name} ב-Python" if params.file else "הרצת קוד Python",
                         f"Run Python {'file ' + Path(params.file).name if params.file else 'code'}")
-        return ActionPlan(summary=summary, paths=paths, risk=RiskLevel.HIGH if risky else None,
-                          risk_reasons=[ctx.t(f"הקוד משתמש ב-{risky.group(1)}", f"code uses {risky.group(1)}")] if risky else [],
-                          details={"code": params.code[:2000]} if params.code else {"file": params.file})
+        details = {"code": (code or "")[:4000]} if code else {"file": params.file}
+        if problem is None:
+            return ActionPlan(summary=summary, paths=paths, risk=RiskLevel.LOW, details=details)
+        if params.file and not params.code and await asyncio.to_thread(self._generated_run, params, cwd, ctx):
+            ctx.extra["trusted_run"] = True
+            return ActionPlan(summary=summary, paths=paths, details=details)
+        return ActionPlan(summary=summary, paths=paths, risk=RiskLevel.HIGH, details=details, remember_scope="python",
+                          risk_reasons=[ctx.t(f"קוד שיכול לגעת בקבצים, בתוכנות או ברשת ({problem})",
+                                              f"code that can touch files, programs or the network ({problem})")])
+
+    @staticmethod
+    def _generated_run(params: RunPythonParams, cwd: Path, ctx: ToolContext) -> bool:
+        """The script's own run command in a project that is exactly as JARVIS generated it."""
+        from jarvis.tools.project_tools import command_line
+
+        trust = ctx.services.code_trust
+        target = ctx.resolve(params.file)
+        root = trust.trusted_root(target)
+        if root is None or _key(root) != _key(cwd):
+            return False
+        try:
+            rel = target.relative_to(root).as_posix()
+        except ValueError:
+            return False
+        return trust.allows_command(cwd, command_line(["python", rel, *params.args]))
 
     async def run(self, params: RunPythonParams, ctx: ToolContext) -> ToolResult:
         if not params.code and not params.file:
             return ToolResult.fail(ctx.t("צריך קוד או קובץ להרצה.", "Give code or a file to run."))
         cwd = self._cwd(params, ctx)
-        python = venv_python(project_root(cwd)) or find_python()
+        checked = ctx.extra.get("checked_code")
+        # A pure calculation needs nothing from a project's virtual environment (only the standard library),
+        # so it runs on JARVIS's own interpreter, never on one a project folder provides.
+        python = find_python() if checked is not None else (venv_python(project_root(cwd)) or find_python())
         if python is None:
             return ToolResult.fail(ctx.t("Python לא מותקן במחשב (אפשר להתקין אותו מ-python.org).",
                                          "Python is not installed on this computer (install it from python.org)."))
-        if params.file:
+        if ctx.extra.get("trusted_run") and not await asyncio.to_thread(self._generated_run, params, cwd, ctx):
+            return changed_since_check(ctx)
+        if checked is not None:
+            # A pure calculation: isolated mode, so a planted json.py next to it can never be imported.
+            argv = [*python, "-I", "-X", "utf8", "-c", checked, *params.args]
+        elif params.file:
             target = ctx.resolve(params.file)
             if not target.is_file():
                 return ToolResult.fail(ctx.t(f"הקובץ לא נמצא: {target}", f"File not found: {target}"))
@@ -116,6 +176,14 @@ class RunPythonTool(Tool):
         res = await run_in_context(argv, ctx, cwd=cwd, timeout=params.timeout_s,
                                    stdin=params.stdin.encode() if params.stdin else None)
         return process_result(res, "Python", ctx.lang)
+
+
+def changed_since_check(ctx: ToolContext) -> ToolResult:
+    """The project ran without asking because it was exactly as generated, and it changed after that
+    check (another agent wrote to it in between): do not run it now."""
+    return ToolResult.fail(ctx.t("הקוד של הפרויקט השתנה אחרי הבדיקה, ולכן הוא לא הורץ. בהרצה הבאה JARVIS יבקש אישור.",
+                                 "The project's code changed after it was checked, so it was not run. "
+                                 "The next run will ask for approval."), denied="blocked")
 
 
 # ------------------------------------------------------------------------------------------ tests
@@ -156,20 +224,35 @@ class RunTestsTool(Tool):
     timeout_s = 3700.0
 
     async def plan(self, params: RunTestsParams, ctx: ToolContext) -> ActionPlan:
-        root = ctx.resolve(params.path)
-        return ActionPlan(summary=ctx.t(f"הרצת הבדיקות של {root.name}", f"Run tests in {root.name}"),
-                          paths=[PathUse(path=str(root), access="read")])
+        root = await asyncio.to_thread(project_root, ctx.resolve(params.path))
+        summary = ctx.t(f"הרצת הבדיקות של {root.name}", f"Run tests in {root.name}")
+        paths = [PathUse(path=str(root), access="read")]
+        details = {"path": str(root), **({"command": params.command} if params.command else {})}
+        if params.command:
+            # A command line of its own is vetted like run_command (the permission check reads `command`).
+            return ActionPlan(summary=summary, paths=paths, risk=RiskLevel.HIGH, details=details,
+                              capabilities=[C.CODE_EXECUTE, C.SHELL_EXECUTE],
+                              risk_reasons=[ctx.t("מריץ את הקוד של הפרויקט עצמו (הבדיקות שלו)",
+                                                  "runs the project's own code (its tests)")],
+                              remember_scope=f"{root} {command_scope(params.command)}")
+        trusted = await asyncio.to_thread(ctx.services.code_trust.trusted_root, root)
+        if trusted is not None and _key(trusted) == _key(root):
+            ctx.extra["trusted_run"] = True
+            return ActionPlan(summary=summary, paths=paths, details=details)   # exactly as JARVIS generated it
+        # Tests are the project's own code: they can do anything the project's code can.
+        return ActionPlan(summary=summary, paths=paths, risk=RiskLevel.HIGH, details=details,
+                          risk_reasons=[ctx.t("מריץ את הקוד של הפרויקט עצמו (הבדיקות שלו)",
+                                              "runs the project's own code (its tests)")],
+                          remember_scope=str(root))
 
     async def run(self, params: RunTestsParams, ctx: ToolContext) -> ToolResult:
         root = project_root(ctx.resolve(params.path))
+        if ctx.extra.get("trusted_run") and await asyncio.to_thread(ctx.services.code_trust.trusted_root, root) is None:
+            return changed_since_check(ctx)
         if params.command:
             from jarvis.tools.shell import shell_argv
 
             argv, label = shell_argv(params.command, "auto", ctx.services.host), params.command
-            if analyze_command(params.command).risk > RiskLevel.MEDIUM:
-                return ToolResult.fail(ctx.t("פקודת הבדיקה נראית לא בטוחה; צריך להריץ אותה עם run_command כדי שתיבדק.",
-                                             "That test command looks unsafe; use run_command so it can be reviewed."),
-                                       denied="permission")
         else:
             detected = await asyncio.to_thread(detect_test_command, root)
             if detected is None:
@@ -273,23 +356,51 @@ class GitParams(BaseModel):
 
 class GitTool(Tool):
     name = "git"
-    description = "Run a git command in a repository (init, status, add, commit, log, diff, branch, push, ...)."
+    description = ("Run an everyday git command in a repository (status, log, diff, add, commit, branch, checkout, "
+                   "merge, init, clone, fetch, pull, push, config user.name/email…). Options that run programs or "
+                   "reach files outside the repository are refused; pushing always asks the user.")
     capabilities = (C.GIT,)
     Params = GitParams
     timeout_s = 1900.0
 
     async def plan(self, params: GitParams, ctx: ToolContext) -> ActionPlan:
+        try:
+            check = check_git_args(params.args)
+        except GitRefused as exc:
+            raise PermissionDenied(ctx.t(exc.he, exc.en)) from exc
         root = ctx.resolve(params.path)
+        sub = check.sub
         line = "git " + " ".join(params.args)
         a = analyze_command(line, ctx.lang)
-        write_ops = {"init", "add", "commit", "checkout", "switch", "merge", "rebase", "reset", "clean", "stash", "pull",
-                     "push", "rm", "mv", "restore", "tag", "branch", "clone", "fetch", "cherry-pick", "revert"}
-        writes = params.args[0] in write_ops
-        risk = a.risk if a.risk > RiskLevel.MEDIUM else (RiskLevel.LOW if writes else RiskLevel.SAFE)
-        return ActionPlan(summary=line[:200], paths=[PathUse(path=str(root), access="write" if writes else "read")],
-                          risk=risk, risk_reasons=[r for r in a.reasons if r not in SHELL_COMMAND_REASON],
-                          outbound=None, destination="remote" if params.args[0] in ("push", "pull", "fetch", "clone")
-                          else None)
+        repo = await asyncio.to_thread(find_repo, root) if sub not in ("init", "clone") else None
+        work = repo[0] if repo else root
+        paths = [PathUse(path=str(root), access="read")]
+        if check.kind != "read" and sub != "ls-remote":
+            # A write (reset --hard, clean, checkout…) acts on the whole work folder, not only on `path`.
+            paths.append(PathUse(path=str(work), access="write"))
+        for given, access in check.paths:
+            where = ctx.resolve(given) if _ABSOLUTE_ARG.match(given) else normalize_path(root / given)
+            paths.append(PathUse(path=str(where), access=access))
+        risk = RiskLevel.SAFE if check.kind == "read" else RiskLevel.LOW if check.kind == "write" else RiskLevel.MEDIUM
+        risk = max(risk, a.risk) if a.risk > RiskLevel.MEDIUM else risk
+        reasons = [r for r in a.reasons if r not in SHELL_COMMAND_REASON]
+        irreversible = a.irreversible
+        for en, he in check.irreversible:
+            reasons.append(ctx.t(he, en))
+            risk, irreversible = max(risk, RiskLevel.HIGH), True
+        risky = await asyncio.to_thread(repo_config_risks, root, sub) if sub not in ("init", "clone") else []
+        if risky:
+            risk = max(risk, RiskLevel.HIGH)
+            reasons.append(ctx.t(f"המאגר מריץ תוכנות משלו (הגדרות או hooks): {'; '.join(risky)}",
+                                 f"the repository runs programs of its own (settings or hooks): {'; '.join(risky)}"))
+        details: dict[str, object] = {"path": str(root)}
+        destination = None
+        if sub == "push":
+            destination = await asyncio.to_thread(push_destination, root, params.args)
+            details["destination"] = destination or ctx.t("לא ידוע", "unknown")
+        return ActionPlan(summary=line[:200] + (f" → {destination}" if destination else ""), paths=paths, risk=risk,
+                          risk_reasons=reasons, destination=destination, details=details,
+                          irreversible=irreversible, remember_scope=f"git {sub}")
 
     async def run(self, params: GitParams, ctx: ToolContext) -> ToolResult:
         git = shutil.which("git")
@@ -299,11 +410,10 @@ class GitTool(Tool):
         root = ctx.resolve(params.path)
         if params.args[0] not in ("init", "clone") and not root.is_dir():
             return ToolResult.fail(ctx.t(f"התיקייה לא נמצאה: {root}", f"Folder not found: {root}"))
-        if params.args[0] == "init":
+        if params.args[0] in ("init", "clone"):
             await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
-        env = {"GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "PAGER": "cat"}
-        res = await run_in_context([git, "-c", "core.quotepath=off", *params.args], ctx, cwd=root,
-                                   timeout=params.timeout_s, extra_env=env)
+        res = await run_in_context([git, *GIT_SAFETY_CONFIG, *params.args], ctx, cwd=root,
+                                   timeout=params.timeout_s, extra_env=dict(GIT_SAFETY_ENV))
         return process_result(res, "git " + params.args[0], ctx.lang)
 
 

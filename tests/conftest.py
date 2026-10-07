@@ -68,11 +68,15 @@ class Kit:
         self.broker = ConfirmationBroker(self.bus, timeout_s=self.settings.security.confirm_timeout_s)
         self.kill_switch = KillSwitch()
         self.registry = ToolRegistry()
+        self.dns: dict[str, list[str]] = {}       # names a test wants resolved; anything else is a public address
         self.services = ToolServices(settings=self.settings, paths=self.paths, guard=self.guard,
-                                     redactor=self.redactor, bus=self.bus)
+                                     redactor=self.redactor, bus=self.bus, resolver=self._resolve)
         self.mode = Mode.NORMAL
         self.executor = ToolExecutor(self.registry, self.services, self.permissions, self.broker, self.kill_switch,
                                      audit=self.audit, activity=self.activity, mode_provider=lambda: self.mode)
+
+    async def _resolve(self, host: str, port: int) -> list[str]:
+        return self.dns.get(host.lower(), ["93.184.216.34"])
 
 
 @pytest.fixture

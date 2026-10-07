@@ -9,6 +9,7 @@ between those two steps whether the call is allowed, needs confirmation, or is r
 from __future__ import annotations
 
 import inspect
+import os
 from abc import ABC, abstractmethod
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -19,7 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from jarvis.common.cancel import CancelToken
 from jarvis.common.enums import Capability, Mode, RiskLevel
-from jarvis.common.errors import ToolError
+from jarvis.common.errors import PermissionDenied, ToolError
 from jarvis.common.i18n import plural, t
 from jarvis.permissions.models import PathUse
 
@@ -82,8 +83,13 @@ class ActionPlan(BaseModel):
     outbound: str | None = None
     destination: str | None = None
     affected_count: int | None = None
-    always_confirm: bool = False
+    always_confirm: bool = False      # asked in every mode, never covered by a remembered approval
+    irreversible: bool = False        # cannot be undone: also approved only by a click or typing, never by voice
+    sends_data: bool = False          # carries data out (a request body, a query string): asks after private reads
     details: dict[str, Any] = Field(default_factory=dict)
+    # What "remember for this task" covers when the user ticks it: one program, one project…
+    # (None = every call of this tool). A remembered approval never covers a riskier call.
+    remember_scope: str | None = None
 
 
 @dataclass
@@ -118,20 +124,32 @@ class ToolContext:
             await res
 
     def resolve(self, path: str | Path) -> Path:
-        """Resolve a user/agent supplied path: special folder keys, ~, env vars, relative to cwd/workspace."""
+        """Resolve a user/agent supplied path: special folder keys, ~, env vars, relative to cwd/workspace.
+
+        Device paths, network paths that are not allowed, hidden data streams and reserved device names
+        are refused here, before anything opens them (see `PathGuard.path_problem`)."""
         from jarvis.security.path_guard import normalize_path
 
         text = str(path).strip().strip('"')
         special = self.services.special_folder(text)
         if special is not None:
             return special
+        self._refuse_problem(os.path.expandvars(os.path.expanduser(text)), text)
         head, sep, rest = text.replace("\\", "/").partition("/")
         if sep and head and not head.endswith(":"):
             folder = self.services.special_folder(head)
             if folder is not None:  # "desktop/report.txt", "workspace/site"
-                return normalize_path(folder / rest)
+                return self._refuse_problem(normalize_path(folder / rest), text)
         base = self.cwd or self.services.paths.workspace
-        return normalize_path(text, base=base)
+        return self._refuse_problem(normalize_path(text, base=base), text)
+
+    def _refuse_problem(self, candidate: Any, given: str) -> Any:
+        problem = self.services.guard.path_problem(candidate)
+        if problem is not None:
+            en, he = problem
+            raise PermissionDenied(self.t(f"הנתיב {given} נחסם: {he}.", f"The path {given} was refused: {en}."),
+                                   details={"path": given})
+        return candidate
 
 
 class Tool(ABC):

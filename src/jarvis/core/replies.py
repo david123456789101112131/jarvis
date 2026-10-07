@@ -272,6 +272,13 @@ def approval_answer(approved: bool, summary: str, lang: str) -> str:
     return t(lang, f"לא אישרתי: {summary}.", f"Not approved: {summary}.")
 
 
+def approval_needs_click(summary: str, lang: str) -> str:
+    """A spoken "yes" is not enough for an action that cannot be undone (a video or the TV could say it)."""
+    return t(lang, f"את הפעולה הזו אי אפשר לבטל, ולכן היא מאושרת רק בלחיצה על \"אשר\" בחלון של JARVIS או בהקלדת \"כן\": {summary}.",
+             f"This can't be undone, so it is approved only with a click on Approve in the JARVIS window or by typing "
+             f"\"yes\": {summary}.")
+
+
 def kill_engaged(lang: str, stopped: int) -> str:
     extra = t(lang, f" {stopped} משימות נעצרו ואפשר להמשיך אותן אחר כך.", f" {stopped} tasks were paused and can "
               "continue later.") if stopped else ""

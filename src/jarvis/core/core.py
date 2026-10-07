@@ -385,6 +385,9 @@ class JarvisCore:
         req = self.broker.latest_pending()
         if req is None:
             return await self._reply(turn, t(turn.lang, "אין בקשה שממתינה לאישור.", "Nothing is waiting for approval."))
+        if approved and turn.source == "voice" and (req.irreversible or req.risk == "critical"):
+            return await self._reply(turn, R.approval_needs_click(req.summary, turn.lang), kind="info",
+                                     follow_up=False, task_id=req.task_id)
         self.broker.respond(req.id, approved, by=f"user ({turn.source})")
         turn.intent = Intent("confirm", {"approved": approved, "id": req.id}, 0.95, turn.lang, [], "instant",
                              turn.text)

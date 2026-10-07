@@ -27,6 +27,7 @@ from jarvis.common.cancel import CancelToken
 from jarvis.common.enums import Mode
 from jarvis.common.errors import PermissionDenied
 from jarvis.config.settings import Settings
+from jarvis.security.netguard import local_access
 from jarvis.tools.base import ToolContext
 from jarvis.tools.web import check_network
 
@@ -193,6 +194,47 @@ class TestAccess:
             with pytest.raises(PermissionDenied):
                 check_network(ctx, url)
         assert check_network(ctx, "http://127.0.0.1:5173/") == "127.0.0.1"       # the dev server it built
+
+    async def test_a_redirect_to_the_control_server_is_refused(self, live: Live,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+        for var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            monkeypatch.delenv(var, raising=False)
+        target = f"http://127.0.0.1:{live.app.port}/api/state"
+
+        async def handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await reader.readuntil(b"\r\n\r\n")
+            writer.write(f"HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Length: 0\r\n"
+                         "Connection: close\r\n\r\n".encode())
+            await writer.drain()
+            writer.close()
+
+        server = await asyncio.start_server(handle, "127.0.0.1", 0)
+        port = server.sockets[0].getsockname()[1]
+        await live.app.services.aclose()
+        live.app.services._http = None          # the real web client, not a mock
+        try:
+            with local_access(True), pytest.raises(httpx.ConnectError):    # even with local access approved
+                await live.app.services.http().get(f"http://127.0.0.1:{port}/")
+        finally:
+            server.close()
+
+    async def test_oversized_requests_are_refused(self, live: Live) -> None:
+        big = json.dumps({"text": "x" * (api_module.MAX_BODY + 10)})
+        r = await live.http.post("/api/command", content=big, headers={"Content-Type": "application/json"})
+        assert r.status_code == 413 and r.json()["error"]["code"] == "too_large"
+
+        async def chunked() -> AsyncIterator[bytes]:          # no Content-Length at all
+            for _ in range(api_module.MAX_BODY // 65536 + 2):
+                yield b" " * 65536
+
+        r = await live.http.post("/api/command", content=chunked(), headers={"Content-Type": "application/json"})
+        assert r.status_code == 413 and not live.host.calls
+
+        async def small() -> AsyncIterator[bytes]:
+            yield json.dumps({"text": "מה השעה"}).encode()
+
+        r = await live.http.post("/api/command", content=small(), headers={"Content-Type": "application/json"})
+        assert r.status_code == 200, r.text
 
 
 # =========================================================================== REST
