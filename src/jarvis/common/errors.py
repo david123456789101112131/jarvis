@@ -63,6 +63,12 @@ class PlanError(JarvisError):
     code = "plan_error"
 
 
+class TaskRefused(JarvisError):
+    """A task request JARVIS will not start (or resume) in the current state, e.g. in chat mode."""
+
+    code = "task_refused"
+
+
 class ProviderError(JarvisError):
     """An AI provider failed. `retryable` tells the router whether another attempt can help."""
 

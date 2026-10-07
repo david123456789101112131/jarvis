@@ -40,14 +40,39 @@ _ASSIGNMENT = re.compile(
     """
 )
 
-SECRET_KEY_HINTS = ("key", "token", "secret", "password", "passwd", "pwd", "credential", "auth", "cookie")
+# Secret-looking names are matched by whole words ("GITHUB_TOKEN", "apiKey", "x-api-key"), not substrings, so
+# data fields such as "key" (a plan step), "author", "keyboard" or "max_tokens" are kept.
+_SECRET_WORDS = frozenset({
+    "token", "tokens", "secret", "secrets", "password", "passwords", "passwd", "pwd", "passphrase", "credential",
+    "credentials", "cookie", "cookies", "apikey", "apikeys", "secretkey", "privatekey", "accesskey", "auth",
+    "authorization", "bearer", "jwt", "pat", "otp", "totp",
+})
+# "<x>_key" is a secret ("STRIPE_KEY", "api_key", "license-key") unless <x> names an ordinary lookup key.
+_PLAIN_KEY_PREFIXES = frozenset({
+    "sort", "primary", "foreign", "cache", "hot", "dict", "map", "group", "partition", "lookup", "row", "join",
+    "unique", "composite", "public", "registry", "music", "musical", "shortcut", "idempotency", "object", "item",
+    "plan", "step", "task", "node", "index", "hash", "column", "field", "translation", "message", "event",
+    "routing", "dedupe", "result", "s3", "storage", "react", "list", "table", "sub", "parent", "child",
+})
+# Token counts and limits are not credentials.
+_COUNT_WORDS = frozenset({"max", "min", "count", "num", "total", "used", "input", "output", "limit", "budget",
+                          "usage", "estimated", "prompt", "completion", "remaining"})
+_WORD = re.compile(r"[A-Z]+(?![a-z])|[A-Z]?[a-z]+|\d+")
+
+
+def _name_words(name: str) -> list[str]:
+    return [w.lower() for part in re.split(r"[^A-Za-z0-9]+", name) for w in _WORD.findall(part)]
 
 
 def looks_like_secret_name(name: str) -> bool:
-    low = name.lower()
-    if low in {"path", "pathext", "psmodulepath", "keyboard_layout"}:
+    """True for names of variables, fields or headers that usually hold credentials."""
+    words = _name_words(name)
+    if not words:
         return False
-    return any(h in low for h in SECRET_KEY_HINTS)
+    if _SECRET_WORDS.intersection(words):
+        return not ({"token", "tokens"}.intersection(words) and _COUNT_WORDS.intersection(words)
+                    and not _SECRET_WORDS.difference({"token", "tokens"}).intersection(words))
+    return len(words) >= 2 and words[-1] in ("key", "keys") and words[-2] not in _PLAIN_KEY_PREFIXES
 
 
 class Redactor:

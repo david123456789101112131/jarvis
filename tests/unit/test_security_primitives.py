@@ -23,6 +23,7 @@ from jarvis.security import (
     sanitized_env,
 )
 from jarvis.security.path_guard import normalize_path
+from jarvis.security.redaction import looks_like_secret_name
 
 
 class TestRedaction:
@@ -48,6 +49,17 @@ class TestRedaction:
         assert out["api_key"] == "[REDACTED]"
         assert "123456789012345678" not in out["nested"][0]["note"]
         assert out["n"] == 3
+
+    def test_secret_names_are_whole_words(self) -> None:
+        for name in ("ANTHROPIC_API_KEY", "x-api-key", "apiKey", "Authorization", "accessToken", "GITHUB_PAT",
+                     "STRIPE_KEY", "AWS_SECRET_ACCESS_KEY", "db_pwd", "session_cookie"):
+            assert looks_like_secret_name(name), name
+        for name in ("key", "author", "GIT_AUTHOR_NAME", "KEYBOARD_LAYOUT", "PATHEXT", "max_tokens", "token_count",
+                     "sort_key", "hotkey", "keyword", "public_key"):
+            assert not looks_like_secret_name(name), name
+        r = Redactor()
+        plan = {"key": "build_site", "author": "David", "api_key": "abcdefgh", "max_tokens": "4096"}
+        assert r.redact(plan) == {"key": "build_site", "author": "David", "api_key": "[REDACTED]", "max_tokens": "4096"}
 
     def test_private_key_block(self) -> None:
         r = Redactor()

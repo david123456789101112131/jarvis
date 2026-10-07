@@ -48,6 +48,7 @@ from jarvis.common.errors import (
     ProviderUnavailable,
     TaskCancelled,
 )
+from jarvis.memory.models import ResultRecord
 from jarvis.permissions.confirm import ConfirmationBroker
 from jarvis.security.killswitch import KillEvent, KillSwitch
 
@@ -57,6 +58,7 @@ GRACE_S = 10.0              # after cancel/timeout, how long an agent may take t
 COMPLETED_HOLD_S = 4.0      # how long "completed" shows before the agent is idle again
 ERROR_HOLD_S = 10.0
 EMIT_INTERVAL_S = 0.25      # progress/last-action updates are throttled to 4 per second per agent
+REMEMBER_TIMEOUT_S = 5.0    # recording an assignment's files and result in memory
 
 
 @dataclass
@@ -362,7 +364,9 @@ class AgentManager:
         if result.status in (ResultStatus.CANCELLED, ResultStatus.FAILED) and a.token.cancelled:
             await asyncio.to_thread(self.runtime.executor.services.processes.kill, owner=st.id.value,
                                     task_id=task.task_id)
-        self._finish(st, a, self._stamp(result, task))
+        self._stamp(result, task)
+        await self._remember(task, result)
+        self._finish(st, a, result)
         await self.bus.publish(a.msg.reply(type=MessageType.TASK_RESULT, topic=MessageType.TASK_RESULT.value,
                                            sender=agent_address(st.id), status=result.status.value,
                                            result=result.model_dump(mode="json")))
@@ -404,6 +408,33 @@ class AgentManager:
             st.errors.appendleft({"at": iso(), "message": (result.errors[-1] if result.errors else result.summary)[:300]})
         if not a.future.done():
             a.future.set_result(result)
+
+    async def _remember(self, task: AgentTask, result: AgentResult) -> None:
+        """The files an assignment created or changed (recent files) and its result (task history) go to
+        memory. Memory trouble never holds up or changes the result."""
+        memory = self.runtime.memory
+        if memory is None or (result.status == ResultStatus.CANCELLED and not result.files_created):
+            return
+        try:
+            async with asyncio.timeout(REMEMBER_TIMEOUT_S):
+                for kind, paths in (("created", result.files_created), ("modified", result.files_modified)):
+                    for path in list(dict.fromkeys(paths))[:50]:
+                        await memory.record_file(path, task_id=task.task_id, agent_id=task.agent.value, kind=kind)
+                if task.task_id:
+                    data: dict[str, Any] = {"title": task.display_title}
+                    for key in ("files_created", "errors", "denied"):
+                        items = getattr(result, key)
+                        if items:
+                            data[key] = [str(x)[:300] for x in items[:20]]
+                    if result.next_step:
+                        data["next_step"] = result.next_step[:500]
+                    if result.data.get("code"):
+                        data["code"] = result.data["code"]
+                    await memory.add_result(ResultRecord(task_id=task.task_id, subtask_id=task.id,
+                                                         agent_id=task.agent.value, status=result.status.value,
+                                                         summary=(result.summary or "")[:2000], data=data))
+        except Exception as exc:
+            log.warning("Could not record %s's result in memory: %s", task.agent.value, exc)
 
     def _stamp(self, result: AgentResult, task: AgentTask) -> AgentResult:
         result.agent_id = task.agent.value
