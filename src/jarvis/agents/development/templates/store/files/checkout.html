@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ dir }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ ui.checkout_title }} · {{ brand }}</title>
+  <meta name="theme-color" content="{{ colors.primary }}">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/store.css">
+</head>
+<body data-page="checkout">
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="brand-mark">{{ initials }}</span>{{ brand }}</a>
+      <button class="menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">☰<span class="sr-only">{{ ui.menu }}</span></button>
+      <nav class="site-nav" id="site-nav">
+        <a href="index.html">{{ ui.shop }}</a>
+        <a class="cart-link" href="cart.html">🛒 {{ ui.cart }} <span class="badge" data-cart-count hidden>0</span></a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <h1 class="page-title">{{ ui.checkout_title }}</h1>
+    <p class="notice">ℹ️ {{ ui.demo_notice }}</p>
+    <div class="cart-layout">
+      <form class="checkout" id="checkout-form" novalidate>
+        <label>{{ ui.name }}<input name="name" autocomplete="name" required><span class="error" data-error-for="name"></span></label>
+        <label>{{ ui.email }}<input name="email" type="email" autocomplete="email" required><span class="error" data-error-for="email"></span></label>
+        <label>{{ ui.phone }}<input name="phone" type="tel" autocomplete="tel" required><span class="error" data-error-for="phone"></span></label>
+        <label>{{ ui.city }}<input name="city" autocomplete="address-level2" required><span class="error" data-error-for="city"></span></label>
+        <label class="full">{{ ui.address }}<input name="address" autocomplete="street-address" required><span class="error" data-error-for="address"></span></label>
+        <label class="full">{{ ui.notes }}<textarea name="notes" rows="3"></textarea></label>
+        <button class="btn btn-primary full" type="submit">{{ ui.place_order }}</button>
+      </form>
+      <aside class="summary" id="order-summary"><h2>{{ ui.summary }}</h2></aside>
+    </div>
+    <section class="confirmation" id="confirmation" tabindex="-1" hidden>
+      <div class="big-check">✓</div>
+      <h2>{{ ui.order_done }}</h2>
+      <p>{{ ui.order_number }}: <strong id="order-id"></strong> · <strong id="order-total"></strong></p>
+      <a class="btn btn-primary" href="index.html">{{ ui.continue }}</a>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap"><span>© {{ year }} {{ brand }} · {{ ui.footer }}</span><span>{{ email }} · {{ phone }}</span></div>
+  </footer>
+  <script>window.STORE_UI = {{ ui|json }};</script>
+  <script src="data/products.js"></script>
+  <script src="js/cart.js"></script>
+  <script src="js/catalog.js"></script>
+  <script src="js/checkout.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,37 @@
+{
+  "kind": "webapp",
+  "name": "Web app",
+  "name_he": "אפליקציית ווב",
+  "description": "A polished single-page task manager: add, edit, complete and delete tasks, priorities, due dates, filters, search, statistics, keyboard shortcuts and storage in the browser.",
+  "description_he": "אפליקציית ווב לניהול משימות: הוספה, עריכה, סימון וביטול, עדיפויות, תאריכי יעד, מסננים, חיפוש, סטטיסטיקה, קיצורי מקלדת ושמירה בדפדפן.",
+  "language": "javascript",
+  "entry": "index.html",
+  "run": {"argv": [], "cwd": ".", "url": "index.html", "kind": "static"},
+  "test": {"argv": ["{node}", "--test"], "cwd": ".", "kind": "node"},
+  "needs": ["node"],
+  "generators": ["favicon"],
+  "strings": {
+    "he": {
+      "new_task": "משימה חדשה…", "add": "הוספה", "due": "תאריך יעד", "priority": "עדיפות", "high": "גבוהה",
+      "medium": "בינונית", "low": "נמוכה", "all": "הכול", "active": "פתוחות", "done": "הושלמו", "overdue": "באיחור",
+      "today": "היום", "search": "חיפוש…", "sort": "מיון", "sort_smart": "חכם", "sort_due": "תאריך יעד",
+      "sort_priority": "עדיפות", "sort_created": "חדשות קודם", "edit": "עריכה", "delete": "מחיקה", "save": "שמירה",
+      "cancel": "ביטול", "empty": "אין משימות כאן. מה עושים היום?", "clear_done": "ניקוי משימות שהושלמו",
+      "stats_total": "סה\"כ", "stats_done": "הושלמו", "stats_overdue": "באיחור", "progress": "התקדמות",
+      "shortcuts": "קיצורים: N משימה חדשה · / חיפוש · Esc ביטול", "confirm_delete": "למחוק את המשימה?",
+      "theme": "ערכת צבעים", "no_due": "ללא תאריך", "export": "ייצוא", "import": "ייבוא", "imported": "יובאו {n} משימות",
+      "bad_file": "הקובץ לא תקין"
+    },
+    "en": {
+      "new_task": "New task…", "add": "Add", "due": "Due date", "priority": "Priority", "high": "High",
+      "medium": "Medium", "low": "Low", "all": "All", "active": "Active", "done": "Done", "overdue": "Overdue",
+      "today": "Today", "search": "Search…", "sort": "Sort", "sort_smart": "Smart", "sort_due": "Due date",
+      "sort_priority": "Priority", "sort_created": "Newest", "edit": "Edit", "delete": "Delete", "save": "Save",
+      "cancel": "Cancel", "empty": "Nothing here yet. What's on today?", "clear_done": "Clear completed",
+      "stats_total": "Total", "stats_done": "Done", "stats_overdue": "Overdue", "progress": "Progress",
+      "shortcuts": "Shortcuts: N new task · / search · Esc cancel", "confirm_delete": "Delete this task?",
+      "theme": "Theme", "no_due": "No date", "export": "Export", "import": "Import", "imported": "Imported {n} tasks",
+      "bad_file": "That file is not valid"
+    }
+  }
+}

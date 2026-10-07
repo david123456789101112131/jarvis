@@ -1,0 +1,86 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ dir }}" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ brand }}</title>
+  <meta name="description" content="{{ description }}">
+  <meta name="theme-color" content="{{ colors.primary }}">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <div class="app">
+    <header class="top">
+      <div class="brand"><span class="brand-mark">{{ initials }}</span><div><h1>{{ brand }}</h1><p class="muted" id="today-label"></p></div></div>
+      <div class="stats" aria-live="polite">
+        <div class="ring" id="progress-ring" role="img" aria-label="{{ ui.progress }}"><span id="progress-value">0%</span></div>
+        <dl>
+          <div><dt>{{ ui.stats_total }}</dt><dd id="stat-total">0</dd></div>
+          <div><dt>{{ ui.stats_done }}</dt><dd id="stat-done">0</dd></div>
+          <div><dt>{{ ui.stats_overdue }}</dt><dd id="stat-overdue">0</dd></div>
+        </dl>
+      </div>
+      <button class="icon-btn" id="theme-toggle" type="button" aria-label="{{ ui.theme }}">◐</button>
+    </header>
+
+    <form class="composer" id="composer" autocomplete="off">
+      <label class="sr-only" for="new-title">{{ ui.new_task }}</label>
+      <input id="new-title" name="title" placeholder="{{ ui.new_task }}" maxlength="200" required>
+      <label class="sr-only" for="new-due">{{ ui.due }}</label>
+      <input id="new-due" name="due" type="date">
+      <label class="sr-only" for="new-priority">{{ ui.priority }}</label>
+      <select id="new-priority" name="priority">
+        <option value="high">{{ ui.high }}</option>
+        <option value="medium" selected>{{ ui.medium }}</option>
+        <option value="low">{{ ui.low }}</option>
+      </select>
+      <button class="btn btn-primary" type="submit">+ {{ ui.add }}</button>
+    </form>
+
+    <div class="toolbar">
+      <div class="tabs" role="tablist" id="status-tabs">
+        <button type="button" role="tab" data-status="all" aria-selected="true">{{ ui.all }}</button>
+        <button type="button" role="tab" data-status="active">{{ ui.active }}</button>
+        <button type="button" role="tab" data-status="today">{{ ui.today }}</button>
+        <button type="button" role="tab" data-status="overdue">{{ ui.overdue }}</button>
+        <button type="button" role="tab" data-status="done">{{ ui.done }}</button>
+      </div>
+      <div class="filters">
+        <label class="sr-only" for="search">{{ ui.search }}</label>
+        <input id="search" type="search" placeholder="{{ ui.search }}">
+        <label class="sr-only" for="priority-filter">{{ ui.priority }}</label>
+        <select id="priority-filter">
+          <option value="all">{{ ui.priority }}: {{ ui.all }}</option>
+          <option value="high">{{ ui.high }}</option>
+          <option value="medium">{{ ui.medium }}</option>
+          <option value="low">{{ ui.low }}</option>
+        </select>
+        <label class="sr-only" for="sort">{{ ui.sort }}</label>
+        <select id="sort">
+          <option value="smart">{{ ui.sort }}: {{ ui.sort_smart }}</option>
+          <option value="due">{{ ui.sort_due }}</option>
+          <option value="priority">{{ ui.sort_priority }}</option>
+          <option value="created">{{ ui.sort_created }}</option>
+        </select>
+      </div>
+    </div>
+
+    <ul class="list" id="list" aria-live="polite"></ul>
+    <p class="empty" id="empty" hidden>{{ ui.empty }}</p>
+
+    <footer class="bottom">
+      <span class="muted">{{ ui.shortcuts }}</span>
+      <div class="bottom-actions">
+        <button class="link-btn" id="export" type="button">{{ ui.export }}</button>
+        <label class="link-btn">{{ ui.import }}<input id="import" type="file" accept="application/json,.json" hidden></label>
+        <button class="link-btn" id="clear-done" type="button">{{ ui.clear_done }}</button>
+      </div>
+    </footer>
+  </div>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script>window.APP_UI = {{ ui|json }}; window.APP_CONFIG = {"storageKey": {{ slug|json }}, "locale": {{ lang|json }}};</script>
+  <script src="js/tasks.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

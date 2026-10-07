@@ -9,6 +9,8 @@ from jarvis.tools.base import Tool
 from jarvis.tools.dev import DEV_TOOLS
 from jarvis.tools.fs import FS_TOOLS
 from jarvis.tools.memory_tools import MEMORY_TOOLS
+from jarvis.tools.organize import ORGANIZE_TOOLS
+from jarvis.tools.project_tools import PROJECT_TOOLS
 from jarvis.tools.registry import ToolRegistry
 from jarvis.tools.shell import SHELL_TOOLS
 from jarvis.tools.system import SYSTEM_TOOLS
@@ -17,7 +19,7 @@ from jarvis.tools.web import WEB_TOOLS
 
 def builtin_tool_classes() -> list[type[Tool]]:
     classes: list[type[Tool]] = [*FS_TOOLS, *APP_TOOLS, *SHELL_TOOLS, *SYSTEM_TOOLS, *WEB_TOOLS, *DEV_TOOLS,
-                                 *MEMORY_TOOLS]
+                                 *MEMORY_TOOLS, *ORGANIZE_TOOLS, *PROJECT_TOOLS]
     try:
         from jarvis.tools.creative_tools import CREATIVE_TOOLS
 

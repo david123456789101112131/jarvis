@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ dir }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ brand }} · {{ ui.shop }}</title>
+  <meta name="description" content="{{ description }}">
+  <meta name="theme-color" content="{{ colors.primary }}">
+  <meta property="og:title" content="{{ brand }}">
+  <meta property="og:description" content="{{ subheadline }}">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/store.css">
+</head>
+<body data-page="catalog">
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="brand-mark">{{ initials }}</span>{{ brand }}</a>
+      <button class="menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">☰<span class="sr-only">{{ ui.menu }}</span></button>
+      <nav class="site-nav" id="site-nav">
+        <a href="index.html" aria-current="page">{{ ui.shop }}</a>
+        <a class="cart-link" href="cart.html">🛒 {{ ui.cart }} <span class="badge" data-cart-count hidden>0</span></a>
+      </nav>
+    </div>
+  </header>
+  <main>
+    <section class="hero">
+      <div class="wrap">
+        <span class="chip">{{ emoji }} {{ label }}</span>
+        <h1>{{ headline }}</h1>
+        <p>{{ subheadline }}</p>
+        <div class="perks"><span>🔒 {{ ui.secure }}</span><span>🚚 {{ ui.delivery }}</span><span>↩️ {{ ui.returns }}</span></div>
+      </div>
+    </section>
+    <div class="wrap">
+      <div class="toolbar">
+        <label class="sr-only" for="search">{{ ui.search }}</label>
+        <input id="search" type="search" placeholder="{{ ui.search }}" autocomplete="off">
+        <label class="sr-only" for="sort">{{ ui.sort }}</label>
+        <select id="sort">
+          <option value="featured">{{ ui.sort_featured }}</option>
+          <option value="price-asc">{{ ui.sort_price_asc }}</option>
+          <option value="price-desc">{{ ui.sort_price_desc }}</option>
+          <option value="name">{{ ui.sort_name }}</option>
+          <option value="rating">{{ ui.sort_rating }}</option>
+        </select>
+      </div>
+      <div class="chips" id="categories" aria-label="{{ ui.category }}"></div>
+      <p id="results" class="muted" aria-live="polite"></p>
+      <div class="grid" id="grid"></div>
+    </div>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap"><span>© {{ year }} {{ brand }} · {{ ui.footer }}</span><span>{{ email }} · {{ phone }}</span></div>
+  </footer>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script>window.STORE_UI = {{ ui|json }};</script>
+  <script src="data/products.js"></script>
+  <script src="js/cart.js"></script>
+  <script src="js/catalog.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

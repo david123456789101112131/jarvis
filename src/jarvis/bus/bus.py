@@ -74,15 +74,25 @@ class Mailbox:
     async def put(self, msg: Message) -> None:
         async with self._cond:
             heapq.heappush(self._heap, (int(msg.priority), next(self._seq), msg))
-            self._cond.notify()
+            # Every waiter re-checks: a getter with a predicate may not want this message.
+            self._cond.notify_all()
 
-    async def get(self) -> Message:
+    async def get(self, predicate: Callable[[Message], bool] | None = None) -> Message:
+        """Next message by priority (then FIFO); with `predicate`, the next one that matches."""
         async with self._cond:
-            while not self._heap:
+            while True:
+                if predicate is None:
+                    if self._heap:
+                        return heapq.heappop(self._heap)[2]
+                else:
+                    for item in sorted(self._heap):
+                        if predicate(item[2]):
+                            self._heap.remove(item)
+                            heapq.heapify(self._heap)
+                            return item[2]
                 if self._closed:
                     raise asyncio.CancelledError(f"mailbox {self.owner} closed")
                 await self._cond.wait()
-            return heapq.heappop(self._heap)[2]
 
     def peek_all(self) -> list[Message]:
         return [m for _, _, m in sorted(self._heap)]

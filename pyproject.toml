@@ -95,6 +95,13 @@ src = ["src", "tests"]
 select = ["E", "F", "W", "I", "B", "UP", "ASYNC", "RUF"]
 ignore = ["E501", "RUF001", "RUF002", "RUF003", "RUF012", "B008", "ASYNC109", "ASYNC110", "RUF006"]
 
+[tool.ruff.lint.per-file-ignores]
+# Generated-project templates import their own top-level packages ("app", "bot"), which ruff would
+# otherwise sort as third-party code from this repository's point of view.
+"src/jarvis/agents/development/templates/**" = ["I001"]
+# Tests check the files the agents wrote; a blocking read inside an async test is harmless there.
+"tests/**" = ["ASYNC240"]
+
 [tool.mypy]
 python_version = "3.11"
 packages = ["jarvis"]

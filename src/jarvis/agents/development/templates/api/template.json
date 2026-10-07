@@ -1,0 +1,14 @@
+{
+  "kind": "api",
+  "name": "Python API service",
+  "name_he": "שרת API בפייתון",
+  "description": "A FastAPI REST service: CRUD for items with validation, search and paging, JSON-file storage, a health endpoint, interactive OpenAPI docs and pytest tests.",
+  "description_he": "שרת REST ב-FastAPI: יצירה, קריאה, עדכון ומחיקה של פריטים עם בדיקות תקינות, חיפוש ודפדוף, שמירה בקובץ JSON, נקודת בדיקת תקינות, תיעוד OpenAPI אינטראקטיבי ובדיקות pytest.",
+  "language": "python",
+  "entry": "app/main.py",
+  "run": {"argv": ["{python}", "-m", "uvicorn", "app.main:app", "--host", "127.0.0.1", "--port", "8000"], "cwd": ".", "url": "http://127.0.0.1:8000/docs", "kind": "python"},
+  "test": {"argv": ["{python}", "-m", "pytest", "-q"], "cwd": ".", "kind": "python"},
+  "requirements": ["fastapi>=0.110", "uvicorn[standard]>=0.29", "httpx>=0.27", "pytest>=8"],
+  "needs": ["python"],
+  "strings": {"he": {}, "en": {}}
+}

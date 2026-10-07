@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ dir }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ brand }}</title>
+  <meta name="description" content="{{ description }}">
+  <meta name="theme-color" content="{{ colors.primary }}">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/store.css">
+</head>
+<body data-page="product">
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="brand-mark">{{ initials }}</span>{{ brand }}</a>
+      <button class="menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">☰<span class="sr-only">{{ ui.menu }}</span></button>
+      <nav class="site-nav" id="site-nav">
+        <a href="index.html">{{ ui.shop }}</a>
+        <a class="cart-link" href="cart.html">🛒 {{ ui.cart }} <span class="badge" data-cart-count hidden>0</span></a>
+      </nav>
+    </div>
+  </header>
+  <main class="wrap">
+    <div id="product"></div>
+    <section aria-labelledby="related-title">
+      <h2 class="section-title" id="related-title">{{ ui.related }}</h2>
+      <div class="grid" id="related"></div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap"><span>© {{ year }} {{ brand }} · {{ ui.footer }}</span><span>{{ email }} · {{ phone }}</span></div>
+  </footer>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script>window.STORE_UI = {{ ui|json }};</script>
+  <script src="data/products.js"></script>
+  <script src="js/cart.js"></script>
+  <script src="js/catalog.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

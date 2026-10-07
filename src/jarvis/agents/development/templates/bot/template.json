@@ -1,0 +1,14 @@
+{
+  "kind": "bot",
+  "name": "Telegram bot",
+  "name_he": "בוט טלגרם",
+  "description": "A Telegram bot in Python: tested command logic (help, echo, a personal to-do list, time) kept separate from the python-telegram-bot adapter; the token is read from the environment, never from the code.",
+  "description_he": "בוט טלגרם בפייתון: לוגיקת פקודות עם בדיקות (עזרה, הד, רשימת משימות אישית, שעה) בנפרד מהחיבור לטלגרם; הטוקן נקרא ממשתנה סביבה ולעולם לא נשמר בקוד.",
+  "language": "python",
+  "entry": "main.py",
+  "run": {"argv": ["{python}", "main.py"], "cwd": ".", "kind": "python"},
+  "test": {"argv": ["{python}", "-m", "pytest", "-q"], "cwd": ".", "kind": "python"},
+  "requirements": ["python-telegram-bot>=21.0", "pytest>=8"],
+  "needs": ["python"],
+  "strings": {"he": {}, "en": {}}
+}

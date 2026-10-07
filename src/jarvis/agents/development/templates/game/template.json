@@ -1,0 +1,27 @@
+{
+  "kind": "game",
+  "name": "Game",
+  "name_he": "משחק",
+  "description": "An HTML5 canvas Snake game: levels that speed up, score and high score, pause, game-over screen, keyboard, touch swipes and on-screen buttons.",
+  "description_he": "משחק סנייק בדפדפן: רמות שמאיצות, ניקוד ושיא, השהיה, מסך סיום, מקלדת, החלקה במסך מגע וכפתורים על המסך.",
+  "language": "javascript",
+  "entry": "index.html",
+  "run": {"argv": [], "cwd": ".", "url": "index.html", "kind": "static"},
+  "test": {"argv": ["{node}", "--test"], "cwd": ".", "kind": "node"},
+  "needs": ["node"],
+  "generators": ["favicon"],
+  "strings": {
+    "he": {
+      "score": "ניקוד", "best": "שיא", "level": "רמה", "start": "התחלה", "again": "משחק חוזר", "paused": "המשחק מושהה",
+      "resume": "המשך", "game_over": "המשחק נגמר", "new_best": "שיא חדש!", "won": "ניצחת! הלוח מלא",
+      "how": "חיצים או WASD לתזוזה · רווח להשהיה · Enter להתחלה", "touch": "במסך מגע: מחליקים לכיוון התנועה",
+      "pause": "השהיה", "up": "למעלה", "down": "למטה", "left": "שמאלה", "right": "ימינה"
+    },
+    "en": {
+      "score": "Score", "best": "Best", "level": "Level", "start": "Start", "again": "Play again", "paused": "Paused",
+      "resume": "Resume", "game_over": "Game over", "new_best": "New high score!", "won": "You win! The board is full",
+      "how": "Arrows or WASD to move · Space to pause · Enter to start", "touch": "On touch screens: swipe to steer",
+      "pause": "Pause", "up": "Up", "down": "Down", "left": "Left", "right": "Right"
+    }
+  }
+}

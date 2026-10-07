@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -88,4 +88,59 @@ class ProjectInfoTool(Tool):
         return ToolResult(summary=f"Project {project.name}" + (f" at {project.path}" if project.path else ""), data=data)
 
 
-MEMORY_TOOLS: tuple[type[Tool], ...] = (RememberTool, RecallTool, ProjectInfoTool)
+class TaskHistoryParams(BaseModel):
+    status: list[Literal["pending", "planning", "queued", "running", "waiting", "verifying", "completed", "failed",
+                         "cancelled", "interrupted"]] = Field(default_factory=list,
+                                                              description="Only tasks in these states")
+    query: str = Field("", description="Only tasks whose title or goal contains this text")
+    limit: int = Field(20, ge=1, le=100)
+
+
+class TaskHistoryTool(Tool):
+    name = "task_history"
+    description = ("JARVIS's recent tasks with their state, progress, summary, errors and the steps that are still "
+                   "open or blocked (for progress reviews).")
+    capabilities = (C.MEMORY_READ,)
+    Params = TaskHistoryParams
+    read_only = True
+    risk = RiskLevel.SAFE
+
+    async def run(self, params: TaskHistoryParams, ctx: ToolContext) -> ToolResult:
+        memory = ctx.services.memory
+        if memory is None:
+            return ToolResult.fail("Memory is not available.")
+        records = await memory.tasks(statuses=list(params.status) or None, limit=max(params.limit * 3, 30))
+        needle = params.query.strip().lower()
+        items = []
+        for rec in records:
+            if needle and needle not in f"{rec.title} {rec.goal}".lower():
+                continue
+            items.append(task_overview(rec))
+            if len(items) >= params.limit:
+                break
+        counts: dict[str, int] = {}
+        for item in items:
+            counts[item["status"]] = counts.get(item["status"], 0) + 1
+        summary = f"{len(items)} task(s): " + ", ".join(f"{n} {s}" for s, n in sorted(counts.items())) if items \
+            else "No matching tasks."
+        return ToolResult(summary=summary, data={"tasks": items, "counts": counts})
+
+
+def task_overview(rec: Any) -> dict[str, Any]:
+    """A compact view of a stored task: state, timing and its plan steps."""
+    plan = (rec.data or {}).get("plan") or {}
+    steps = []
+    for sub in plan.get("subtasks") or []:
+        steps.append({"title": sub.get("title"), "agent": sub.get("agent"), "status": sub.get("status"),
+                      "error": (sub.get("error") or None) and str(sub.get("error"))[:300],
+                      "optional": bool(sub.get("optional"))})
+    return {
+        "id": rec.id, "title": rec.title or rec.goal[:80], "goal": rec.goal[:300], "status": rec.status,
+        "created_at": rec.created_at.isoformat(timespec="seconds") if rec.created_at else None,
+        "finished_at": rec.finished_at.isoformat(timespec="seconds") if rec.finished_at else None,
+        "summary": (rec.summary or "")[:500] or None, "error": (rec.error or "")[:300] or None,
+        "progress": (rec.data or {}).get("progress"), "steps": steps,
+    }
+
+
+MEMORY_TOOLS: tuple[type[Tool], ...] = (RememberTool, RecallTool, ProjectInfoTool, TaskHistoryTool)

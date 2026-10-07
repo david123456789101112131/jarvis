@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ dir }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ ui.contact }} · {{ brand }}</title>
+  <meta name="description" content="{{ ui.contact_intro }}">
+  <meta name="theme-color" content="{{ colors.primary }}">
+  <meta property="og:title" content="{{ ui.contact }} · {{ brand }}">
+  <meta property="og:description" content="{{ ui.contact_intro }}">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+  <a class="skip" href="#main">{{ ui.skip }}</a>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="brand-mark">{{ initials }}</span>{{ brand }}</a>
+      <button class="menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">☰<span class="sr-only">{{ ui.menu }}</span></button>
+      <nav class="site-nav" id="site-nav" aria-label="{{ ui.menu }}">
+        <a href="index.html">{{ ui.home }}</a>
+        <a href="about.html">{{ ui.about }}</a>
+        <a href="services.html">{{ ui.services }}</a>
+        <a href="contact.html" aria-current="page">{{ ui.contact }}</a>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <header class="page-head wrap"><h1>{{ ui.contact_title }}</h1><p class="muted">{{ ui.contact_intro }}</p></header>
+    <section>
+      <div class="wrap contact">
+        <div class="card">
+          <dl>
+            <dt>{{ ui.email }}</dt><dd><a href="mailto:{{ email }}">{{ email }}</a></dd>
+            <dt>{{ ui.phone }}</dt><dd><a href="tel:{{ phone }}">{{ phone }}</a></dd>
+            <dt>{{ ui.address }}</dt><dd>{{ address }}</dd>
+          </dl>
+        </div>
+        <div class="card">
+          <form id="contact-form" data-to="{{ email }}" novalidate>
+            <label>{{ ui.name }}<input name="name" autocomplete="name" required><span class="error" data-error-for="name"></span></label>
+            <label>{{ ui.email }}<input name="email" type="email" autocomplete="email" required><span class="error" data-error-for="email"></span></label>
+            <label>{{ ui.phone }}<input name="phone" type="tel" autocomplete="tel"><span class="error" data-error-for="phone"></span></label>
+            <label>{{ ui.message }}<textarea name="message" rows="5" required></textarea><span class="error" data-error-for="message"></span></label>
+            <button class="btn btn-primary" type="submit">{{ ui.send }}</button>
+          </form>
+          <div class="done" id="contact-done" tabindex="-1" hidden>
+            <h2>✓ {{ ui.sent }}</h2>
+            <a class="btn btn-primary" id="mail-link" href="mailto:{{ email }}">{{ ui.open_mail }}</a>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <span>© {{ year }} {{ brand }} · {{ ui.rights }}</span>
+      <nav aria-label="footer"><a href="about.html">{{ ui.about }}</a><a href="services.html">{{ ui.services }}</a><a href="contact.html">{{ ui.contact }}</a></nav>
+    </div>
+  </footer>
+  <script>window.SITE_UI = {{ ui|json }};</script>
+  <script src="js/validate.js"></script>
+  <script src="js/site.js"></script>
+</body>
+</html>

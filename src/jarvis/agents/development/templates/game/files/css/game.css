@@ -1,0 +1,35 @@
+/* Game styles (dark arcade look; accent colors come from the brand palette). */
+{{ palette_css }}
+*, *::before, *::after { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body { font-family: "Heebo", "Segoe UI", Arial, sans-serif; color: #e8eef7; display: grid; place-items: center; min-height: 100vh;
+  background: radial-gradient(50rem 30rem at 50% -10%, rgba(var(--color-primary-rgb), .45), transparent), #0b0f17;
+  touch-action: manipulation; }
+.game { width: min(620px, 100vw - 1.5rem); display: grid; gap: 1rem; padding: 1rem 0; }
+.hud { display: flex; align-items: center; gap: 1rem; }
+.hud h1 { margin: 0; font-size: 1.4rem; flex: 1; letter-spacing: .02em; }
+.hud dl { display: flex; gap: 1.2rem; margin: 0; }
+.hud dt { font-size: .72rem; opacity: .7; text-transform: uppercase; letter-spacing: .08em; }
+.hud dd { margin: 0; font-size: 1.35rem; font-weight: 800; font-variant-numeric: tabular-nums; }
+.pause { background: rgba(255, 255, 255, .08); border: 1px solid rgba(255, 255, 255, .15); color: inherit; width: 2.6rem; height: 2.6rem;
+  border-radius: 12px; font-size: 1rem; cursor: pointer; }
+.board { position: relative; aspect-ratio: 1; border-radius: 20px; overflow: hidden;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, .08), 0 30px 80px rgba(0, 0, 0, .55), 0 0 60px rgba(var(--color-primary-rgb), .25); }
+canvas { width: 100%; height: 100%; display: block; background: #0f1522; }
+.overlay { position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: .8rem; text-align: center;
+  padding: 1.5rem; background: rgba(7, 10, 16, .78); backdrop-filter: blur(4px); }
+.overlay[hidden] { display: none; }
+.overlay h2 { margin: 0; font-size: clamp(1.8rem, 6vw, 2.8rem); }
+.overlay p { margin: 0; opacity: .85; }
+.overlay small { opacity: .6; }
+.btn { font: inherit; font-weight: 800; font-size: 1.1rem; border: 0; border-radius: 999px; padding: .85rem 2rem; cursor: pointer;
+  color: var(--color-on-primary); background: linear-gradient(135deg, var(--color-primary), var(--color-secondary));
+  box-shadow: 0 10px 30px rgba(var(--color-primary-rgb), .45); }
+.pad { display: none; grid-template-columns: repeat(3, 4rem); grid-template-rows: repeat(2, 4rem); gap: .5rem; justify-content: center; }
+.pad button { font-size: 1.4rem; border-radius: 16px; border: 1px solid rgba(255, 255, 255, .15); color: inherit;
+  background: rgba(255, 255, 255, .07); }
+.pad [data-dir=up] { grid-column: 2; }
+.pad [data-dir=left] { grid-column: 1; grid-row: 2; }
+.pad [data-dir=down] { grid-column: 2; grid-row: 2; }
+.pad [data-dir=right] { grid-column: 3; grid-row: 2; }
+@media (hover: none) and (pointer: coarse) { .pad { display: grid; } }

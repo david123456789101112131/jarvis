@@ -1,0 +1,10 @@
+{
+  "name": "{{ package_name }}",
+  "version": "1.0.0",
+  "private": true,
+  "description": {{ description|json }},
+  "type": "commonjs",
+  "scripts": {
+    "test": "node --test"
+  }
+}

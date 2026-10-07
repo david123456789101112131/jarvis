@@ -1,0 +1,5 @@
+{
+  "title": {{ title|json }},
+  "description": {{ description|json }},
+  "lang": {{ lang|json }}
+}

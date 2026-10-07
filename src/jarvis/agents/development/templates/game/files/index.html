@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ dir }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+  <title>{{ brand }}</title>
+  <meta name="description" content="{{ description }}">
+  <meta name="theme-color" content="#0b0f17">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/game.css">
+</head>
+<body>
+  <main class="game">
+    <header class="hud">
+      <h1>{{ brand }}</h1>
+      <dl>
+        <div><dt>{{ ui.score }}</dt><dd id="score">0</dd></div>
+        <div><dt>{{ ui.level }}</dt><dd id="level">1</dd></div>
+        <div><dt>{{ ui.best }}</dt><dd id="best">0</dd></div>
+      </dl>
+      <button class="pause" id="pause" type="button" aria-label="{{ ui.pause }}">⏸</button>
+    </header>
+    <div class="board">
+      <canvas id="canvas" width="600" height="600" aria-label="{{ brand }}"></canvas>
+      <div class="overlay" id="overlay">
+        <h2 id="overlay-title">{{ brand }}</h2>
+        <p id="overlay-text">{{ ui.how }}</p>
+        <button class="btn" id="overlay-btn" type="button">{{ ui.start }}</button>
+        <small>{{ ui.touch }}</small>
+      </div>
+    </div>
+    <div class="pad" dir="ltr" aria-label="controls">
+      <button type="button" data-dir="up" aria-label="{{ ui.up }}">▲</button>
+      <button type="button" data-dir="left" aria-label="{{ ui.left }}">◀</button>
+      <button type="button" data-dir="down" aria-label="{{ ui.down }}">▼</button>
+      <button type="button" data-dir="right" aria-label="{{ ui.right }}">▶</button>
+    </div>
+  </main>
+  <script>window.GAME_UI = {{ ui|json }}; window.GAME_COLORS = {{ colors|json }}; window.GAME_KEY = {{ slug|json }};</script>
+  <script src="js/snake.js"></script>
+  <script src="js/main.js"></script>
+</body>
+</html>

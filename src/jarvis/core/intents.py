@@ -156,6 +156,9 @@ TEXT_NOUNS_HE = _alt("פוסט", "מאמר", "מייל", "אימייל", "מכת
 PLAN_NOUNS_HE = (
     r"(?:תוכנית|תכנית)\s+(?:עבודה|פעולה|אימונים|לימודים|תזונה|עסקית|שיווק|שיווקית|שבועית|יומית|חודשית|שנתית|"
     r"פרויקט|טיול|חיסכון|ל(?:שבוע|חודש|יום|שנה|השבוע|החודש|היום|השנה)\b)"
+    # "a plan for <something>" (a wedding, a trip, the exam) — but "a program for calculating …" is software.
+    r"|(?:תוכנית|תכנית)\s+(?:ל|עבור\s+)(?!(?:ה)?(?:חישוב|המרת|המרה|עיבוד|סריקת|גיבוי|הורדת|הצפנת|מחשב|מחשבון|פייתון|"
+    r"python|ווינדוס|windows|אנדרואיד|אייפון|טלפון|ניהול\s+(?:מלאי|לקוחות|הזמנות|משתמשים))\b)\S+"
     r"|(?:תוכנית|תכנית)$|רודמאפ|מפת\s+דרכים|לוח\s+זמנים|לו\"ז|גאנט"
 )
 
@@ -557,6 +560,15 @@ def _b_history(m: re.Match[str], text: str) -> dict[str, Any] | None:
     return {"last": any(w in t for w in ("last", "previous", "אחרונה", "קודמת", "האחרונה", "הקודמת"))}
 
 
+def _b_organize(m: re.Match[str], text: str) -> dict[str, Any] | None:
+    """A known folder ("the downloads") becomes a location; anything else names a project or a path."""
+    target = (m.groupdict().get("x") or "").strip(" .,\"'")
+    key = _location_key(re.sub(r"^(?:folder|תיקיית|תיקייה|תיקיה)\s+", "", target)) if target else None
+    if key:
+        return {"location": key}
+    return _b_project(m, text)
+
+
 def _b_project(m: re.Match[str], text: str) -> dict[str, Any] | None:
     name = (m.groupdict().get("x") or "").strip(" .,\"'")
     if normalize(name) in {"", "this", "the", "my", "this project", "הזה", "שלי", "הנוכחי", "current"}:
@@ -739,9 +751,11 @@ _RULES: list[Rule] = [
         rf"^{V_OPEN_HE}\s+{LI}(?:את\s+)?(?:ה)?פרויקט(?:\s+(?P<x>.+))?$",
     ), "simple", (AgentId.DEVELOPMENT,), build=_b_project),
     Rule(I.ORGANIZE_PROJECT, _p(
+        r"^(?:organize|organise|clean up|tidy up|tidy|structure|sort out)\s+(?:my|the|this)?\s*(?P<x>desktop|downloads|documents|pictures|music|videos|workspace|projects)(?:\s+folder)?$",
         r"^(?:organize|organise|clean up|tidy up|structure|sort out)\s+(?:my|the|this)?\s*(?:project|folder|files|workspace)(?:\s+(?P<x>.+))?$",
-        rf"^{V_ORGANIZE_HE}\s+{LI}(?:את\s+)?(?:ה)?(?:פרויקט|תיקייה|קבצים|תיקיות)(?:\s+(?P<x>.+))?$",
-    ), "complex", (AgentId.PLANNER, AgentId.SYSTEM), build=_b_project),
+        rf"^{V_ORGANIZE_HE}\s+{LI}(?:את\s+)?(?:ה)?(?:פרויקט|תיקיית|תיקייה|תיקיה|קבצים|תיקיות)(?:\s+(?P<x>.+))?$",
+        rf"^{V_ORGANIZE_HE}\s+{LI}(?:את\s+)?(?P<x>(?:ה)?(?:שולחן העבודה|הורדות|מסמכים|תמונות|מוזיקה|סרטונים|פרויקטים))$",
+    ), "complex", (AgentId.PLANNER, AgentId.SYSTEM), build=_b_organize),
     Rule(I.WEATHER, _p(
         r"^(?:what(?:'s| is) the |how(?:'s| is) the )?weather(?:\s+(?:like|forecast))?(?:\s+(?:in|at|for)\s+(?P<loc>.+?))?(?:\s+(?:today|tomorrow|now))?$",
         r"^(?:will it rain|is it going to rain)(?:\s+(?:in|at)\s+(?P<loc>.+?))?(?:\s+(?:today|tomorrow))?$",

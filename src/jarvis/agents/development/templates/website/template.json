@@ -1,0 +1,37 @@
+{
+  "kind": "website",
+  "name": "Website",
+  "name_he": "אתר תדמית",
+  "description": "A responsive multi-page website (home, about, services, contact) with a mobile menu, SEO tags, accessible markup and a validated contact form.",
+  "description_he": "אתר רספונסיבי מרובה עמודים (בית, אודות, שירותים, צור קשר) עם תפריט לנייד, תגיות SEO, נגישות וטופס יצירת קשר עם בדיקות.",
+  "language": "html",
+  "entry": "index.html",
+  "run": {"argv": [], "cwd": ".", "url": "index.html", "kind": "static"},
+  "test": {"argv": ["{node}", "--test"], "cwd": ".", "kind": "node"},
+  "needs": ["node"],
+  "generators": ["favicon"],
+  "strings": {
+    "he": {
+      "home": "בית", "about": "אודות", "services": "שירותים", "contact": "צור קשר", "menu": "תפריט",
+      "why": "למה לבחור בנו", "testimonials": "לקוחות מספרים", "who_for": "למי זה מתאים",
+      "about_title": "הסיפור שלנו", "values": "מה מנחה אותנו", "services_intro": "כל מה שאנחנו מציעים, במקום אחד.",
+      "contact_title": "דברו איתנו", "contact_intro": "השאירו פרטים ונחזור אליכם בהקדם.",
+      "name": "שם מלא", "email": "אימייל", "phone": "טלפון (לא חובה)", "message": "הודעה", "send": "שליחה",
+      "sent": "תודה! ההודעה מוכנה לשליחה.", "open_mail": "פתיחה בתוכנת הדואר",
+      "err_required": "שדה חובה", "err_email": "כתובת אימייל לא תקינה", "err_phone": "מספר טלפון לא תקין",
+      "err_short": "קצר מדי", "address": "כתובת", "rights": "כל הזכויות שמורות", "skip": "דילוג לתוכן",
+      "learn_more": "לפרטים נוספים", "get_started": "בואו נתחיל", "subject": "פנייה מהאתר"
+    },
+    "en": {
+      "home": "Home", "about": "About", "services": "Services", "contact": "Contact", "menu": "Menu",
+      "why": "Why choose us", "testimonials": "What clients say", "who_for": "Who it's for",
+      "about_title": "Our story", "values": "What guides us", "services_intro": "Everything we offer, in one place.",
+      "contact_title": "Get in touch", "contact_intro": "Leave your details and we'll get back to you soon.",
+      "name": "Full name", "email": "Email", "phone": "Phone (optional)", "message": "Message", "send": "Send",
+      "sent": "Thank you! Your message is ready to send.", "open_mail": "Open in your email app",
+      "err_required": "Required", "err_email": "Invalid email address", "err_phone": "Invalid phone number",
+      "err_short": "Too short", "address": "Address", "rights": "All rights reserved", "skip": "Skip to content",
+      "learn_more": "Learn more", "get_started": "Get started", "subject": "Message from the website"
+    }
+  }
+}

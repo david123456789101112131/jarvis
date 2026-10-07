@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="{{ lang }}" dir="{{ dir }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ brand }}</title>
+  <meta name="description" content="{{ description }}">
+  <meta name="theme-color" content="{{ colors.primary }}">
+  <meta property="og:title" content="{{ brand }}">
+  <meta property="og:description" content="{{ description }}">
+  <meta property="og:type" content="website">
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="css/site.css">
+</head>
+<body>
+  <a class="skip" href="#main">{{ ui.skip }}</a>
+  <header class="site-header">
+    <div class="wrap">
+      <a class="brand" href="index.html"><span class="brand-mark">{{ initials }}</span>{{ brand }}</a>
+      <button class="menu-toggle" id="menu-toggle" type="button" aria-expanded="false" aria-controls="site-nav">☰<span class="sr-only">{{ ui.menu }}</span></button>
+      <nav class="site-nav" id="site-nav" aria-label="{{ ui.menu }}">
+        <a href="index.html" aria-current="page">{{ ui.home }}</a>
+        <a href="about.html">{{ ui.about }}</a>
+        <a href="services.html">{{ ui.services }}</a>
+        <a href="contact.html">{{ ui.contact }}</a>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div class="wrap">
+        <div>
+          <span class="eyebrow">{{ emoji }} {{ label }}</span>
+          <h1>{{ headline }}</h1>
+          <p>{{ subheadline }}</p>
+          <div class="actions">
+            <a class="btn btn-primary" href="contact.html">{{ cta }}</a>
+            <a class="btn btn-ghost" href="services.html">{{ secondary_cta }}</a>
+          </div>
+        </div>
+        <div class="hero-art" aria-hidden="true">{{ emoji }}</div>
+      </div>
+    </section>
+    <section>
+      <div class="wrap">
+        <h2>{{ ui.why }}</h2>
+        <div class="grid">
+{{#each features}}          <article class="card"><div class="icon">{{ icon_svg|raw }}</div><h3>{{ title }}</h3><p class="muted">{{ text }}</p></article>
+{{/each}}        </div>
+      </div>
+    </section>
+    <section>
+      <div class="wrap">
+        <h2>{{ ui.testimonials }}</h2>
+        <div class="grid">
+{{#each testimonials}}          <figure class="card"><blockquote><p>“{{ quote }}”</p></blockquote><figcaption><strong>{{ name }}</strong><div class="muted">{{ role }}</div></figcaption></figure>
+{{/each}}        </div>
+      </div>
+    </section>
+    <div class="wrap"><div class="band"><h2>{{ ui.get_started }}</h2><p>{{ offer }}</p><a class="btn" href="contact.html">{{ cta }}</a></div></div>
+  </main>
+  <footer class="site-footer">
+    <div class="wrap">
+      <span>© {{ year }} {{ brand }} · {{ ui.rights }}</span>
+      <nav aria-label="footer"><a href="about.html">{{ ui.about }}</a><a href="services.html">{{ ui.services }}</a><a href="contact.html">{{ ui.contact }}</a></nav>
+    </div>
+  </footer>
+  <script>window.SITE_UI = {{ ui|json }};</script>
+  <script src="js/site.js"></script>
+</body>
+</html>

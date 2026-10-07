@@ -1,0 +1,14 @@
+{
+  "kind": "script",
+  "name": "Python command-line tool",
+  "name_he": "כלי שורת פקודה בפייתון",
+  "description": "A Python command-line tool with argparse, logging and tested pure functions: folder statistics, duplicate files and word counts, ready to extend.",
+  "description_he": "כלי שורת פקודה בפייתון עם argparse, לוגים ופונקציות עם בדיקות: סטטיסטיקה של תיקייה, קבצים כפולים וספירת מילים, מוכן להרחבה.",
+  "language": "python",
+  "entry": "main.py",
+  "run": {"argv": ["{python}", "main.py", "--help"], "cwd": ".", "kind": "python"},
+  "test": {"argv": ["{python}", "-m", "pytest", "-q"], "cwd": ".", "kind": "python"},
+  "requirements": ["pytest>=8"],
+  "needs": ["python"],
+  "strings": {"he": {}, "en": {}}
+}

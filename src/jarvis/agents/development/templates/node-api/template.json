@@ -1,0 +1,13 @@
+{
+  "kind": "node-api",
+  "name": "Node.js API",
+  "name_he": "שרת API ב-Node.js",
+  "description": "A dependency-free Node.js REST API on node:http: CRUD for items, JSON body parsing with limits, CORS, error handling, JSON-file storage and node:test tests.",
+  "description_he": "שרת REST ב-Node.js בלי תלויות חיצוניות: יצירה, קריאה, עדכון ומחיקה של פריטים, קריאת JSON עם הגבלות, CORS, טיפול בשגיאות, שמירה בקובץ JSON ובדיקות node:test.",
+  "language": "javascript",
+  "entry": "server.js",
+  "run": {"argv": ["{node}", "server.js"], "cwd": ".", "url": "http://127.0.0.1:3000/api/items", "kind": "node"},
+  "test": {"argv": ["{node}", "--test"], "cwd": ".", "kind": "node"},
+  "needs": ["node"],
+  "strings": {"he": {}, "en": {}}
+}
