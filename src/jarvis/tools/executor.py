@@ -26,30 +26,26 @@ from pydantic import ValidationError
 from jarvis.common.cancel import CancelToken
 from jarvis.common.enums import AgentId, Mode, RiskLevel
 from jarvis.common.errors import JarvisError, KillSwitchEngaged, TaskCancelled, ToolNotFound
+from jarvis.common.i18n import agent_name, t
 from jarvis.logs.activity import ActivityLog
 from jarvis.logs.audit import AuditEntry, AuditLog
 from jarvis.permissions.confirm import ConfirmationBroker, ConfirmationRequest
 from jarvis.permissions.manager import PermissionManager
 from jarvis.permissions.models import ActionRequest
 from jarvis.security.killswitch import KillSwitch
-from jarvis.tools.base import ProgressFn, ToolContext, ToolResult
+from jarvis.tools.base import ActionPlan, ProgressFn, ToolContext, ToolResult
 from jarvis.tools.registry import ToolRegistry
 from jarvis.tools.services import ToolServices
 
 log = logging.getLogger(__name__)
 
-AGENT_NAMES = {
-    "research": "Research Agent",
-    "system": "System Agent",
-    "development": "Development Agent",
-    "creative": "Creative Agent",
-    "planner": "Planner Agent",
-    "jarvis": "JARVIS",
-}
+_CONFIRM_STATUS_HE = {"denied": "נדחה", "expired": "פג הזמן", "cancelled": "בוטל"}
+MAX_SHOWN_PATHS = 20      # paths listed in an approval request; the rest are counted
 
 
 def agent_display(agent_id: str) -> str:
-    return AGENT_NAMES.get(agent_id, agent_id)
+    """The agent's English name: the activity log's `source` field (the UI shows its own label)."""
+    return agent_name(agent_id, "en")
 
 
 class ToolExecutor:
@@ -87,8 +83,11 @@ class ToolExecutor:
         cwd: Path | None = None,
         progress: ProgressFn | None = None,
         mode: Mode | None = None,
+        lang: str = "en",
     ) -> ToolResult:
-        """Run one tool call for an agent. Raises only for kill switch / cancellation."""
+        """Run one tool call for an agent. Raises only for kill switch / cancellation.
+
+        `lang` is the language of the request: summaries, reasons and log lines a person reads use it."""
         started = time.monotonic()
         cancel = cancel or CancelToken()
         mode = mode or self.mode_provider()
@@ -106,25 +105,28 @@ class ToolExecutor:
 
         if mode == Mode.CHAT and not tool.read_only:
             await self._audit(agent, task_id, tool_name, "", params, RiskLevel.SAFE, "denied", "skipped",
-                              "CHAT mode: actions are disabled")
-            return ToolResult.fail("JARVIS is in CHAT mode; actions are disabled. Switch to NORMAL mode to act.",
+                              t(lang, "מצב שיחה: הפעולות מושבתות", "CHAT mode: actions are disabled"))
+            return ToolResult.fail(t(lang, "JARVIS במצב שיחה והפעולות מושבתות. כדי לפעול צריך לעבור למצב רגיל.",
+                                     "JARVIS is in CHAT mode; actions are disabled. Switch to NORMAL mode to act."),
                                    denied="mode", tool=tool_name)
 
         try:
             parsed = tool.Params.model_validate(params)
         except ValidationError as exc:
             errors = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
-            return ToolResult.fail(f"Invalid input for {tool_name}: {errors}", tool=tool_name)
+            return ToolResult.fail(t(lang, f"קלט לא תקין ל-{tool_name}: {errors}", f"Invalid input for {tool_name}: {errors}"),
+                                   tool=tool_name)
 
         ctx = ToolContext(agent_id=agent, task_id=task_id, subtask_id=subtask_id, mode=mode, cancel=cancel,
-                          services=self.services, cwd=cwd, progress_fn=progress)
+                          services=self.services, cwd=cwd, progress_fn=progress, lang=lang)
         try:
             plan = await tool.plan(parsed, ctx)
         except JarvisError as exc:
             return ToolResult.fail(exc.message, tool=tool_name, denied="permission" if exc.code == "permission_denied" else None)
         except Exception as exc:
             log.exception("Planning %s failed", tool_name)
-            return ToolResult.fail(f"{tool_name} could not prepare the action: {exc}", tool=tool_name)
+            return ToolResult.fail(t(lang, f"{tool_name} לא הצליח להכין את הפעולה: {exc}",
+                                     f"{tool_name} could not prepare the action: {exc}"), tool=tool_name)
 
         caps = plan.capabilities if plan.capabilities is not None else list(tool.capabilities)
         req_params = parsed.model_dump(mode="json")
@@ -143,33 +145,37 @@ class ToolExecutor:
             destination=plan.destination,
             always_confirm=tool.always_confirm or plan.always_confirm,
             params=req_params,
+            lang=lang,
         )
         decision = self.permissions.check(request, mode)
+        name = agent_name(agent, lang)
 
         if not decision.allowed:
             await self._audit(agent, task_id, tool_name, plan.summary, req_params, decision.risk,
                               "blocked" if decision.blocked else "denied", "skipped", decision.reason)
-            await self._activity(f"{agent_display(agent)}: blocked — {plan.summary} ({decision.reason})", agent,
-                                 task_id, level="warning")
-            return ToolResult.fail(f"Not allowed: {decision.reason}", denied="blocked" if decision.blocked else "permission",
-                                   tool=tool_name)
+            await self._activity(t(lang, f"{name}: נחסם — {plan.summary} ({decision.reason})",
+                                   f"{name}: blocked — {plan.summary} ({decision.reason})"), agent, task_id, level="warning")
+            return ToolResult.fail(t(lang, f"אין הרשאה: {decision.reason}", f"Not allowed: {decision.reason}"),
+                                   denied="blocked" if decision.blocked else "permission", tool=tool_name)
 
         confirmed = False
         if decision.needs_confirmation:
-            await self._activity(f"{agent_display(agent)} is waiting for approval: {plan.summary}", agent, task_id,
-                                 level="warning", kind="confirm")
+            await self._activity(t(lang, f"{name} ממתין לאישור: {plan.summary}", f"{name} is waiting for approval: {plan.summary}"),
+                                 agent, task_id, level="warning", kind="confirm")
             creq = ConfirmationRequest(
                 agent_id=agent, task_id=task_id, tool=tool_name, summary=plan.summary, reasons=decision.reasons,
-                risk=decision.risk.name.lower(), details={"params": self.services.redactor.redact(req_params), **plan.details},
+                risk=decision.risk.name.lower(), details=self._approval_details(plan, req_params),
             )
             approval = asyncio.ensure_future(self.broker.request(creq))
             approved = await self._wait_cancellable(approval, cancel, agent)
             if not approved:
+                status = t(lang, _CONFIRM_STATUS_HE.get(creq.status, creq.status), creq.status)
                 await self._audit(agent, task_id, tool_name, plan.summary, req_params, decision.risk, "rejected",
-                                  "skipped", f"confirmation {creq.status}")
-                await self._activity(f"{agent_display(agent)}: action not approved — {plan.summary}", agent, task_id,
-                                     level="warning")
-                return ToolResult.fail(f"The user did not approve: {plan.summary} ({creq.status})",
+                                  "skipped", t(lang, f"האישור {status}", f"confirmation {status}"))
+                await self._activity(t(lang, f"{name}: הפעולה לא אושרה — {plan.summary}",
+                                       f"{name}: action not approved — {plan.summary}"), agent, task_id, level="warning")
+                return ToolResult.fail(t(lang, f"המשתמש לא אישר: {plan.summary} ({status})",
+                                         f"The user did not approve: {plan.summary} ({status})"),
                                        denied="confirmation", tool=tool_name)
             confirmed = True
 
@@ -185,16 +191,18 @@ class ToolExecutor:
         try:
             result = await self._wait_cancellable(run, cancel, agent, timeout=timeout)
         except TimeoutError:
-            result = ToolResult.fail(f"{tool_name} timed out after {timeout:.0f}s")
+            result = ToolResult.fail(t(lang, f"{tool_name} לא הסתיים בזמן ({timeout:.0f} שניות)",
+                                       f"{tool_name} timed out after {timeout:.0f}s"))
         except (KillSwitchEngaged, TaskCancelled):
             await self._audit(agent, task_id, tool_name, plan.summary, req_params, decision.risk,
-                              "confirmed" if confirmed else "allowed", "error", "cancelled")
+                              "confirmed" if confirmed else "allowed", "error", t(lang, "בוטל", "cancelled"))
             raise
         except JarvisError as exc:
             result = ToolResult.fail(exc.message, denied="permission" if exc.code == "permission_denied" else None)
         except Exception as exc:
             log.exception("Tool %s crashed", tool_name)
-            result = ToolResult.fail(f"{tool_name} failed: {type(exc).__name__}: {exc}")
+            result = ToolResult.fail(t(lang, f"{tool_name} נכשל: {type(exc).__name__}: {exc}",
+                                       f"{tool_name} failed: {type(exc).__name__}: {exc}"))
 
         result.tool = tool_name
         result.duration_ms = int((time.monotonic() - started) * 1000)
@@ -210,10 +218,19 @@ class ToolExecutor:
         if not tool.read_only or not result.ok:
             text = result.summary or plan.summary
             await self._activity(
-                f"{agent_display(agent)}: {text}" if result.ok else f"{agent_display(agent)}: failed — {plan.summary}: {result.error}",
+                f"{name}: {text}" if result.ok else t(lang, f"{name}: נכשל — {plan.summary}: {result.error}",
+                                                      f"{name}: failed — {plan.summary}: {result.error}"),
                 agent, task_id, level="info" if result.ok else "error",
             )
         return result
+
+    def _approval_details(self, plan: ActionPlan, params: dict[str, Any]) -> dict[str, Any]:
+        """What the approval dialog shows: the exact paths first, the tool's own details, then the raw input."""
+        paths = [use.path for use in plan.paths]
+        if len(paths) > MAX_SHOWN_PATHS:
+            paths = [*paths[:MAX_SHOWN_PATHS], f"… +{len(paths) - MAX_SHOWN_PATHS}"]
+        shown = {k: v for k, v in params.items() if not k.startswith("_")}   # internal hints stay internal
+        return {**({"paths": paths} if paths else {}), **plan.details, "params": self.services.redactor.redact(shown)}
 
     async def _wait_cancellable(self, fut: asyncio.Future[Any], cancel: CancelToken, agent: str,
                                 timeout: float | None = None) -> Any:

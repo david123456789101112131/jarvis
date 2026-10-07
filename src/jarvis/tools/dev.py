@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from jarvis.common.enums import Capability, RiskLevel
 from jarvis.permissions import analyze_command
 from jarvis.permissions.models import PathUse
+from jarvis.permissions.risk import SHELL_COMMAND_REASON
 from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
 from jarvis.tools.shell import process_result, run_in_context
 
@@ -91,28 +92,30 @@ class RunPythonTool(Tool):
             paths.append(PathUse(path=str(ctx.resolve(params.file)), access="read"))
         risky = re.search(r"\b(shutil\.rmtree|os\.remove|os\.unlink|subprocess|os\.system|winreg|ctypes|requests\.post|"
                           r"httpx\.post|urllib\.request|socket\.)", params.code)
-        return ActionPlan(summary=f"Run Python {'file ' + Path(params.file).name if params.file else 'code'}",
-                          paths=paths, risk=RiskLevel.HIGH if risky else None,
-                          risk_reasons=[f"code uses {risky.group(1)}"] if risky else [],
+        summary = ctx.t(f"הרצת הקובץ {Path(params.file).name} ב-Python" if params.file else "הרצת קוד Python",
+                        f"Run Python {'file ' + Path(params.file).name if params.file else 'code'}")
+        return ActionPlan(summary=summary, paths=paths, risk=RiskLevel.HIGH if risky else None,
+                          risk_reasons=[ctx.t(f"הקוד משתמש ב-{risky.group(1)}", f"code uses {risky.group(1)}")] if risky else [],
                           details={"code": params.code[:2000]} if params.code else {"file": params.file})
 
     async def run(self, params: RunPythonParams, ctx: ToolContext) -> ToolResult:
         if not params.code and not params.file:
-            return ToolResult.fail("Give code or a file to run.")
+            return ToolResult.fail(ctx.t("צריך קוד או קובץ להרצה.", "Give code or a file to run."))
         cwd = self._cwd(params, ctx)
         python = venv_python(project_root(cwd)) or find_python()
         if python is None:
-            return ToolResult.fail("Python is not installed on this computer (install it from python.org).")
+            return ToolResult.fail(ctx.t("Python לא מותקן במחשב (אפשר להתקין אותו מ-python.org).",
+                                         "Python is not installed on this computer (install it from python.org)."))
         if params.file:
             target = ctx.resolve(params.file)
             if not target.is_file():
-                return ToolResult.fail(f"File not found: {target}")
+                return ToolResult.fail(ctx.t(f"הקובץ לא נמצא: {target}", f"File not found: {target}"))
             argv = [*python, "-X", "utf8", str(target), *params.args]
         else:
             argv = [*python, "-X", "utf8", "-c", params.code, *params.args]
         res = await run_in_context(argv, ctx, cwd=cwd, timeout=params.timeout_s,
                                    stdin=params.stdin.encode() if params.stdin else None)
-        return process_result(res, "Python")
+        return process_result(res, "Python", ctx.lang)
 
 
 # ------------------------------------------------------------------------------------------ tests
@@ -141,6 +144,9 @@ def detect_test_command(root: Path) -> tuple[list[str], str] | None:
     return None
 
 
+_COUNT_HE = {"passed": "עברו", "failed": "נכשלו", "error": "שגיאות", "errors": "שגיאות", "skipped": "דולגו"}
+
+
 class RunTestsTool(Tool):
     name = "run_tests"
     description = "Run a project's automated tests (pytest or npm test, detected automatically)."
@@ -151,7 +157,8 @@ class RunTestsTool(Tool):
 
     async def plan(self, params: RunTestsParams, ctx: ToolContext) -> ActionPlan:
         root = ctx.resolve(params.path)
-        return ActionPlan(summary=f"Run tests in {root.name}", paths=[PathUse(path=str(root), access="read")])
+        return ActionPlan(summary=ctx.t(f"הרצת הבדיקות של {root.name}", f"Run tests in {root.name}"),
+                          paths=[PathUse(path=str(root), access="read")])
 
     async def run(self, params: RunTestsParams, ctx: ToolContext) -> ToolResult:
         root = project_root(ctx.resolve(params.path))
@@ -160,20 +167,23 @@ class RunTestsTool(Tool):
 
             argv, label = shell_argv(params.command, "auto", ctx.services.host), params.command
             if analyze_command(params.command).risk > RiskLevel.MEDIUM:
-                return ToolResult.fail("That test command looks unsafe; use run_command so it can be reviewed.",
+                return ToolResult.fail(ctx.t("פקודת הבדיקה נראית לא בטוחה; צריך להריץ אותה עם run_command כדי שתיבדק.",
+                                             "That test command looks unsafe; use run_command so it can be reviewed."),
                                        denied="permission")
         else:
             detected = await asyncio.to_thread(detect_test_command, root)
             if detected is None:
-                return ToolResult.fail(f"No tests found in {root} (no pytest tests or npm test script).")
+                return ToolResult.fail(ctx.t(f"לא נמצאו בדיקות ב-{root} (אין בדיקות pytest או סקריפט npm test).",
+                                             f"No tests found in {root} (no pytest tests or npm test script)."))
             argv, label = detected
         res = await run_in_context(argv, ctx, cwd=root, timeout=params.timeout_s)
-        result = process_result(res, f"Tests ({label})")
+        result = process_result(res, f"Tests ({label})", ctx.lang, f"הבדיקות ({label})")
         out = (res.stdout or "") + "\n" + (res.stderr or "")
         counts = {k: int(v) for v, k in re.findall(r"(\d+) (passed|failed|error|errors|skipped)", out)}
         result.data = {**(result.data or {}), "counts": counts, "runner": label}
         if counts:
-            result.summary = f"Tests ({label}): " + ", ".join(f"{v} {k}" for k, v in counts.items())
+            result.summary = ctx.t(f"הבדיקות ({label}): " + ", ".join(f"{v} {_COUNT_HE.get(k, k)}" for k, v in counts.items()),
+                                   f"Tests ({label}): " + ", ".join(f"{v} {k}" for k, v in counts.items()))
             if not result.ok:
                 result.error = result.summary + "\n" + res.summary(1500)
         return result
@@ -204,37 +214,41 @@ class InstallPackagesTool(Tool):
     async def plan(self, params: InstallParams, ctx: ToolContext) -> ActionPlan:
         root = ctx.resolve(params.path)
         what = ", ".join(params.packages) if params.packages else "project dependencies"
-        return ActionPlan(summary=f"Install {what} with {params.manager} in {root.name}",
+        what_he = ", ".join(params.packages) if params.packages else "התלויות של הפרויקט"
+        return ActionPlan(summary=ctx.t(f"התקנת {what_he} עם {params.manager} בפרויקט {root.name}",
+                                        f"Install {what} with {params.manager} in {root.name}"),
                           paths=[PathUse(path=str(root), access="write")],
                           details={"manager": params.manager, "packages": params.packages, "path": str(root)})
 
     async def run(self, params: InstallParams, ctx: ToolContext) -> ToolResult:
         bad = [p for p in params.packages if not _PKG_RE.match(p) or p.startswith("-")]
         if bad:
-            return ToolResult.fail(f"Invalid package name(s): {', '.join(bad)}")
+            return ToolResult.fail(ctx.t(f"שמות חבילות לא תקינים: {', '.join(bad)}", f"Invalid package name(s): {', '.join(bad)}"))
         root = ctx.resolve(params.path)
         if not root.is_dir():
-            return ToolResult.fail(f"Project folder not found: {root}")
+            return ToolResult.fail(ctx.t(f"תיקיית הפרויקט לא נמצאה: {root}", f"Project folder not found: {root}"))
         if params.manager == "npm":
             npm = shutil.which("npm.cmd" if IS_WINDOWS else "npm")
             if not npm:
-                return ToolResult.fail("Node.js/npm is not installed (install it from nodejs.org).")
+                return ToolResult.fail(ctx.t("Node.js/npm לא מותקן (אפשר להתקין אותו מ-nodejs.org).",
+                                             "Node.js/npm is not installed (install it from nodejs.org)."))
             argv = [npm, "install", *(["--save-dev"] if params.dev and params.packages else []), *params.packages]
             res = await run_in_context(argv, ctx, cwd=root, timeout=1800)
-            return process_result(res, "npm install")
+            return process_result(res, "npm install", ctx.lang)
         python = venv_python(root)
         created: list[str] = []
         if python is None:
             base = find_python()
             if base is None:
-                return ToolResult.fail("Python is not installed on this computer.")
+                return ToolResult.fail(ctx.t("Python לא מותקן במחשב.", "Python is not installed on this computer."))
             res = await run_in_context([*base, "-m", "venv", str(root / ".venv")], ctx, cwd=root, timeout=300)
             if not res.ok:
-                return process_result(res, "Creating the virtual environment")
+                return process_result(res, "Creating the virtual environment", ctx.lang, "יצירת הסביבה הווירטואלית")
             created.append(str(root / ".venv"))
             python = venv_python(root)
             if python is None:
-                return ToolResult.fail("The virtual environment was created but has no Python executable.")
+                return ToolResult.fail(ctx.t("הסביבה הווירטואלית נוצרה, אבל אין בה Python.",
+                                             "The virtual environment was created but has no Python executable."))
         if params.packages:
             argv = [*python, "-m", "pip", "install", "--disable-pip-version-check", *params.packages]
         elif (root / "requirements.txt").is_file():
@@ -242,9 +256,10 @@ class InstallPackagesTool(Tool):
         elif (root / "pyproject.toml").is_file():
             argv = [*python, "-m", "pip", "install", "--disable-pip-version-check", "-e", "."]
         else:
-            return ToolResult.fail("Nothing to install: no packages given and no requirements file.")
+            return ToolResult.fail(ctx.t("אין מה להתקין: לא צוינו חבילות ואין קובץ requirements.",
+                                         "Nothing to install: no packages given and no requirements file."))
         res = await run_in_context(argv, ctx, cwd=root, timeout=1800)
-        result = process_result(res, "pip install")
+        result = process_result(res, "pip install", ctx.lang)
         result.files_created.extend(created)
         return result
 
@@ -266,29 +281,30 @@ class GitTool(Tool):
     async def plan(self, params: GitParams, ctx: ToolContext) -> ActionPlan:
         root = ctx.resolve(params.path)
         line = "git " + " ".join(params.args)
-        a = analyze_command(line)
+        a = analyze_command(line, ctx.lang)
         write_ops = {"init", "add", "commit", "checkout", "switch", "merge", "rebase", "reset", "clean", "stash", "pull",
                      "push", "rm", "mv", "restore", "tag", "branch", "clone", "fetch", "cherry-pick", "revert"}
         writes = params.args[0] in write_ops
         risk = a.risk if a.risk > RiskLevel.MEDIUM else (RiskLevel.LOW if writes else RiskLevel.SAFE)
         return ActionPlan(summary=line[:200], paths=[PathUse(path=str(root), access="write" if writes else "read")],
-                          risk=risk, risk_reasons=[r for r in a.reasons if r != "runs a shell command"],
+                          risk=risk, risk_reasons=[r for r in a.reasons if r not in SHELL_COMMAND_REASON],
                           outbound=None, destination="remote" if params.args[0] in ("push", "pull", "fetch", "clone")
                           else None)
 
     async def run(self, params: GitParams, ctx: ToolContext) -> ToolResult:
         git = shutil.which("git")
         if git is None:
-            return ToolResult.fail("Git is not installed (install it from git-scm.com).")
+            return ToolResult.fail(ctx.t("Git לא מותקן (אפשר להתקין אותו מ-git-scm.com).",
+                                         "Git is not installed (install it from git-scm.com)."))
         root = ctx.resolve(params.path)
         if params.args[0] not in ("init", "clone") and not root.is_dir():
-            return ToolResult.fail(f"Folder not found: {root}")
+            return ToolResult.fail(ctx.t(f"התיקייה לא נמצאה: {root}", f"Folder not found: {root}"))
         if params.args[0] == "init":
             await asyncio.to_thread(root.mkdir, parents=True, exist_ok=True)
         env = {"GIT_TERMINAL_PROMPT": "0", "GIT_PAGER": "cat", "PAGER": "cat"}
         res = await run_in_context([git, "-c", "core.quotepath=off", *params.args], ctx, cwd=root,
                                    timeout=params.timeout_s, extra_env=env)
-        return process_result(res, "git " + params.args[0])
+        return process_result(res, "git " + params.args[0], ctx.lang)
 
 
 DEV_TOOLS: tuple[type[Tool], ...] = (RunPythonTool, RunTestsTool, InstallPackagesTool, GitTool)

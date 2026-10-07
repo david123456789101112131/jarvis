@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import itertools
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from jarvis.ai.base import AIProvider
@@ -147,6 +148,7 @@ class FakeHost:
         self.muted = False
         self.clipboard = ""
         self.running: dict[str, list[str]] = {}
+        self.folders: dict[str, Path] = {}      # special folders (desktop, documents…) a test points somewhere
         self._apps = {
             name: InstalledApp(name=display, target=f"C:/Apps/{name}.exe", kind="exe", id=name,
                                process_names=(f"{name}.exe",))
@@ -155,7 +157,7 @@ class FakeHost:
         }
 
     def special_folder(self, key: str):
-        return None
+        return self.folders.get(key)
 
     async def installed_apps(self, refresh: bool = False):
         return list(self._apps.values())

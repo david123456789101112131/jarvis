@@ -410,7 +410,7 @@ class TestRecovery:
         assert "temporary glitch" in contexts[1]["context"]["feedback"]
         assert o.kinds(task).count("retry") == 2
         lines = [e.message for e in o.env.kit.activity.recent(200, task_id=task.id)]
-        assert any("Retrying in" in m for m in lines)
+        assert any("failed (temporary glitch b). Retrying now (attempt 2 of 3)" in m for m in lines)
 
     async def test_retry_limit_and_skipped_dependents(self, o: Orch) -> None:
         plan = plan_of(step("a", "research", "flaky", params={"failures": 99, "vary": True}),

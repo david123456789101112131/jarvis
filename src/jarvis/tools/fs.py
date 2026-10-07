@@ -134,14 +134,14 @@ class ListDirTool(Tool):
 
     async def plan(self, params: ListDirParams, ctx: ToolContext) -> ActionPlan:
         p = ctx.resolve(params.path)
-        return ActionPlan(summary=f"List {p}", paths=[PathUse(path=str(p), access="read")])
+        return ActionPlan(summary=ctx.t(f"הצגת התוכן של {p}", f"List {p}"), paths=[PathUse(path=str(p), access="read")])
 
     async def run(self, params: ListDirParams, ctx: ToolContext) -> ToolResult:
         root = ctx.resolve(params.path)
         if not root.exists():
-            return ToolResult.fail(f"Folder not found: {root}")
+            return ToolResult.fail(ctx.t(f"התיקייה לא נמצאה: {root}", f"Folder not found: {root}"))
         if not root.is_dir():
-            return ToolResult(summary=f"{root} is a file", data={"entries": [_entry(root)]})
+            return ToolResult(summary=ctx.t(f"{root} הוא קובץ", f"{root} is a file"), data={"entries": [_entry(root)]})
 
         def walk() -> tuple[list[dict[str, Any]], bool]:
             out: list[dict[str, Any]] = []
@@ -164,8 +164,10 @@ class ListDirTool(Tool):
 
         entries, truncated = await asyncio.to_thread(walk)
         dirs = sum(1 for e in entries if e["is_dir"])
-        return ToolResult(summary=f"{root}: {dirs} folders, {len(entries) - dirs} files" + (" (truncated)" if truncated else ""),
-                          data={"path": str(root), "entries": entries, "truncated": truncated})
+        files = len(entries) - dirs
+        summary = ctx.t(f"{root}: {dirs} תיקיות, {files} קבצים" + (" (רשימה חלקית)" if truncated else ""),
+                        f"{root}: {dirs} folders, {files} files" + (" (truncated)" if truncated else ""))
+        return ToolResult(summary=summary, data={"path": str(root), "entries": entries, "truncated": truncated})
 
 
 # ------------------------------------------------------------------------------------------ read
@@ -185,16 +187,16 @@ class ReadFileTool(Tool):
 
     async def plan(self, params: ReadFileParams, ctx: ToolContext) -> ActionPlan:
         p = ctx.resolve(params.path)
-        return ActionPlan(summary=f"Read {p.name}", paths=[PathUse(path=str(p), access="read")])
+        return ActionPlan(summary=ctx.t(f"קריאת {p.name}", f"Read {p.name}"), paths=[PathUse(path=str(p), access="read")])
 
     async def run(self, params: ReadFileParams, ctx: ToolContext) -> ToolResult:
         p = ctx.resolve(params.path)
         if not p.is_file():
-            return ToolResult.fail(f"File not found: {p}")
+            return ToolResult.fail(ctx.t(f"הקובץ לא נמצא: {p}", f"File not found: {p}"))
         text = await asyncio.to_thread(extract_text, p)
         chunk = text[params.offset: params.offset + params.max_chars]
         remaining = max(0, len(text) - params.offset - len(chunk))
-        return ToolResult(summary=f"Read {p.name} ({len(text)} characters)",
+        return ToolResult(summary=ctx.t(f"נקרא הקובץ {p.name} ({len(text)} תווים)", f"Read {p.name} ({len(text)} characters)"),
                           data={"path": str(p), "content": chunk, "total_chars": len(text), "remaining_chars": remaining,
                                 "next_offset": params.offset + len(chunk) if remaining else None})
 
@@ -217,8 +219,13 @@ class WriteFileTool(Tool):
     async def plan(self, params: WriteFileParams, ctx: ToolContext) -> ActionPlan:
         p = ctx.resolve(params.path)
         exists = await asyncio.to_thread(p.exists)
-        verb = "Append to" if params.mode == "append" else ("Overwrite" if exists else "Create")
-        return ActionPlan(summary=f"{verb} {p.name}", paths=[PathUse(path=str(p), access="write")],
+        if params.mode == "append":
+            summary = ctx.t(f"הוספת תוכן לקובץ {p.name}", f"Append to {p.name}")
+        elif exists:
+            summary = ctx.t(f"שכתוב הקובץ {p.name}", f"Overwrite {p.name}")
+        else:
+            summary = ctx.t(f"יצירת הקובץ {p.name}", f"Create {p.name}")
+        return ActionPlan(summary=summary, paths=[PathUse(path=str(p), access="write")],
                           details={"bytes": len(params.content.encode(params.encoding, errors="replace")),
                                    "exists": exists})
 
@@ -228,7 +235,7 @@ class WriteFileTool(Tool):
         def write() -> bool:
             existed = p.exists()
             if existed and params.mode == "create_only":
-                raise ToolError(f"{p} already exists")
+                raise ToolError(ctx.t(f"{p} כבר קיים", f"{p} already exists"))
             p.parent.mkdir(parents=True, exist_ok=True)
             if params.mode == "append":
                 with p.open("a", encoding=params.encoding, newline="") as fh:
@@ -240,7 +247,7 @@ class WriteFileTool(Tool):
             return existed
 
         existed = await asyncio.to_thread(write)
-        result = ToolResult(summary=f"{'Updated' if existed else 'Created'} {p}",
+        result = ToolResult(summary=ctx.t(f"{'עודכן' if existed else 'נוצר'} הקובץ {p}", f"{'Updated' if existed else 'Created'} {p}"),
                             data={"path": str(p), "chars": len(params.content)})
         (result.files_modified if existed else result.files_created).append(str(p))
         return result
@@ -258,15 +265,17 @@ class CreateFolderTool(Tool):
 
     async def plan(self, params: CreateFolderParams, ctx: ToolContext) -> ActionPlan:
         p = ctx.resolve(params.path)
-        return ActionPlan(summary=f"Create folder {p}", paths=[PathUse(path=str(p), access="write")])
+        return ActionPlan(summary=ctx.t(f"יצירת התיקייה {p}", f"Create folder {p}"), paths=[PathUse(path=str(p), access="write")])
 
     async def run(self, params: CreateFolderParams, ctx: ToolContext) -> ToolResult:
         p = ctx.resolve(params.path)
         existed = await asyncio.to_thread(p.exists)
         if existed and not p.is_dir():
-            return ToolResult.fail(f"A file with that name already exists: {p}")
+            return ToolResult.fail(ctx.t(f"כבר קיים קובץ בשם הזה: {p}", f"A file with that name already exists: {p}"))
         await asyncio.to_thread(p.mkdir, parents=True, exist_ok=True)
-        res = ToolResult(summary=f"Folder {'already exists' if existed else 'created'}: {p}", data={"path": str(p)})
+        summary = ctx.t(f"{'התיקייה כבר קיימת' if existed else 'נוצרה התיקייה'}: {p}",
+                        f"Folder {'already exists' if existed else 'created'}: {p}")
+        res = ToolResult(summary=summary, data={"path": str(p)})
         if not existed:
             res.files_created.append(str(p))
         return res
@@ -288,7 +297,8 @@ class CopyPathTool(Tool):
     async def plan(self, params: CopyMoveParams, ctx: ToolContext) -> ActionPlan:
         src, dst = ctx.resolve(params.source), ctx.resolve(params.destination)
         n = await asyncio.to_thread(count_files, src)
-        return ActionPlan(summary=f"Copy {src.name} to {dst}", affected_count=n if params.overwrite else None,
+        return ActionPlan(summary=ctx.t(f"העתקת {src.name} אל {dst}", f"Copy {src.name} to {dst}"),
+                          affected_count=n if params.overwrite else None,
                           paths=[PathUse(path=str(src), access="read"), PathUse(path=str(dst), access="write")])
 
     async def run(self, params: CopyMoveParams, ctx: ToolContext) -> ToolResult:
@@ -296,10 +306,11 @@ class CopyPathTool(Tool):
 
         def copy() -> Path:
             if not src.exists():
-                raise ToolError(f"Not found: {src}")
+                raise ToolError(ctx.t(f"לא נמצא: {src}", f"Not found: {src}"))
             target = dst / src.name if dst.is_dir() else dst
             if target.exists() and not params.overwrite:
-                raise ToolError(f"{target} already exists (set overwrite to replace it)")
+                raise ToolError(ctx.t(f"{target} כבר קיים (כדי להחליף אותו צריך overwrite)",
+                                      f"{target} already exists (set overwrite to replace it)"))
             target.parent.mkdir(parents=True, exist_ok=True)
             if src.is_dir():
                 shutil.copytree(src, target, dirs_exist_ok=params.overwrite)
@@ -308,7 +319,8 @@ class CopyPathTool(Tool):
             return target
 
         target = await asyncio.to_thread(copy)
-        return ToolResult(summary=f"Copied {src.name} to {target}", files_created=[str(target)],
+        return ToolResult(summary=ctx.t(f"הועתק {src.name} אל {target}", f"Copied {src.name} to {target}"),
+                          files_created=[str(target)],
                           data={"path": str(target)})
 
 
@@ -322,7 +334,7 @@ class MovePathTool(Tool):
         src, dst = ctx.resolve(params.source), ctx.resolve(params.destination)
         n = await asyncio.to_thread(count_files, src)
         # The data is relocated, not destroyed: both ends are judged as writes (broad moves still ask).
-        return ActionPlan(summary=f"Move {src} to {dst}", affected_count=n,
+        return ActionPlan(summary=ctx.t(f"העברת {src} אל {dst}", f"Move {src} to {dst}"), affected_count=n,
                           paths=[PathUse(path=str(src), access="write"), PathUse(path=str(dst), access="write")])
 
     async def run(self, params: CopyMoveParams, ctx: ToolContext) -> ToolResult:
@@ -330,15 +342,17 @@ class MovePathTool(Tool):
 
         def move() -> Path:
             if not src.exists():
-                raise ToolError(f"Not found: {src}")
+                raise ToolError(ctx.t(f"לא נמצא: {src}", f"Not found: {src}"))
             target = dst / src.name if dst.is_dir() else dst
             if target.exists() and not params.overwrite:
-                raise ToolError(f"{target} already exists (set overwrite to replace it)")
+                raise ToolError(ctx.t(f"{target} כבר קיים (כדי להחליף אותו צריך overwrite)",
+                                      f"{target} already exists (set overwrite to replace it)"))
             target.parent.mkdir(parents=True, exist_ok=True)
             return Path(shutil.move(str(src), str(target)))
 
         target = await asyncio.to_thread(move)
-        return ToolResult(summary=f"Moved {src.name} to {target}", files_created=[str(target)],
+        return ToolResult(summary=ctx.t(f"הועבר {src.name} אל {target}", f"Moved {src.name} to {target}"),
+                          files_created=[str(target)],
                           files_deleted=[str(src)], data={"path": str(target)})
 
 
@@ -362,11 +376,13 @@ class DeletePathTool(Tool):
         permanent = params.permanent or not ctx.services.settings.security.use_recycle_bin
         names = ", ".join(p.name or str(p) for p in paths[:5]) + ("…" if len(paths) > 5 else "")
         return ActionPlan(
-            summary=f"{'Permanently delete' if permanent else 'Move to Recycle Bin'}: {names} ({total} items)",
+            summary=ctx.t(f"{'מחיקה לצמיתות' if permanent else 'העברה לסל המחזור'}: {names}",
+                          f"{'Permanently delete' if permanent else 'Move to Recycle Bin'}: {names}")
+            + f" ({ctx.n(total, 'פריט אחד', 'פריטים', 'item', 'items')})",
             paths=[PathUse(path=str(p), access="delete") for p in paths],
             affected_count=total,
             risk=RiskLevel.HIGH if permanent else None,
-            risk_reasons=["permanent delete (cannot be undone)"] if permanent else [],
+            risk_reasons=[ctx.t("מחיקה לצמיתות (אי אפשר לבטל אותה)", "permanent delete (cannot be undone)")] if permanent else [],
             always_confirm=permanent,
             details={"items": total, "permanent": permanent},
         )
@@ -395,10 +411,18 @@ class DeletePathTool(Tool):
             return done, missing
 
         done, missing = await asyncio.to_thread(delete)
-        where = "deleted permanently" if permanent else "moved to the Recycle Bin"
-        summary = f"{len(done)} item(s) {where}" + (f"; not found: {', '.join(missing)}" if missing else "")
+        n = len(done)
+        if ctx.lang == "he":
+            verb = ("נמחק לצמיתות" if n == 1 else "נמחקו לצמיתות") if permanent else (
+                "הועבר לסל המחזור" if n == 1 else "הועברו לסל המחזור")
+            summary = ("פריט אחד" if n == 1 else f"{n} פריטים") + f" {verb}" + (
+                f"; לא נמצאו: {', '.join(missing)}" if missing else "")
+        else:
+            where = "deleted permanently" if permanent else "moved to the Recycle Bin"
+            summary = f"{n} item(s) {where}" + (f"; not found: {', '.join(missing)}" if missing else "")
         return ToolResult(ok=bool(done) or not missing, summary=summary, files_deleted=done,
-                          error=None if done or not missing else summary, data={"missing": missing})
+                          error=None if done or not missing else summary,
+                          data={"missing": missing, "permanent": permanent})
 
 
 # ------------------------------------------------------------------------------------------ find
@@ -422,13 +446,14 @@ class FindFilesTool(Tool):
 
     async def plan(self, params: FindFilesParams, ctx: ToolContext) -> ActionPlan:
         root = ctx.resolve(params.root)
-        return ActionPlan(summary=f"Search {root} for {params.name or params.contains or 'files'}",
+        return ActionPlan(summary=ctx.t(f"חיפוש {params.name or params.contains or 'קבצים'} ב-{root}",
+                                        f"Search {root} for {params.name or params.contains or 'files'}"),
                           paths=[PathUse(path=str(root), access="read")])
 
     async def run(self, params: FindFilesParams, ctx: ToolContext) -> ToolResult:
         root = ctx.resolve(params.root)
         if not root.is_dir():
-            return ToolResult.fail(f"Folder not found: {root}")
+            return ToolResult.fail(ctx.t(f"התיקייה לא נמצאה: {root}", f"Folder not found: {root}"))
         name = params.name.lower().strip()
         glob = name if any(ch in name for ch in "*?[") else None
         exts = {e.lower() if e.startswith(".") else "." + e.lower() for e in params.extensions}
@@ -474,7 +499,9 @@ class FindFilesTool(Tool):
 
         hits, scanned = await asyncio.to_thread(search)
         hits.sort(key=lambda e: e.get("modified") or "", reverse=True)
-        return ToolResult(summary=f"Found {len(hits)} file(s) in {root}", data={"results": hits, "scanned": scanned})
+        found = ctx.t("נמצא קובץ אחד" if len(hits) == 1 else f"נמצאו {len(hits)} קבצים",
+                      f"Found {len(hits)} file{'' if len(hits) == 1 else 's'}")
+        return ToolResult(summary=ctx.t(f"{found} ב-{root}", f"{found} in {root}"), data={"results": hits, "scanned": scanned})
 
 
 class FileInfoParams(BaseModel):
@@ -491,14 +518,14 @@ class FileInfoTool(Tool):
 
     async def plan(self, params: FileInfoParams, ctx: ToolContext) -> ActionPlan:
         p = ctx.resolve(params.path)
-        return ActionPlan(summary=f"Inspect {p}", paths=[PathUse(path=str(p), access="read")])
+        return ActionPlan(summary=ctx.t(f"בדיקת הפרטים של {p}", f"Inspect {p}"), paths=[PathUse(path=str(p), access="read")])
 
     async def run(self, params: FileInfoParams, ctx: ToolContext) -> ToolResult:
         p = ctx.resolve(params.path)
 
         def info() -> dict[str, Any]:
             if not p.exists():
-                raise ToolError(f"Not found: {p}")
+                raise ToolError(ctx.t(f"לא נמצא: {p}", f"Not found: {p}"))
             data = _entry(p)
             if p.is_dir():
                 size = files = 0
@@ -515,7 +542,8 @@ class FileInfoTool(Tool):
             return data
 
         data = await asyncio.to_thread(info)
-        return ToolResult(summary=f"{p.name}: {data['type']}, {data['size_text']}", data=data)
+        kind = ctx.t("תיקייה", "folder") if data["is_dir"] else (p.suffix.lower() or ctx.t("קובץ", "file"))
+        return ToolResult(summary=f"{p.name}: {kind}, {data['size_text']}", data=data)
 
 
 # ------------------------------------------------------------------------------------------ open
@@ -534,25 +562,26 @@ class OpenPathTool(Tool):
         p = ctx.resolve(params.path)
         runs_code = p.suffix.lower() in EXECUTABLE_EXT and not params.reveal
         return ActionPlan(
-            summary=f"{'Show' if params.reveal else 'Open'} {p}",
+            summary=ctx.t(f"{'הצגה בסייר הקבצים' if params.reveal else 'פתיחה'}: {p}", f"{'Show' if params.reveal else 'Open'} {p}"),
             paths=[PathUse(path=str(p), access="read")],
             risk=RiskLevel.HIGH if runs_code else None,
-            risk_reasons=["opens a program or script file"] if runs_code else [],
+            risk_reasons=[ctx.t("פותח קובץ של תוכנה או סקריפט", "opens a program or script file")] if runs_code else [],
         )
 
     async def run(self, params: OpenPathParams, ctx: ToolContext) -> ToolResult:
         p = ctx.resolve(params.path)
         host = ctx.services.host
         if host is None:
-            return ToolResult.fail("Opening files is not available on this system.")
+            return ToolResult.fail(ctx.t("פתיחת קבצים לא זמינה במערכת הזו.", "Opening files is not available on this system."))
         if not await asyncio.to_thread(p.exists):
-            return ToolResult.fail(f"Not found: {p}")
+            return ToolResult.fail(ctx.t(f"לא נמצא: {p}", f"Not found: {p}"))
         if params.reveal:
             await host.reveal(p)
         else:
             await host.open_path(p)
         ctx.services.extras.setdefault("recent_opened", []).append(str(p))
-        return ToolResult(summary=f"{'Showing' if params.reveal else 'Opened'} {p.name or p}",
+        return ToolResult(summary=ctx.t(f"{'מוצג בסייר הקבצים' if params.reveal else 'נפתח'}: {p.name or p}",
+                                        f"{'Showing' if params.reveal else 'Opened'} {p.name or p}"),
                           actions=[f"open {p}"], data={"path": str(p)})
 
 

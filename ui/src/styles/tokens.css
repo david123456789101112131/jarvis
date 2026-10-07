@@ -1,0 +1,121 @@
+/* Design tokens. Theme color drives --accent* (UI) and the orb palette (Three.js reads the same names). */
+:root {
+  --font-body: 'Heebo', system-ui, 'Segoe UI', Arial, sans-serif;
+  --font-hud: 'Orbitron', 'Heebo', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', Consolas, monospace;
+
+  --bg-0: #03060d;
+  --bg-1: #050b16;
+  --bg-2: #08111f;
+  --surface-0: rgba(9, 18, 34, 0.5);
+  --surface-1: rgba(12, 24, 44, 0.56);
+  --surface-2: rgba(17, 33, 60, 0.62);
+  --surface-3: rgba(24, 44, 78, 0.7);
+  --surface-solid: #0a1527;
+  --surface-raised: #0d1a30;
+
+  --text-0: #eaf6ff;
+  --text-1: #b6cce2;
+  --text-2: #8299b4;
+  --text-3: #5a7290;
+
+  /* Theme (blue / daily) */
+  --accent: #2ea8ff;
+  --accent-2: #59d0ff;
+  --accent-rgb: 46, 168, 255;
+  --accent-2-rgb: 89, 208, 255;
+  --accent-ink: #03111f;
+  --accent-deep: #0b3b8c;
+
+  --line: rgba(var(--accent-2-rgb), 0.13);
+  --line-2: rgba(var(--accent-2-rgb), 0.22);
+  --line-strong: rgba(var(--accent-2-rgb), 0.42);
+  --glow-sm: 0 0 10px rgba(var(--accent-rgb), 0.35);
+  --glow: 0 0 22px rgba(var(--accent-rgb), 0.32);
+
+  /* Semantic tones (fixed across themes) */
+  --tone-muted: 100, 116, 139;
+  --tone-steel: 127, 166, 201;
+  --tone-think: 176, 123, 255;
+  --tone-work: 56, 225, 255;
+  --tone-warn: 255, 181, 71;
+  --tone-ok: 47, 227, 154;
+  --tone-danger: 255, 77, 94;
+  --tone-orange: 255, 138, 61;
+  --tone-verify: 143, 155, 255;
+  --tone-info: 89, 208, 255;
+  --ok: rgb(var(--tone-ok));
+  --warn: rgb(var(--tone-warn));
+  --danger: rgb(var(--tone-danger));
+
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --radius-pill: 999px;
+
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+
+  --rail-w: 68px;
+  --topbar-h: 56px;
+  --ease: cubic-bezier(0.2, 0.7, 0.2, 1);
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+
+  color-scheme: dark;
+}
+
+:root[data-theme='green'] {
+  --accent: #1fe08f;
+  --accent-2: #6dffc4;
+  --accent-rgb: 31, 224, 143;
+  --accent-2-rgb: 109, 255, 196;
+  --accent-ink: #021a10;
+  --accent-deep: #075c3c;
+}
+
+:root[data-theme='orange'] {
+  --accent: #ff9a2e;
+  --accent-2: #ffc46b;
+  --accent-rgb: 255, 154, 46;
+  --accent-2-rgb: 255, 196, 107;
+  --accent-ink: #1f0e00;
+  --accent-deep: #7a3a05;
+}
+
+:root[data-theme='red'] {
+  --accent: #ff3b4f;
+  --accent-2: #ff8a95;
+  --accent-rgb: 255, 59, 79;
+  --accent-2-rgb: 255, 138, 149;
+  --accent-ink: #20040a;
+  --accent-deep: #6b0a16;
+}
+
+:root[data-theme='purple'] {
+  --accent: #a35bff;
+  --accent-2: #d1a6ff;
+  --accent-rgb: 163, 91, 255;
+  --accent-2-rgb: 209, 166, 255;
+  --accent-ink: #12052a;
+  --accent-deep: #3d1478;
+}
+
+:root[data-theme='white'] {
+  --accent: #cfdcef;
+  --accent-2: #f2f7ff;
+  --accent-rgb: 207, 220, 239;
+  --accent-2-rgb: 242, 247, 255;
+  --accent-ink: #0b1220;
+  --accent-deep: #4a5a70;
+  --line: rgba(var(--accent-2-rgb), 0.1);
+  --line-2: rgba(var(--accent-2-rgb), 0.17);
+  --line-strong: rgba(var(--accent-2-rgb), 0.32);
+  --glow-sm: 0 0 8px rgba(var(--accent-rgb), 0.22);
+  --glow: 0 0 16px rgba(var(--accent-rgb), 0.18);
+}

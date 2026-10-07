@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 
 from jarvis.common.enums import Capability, RiskLevel
 from jarvis.common.errors import PermissionDenied
+from jarvis.common.i18n import t
 from jarvis.permissions.models import PathUse
 from jarvis.security.process import ProcessResult, run_process
 from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
@@ -54,15 +55,20 @@ async def run_in_context(argv: list[str], ctx: ToolContext, *, cwd: Path | None,
     )
 
 
-def process_result(res: ProcessResult, what: str) -> ToolResult:
+def process_result(res: ProcessResult, what: str, lang: str = "en", what_he: str | None = None) -> ToolResult:
+    """The tool result of a finished child process; `what` names it in messages (`what_he` in Hebrew)."""
     data = res.to_dict()
+    he = what_he or what
     if res.cancelled:
-        return ToolResult.fail(f"{what} was stopped.", data=data)
+        return ToolResult.fail(t(lang, f"הריצה של {he} נעצרה.", f"{what} was stopped."), data=data)
     if res.timed_out:
-        return ToolResult.fail(f"{what} timed out after {res.duration_s:.0f}s.", data=data)
+        return ToolResult.fail(t(lang, f"הריצה של {he} לא הסתיימה בזמן ({res.duration_s:.0f} שניות).",
+                                 f"{what} timed out after {res.duration_s:.0f}s."), data=data)
     if res.exit_code != 0:
-        return ToolResult.fail(f"{what} failed (exit {res.exit_code}): {res.summary(400)}", data=data)
-    return ToolResult(summary=f"{what} finished: {res.summary(300)}", data=data)
+        return ToolResult.fail(t(lang, f"הריצה של {he} נכשלה (קוד יציאה {res.exit_code}): {res.summary(400)}",
+                                 f"{what} failed (exit {res.exit_code}): {res.summary(400)}"), data=data)
+    return ToolResult(summary=t(lang, f"הריצה של {he} הסתיימה: {res.summary(300)}", f"{what} finished: {res.summary(300)}"),
+                      data=data)
 
 
 class RunCommandParams(BaseModel):
@@ -83,19 +89,19 @@ class RunCommandTool(Tool):
 
     async def plan(self, params: RunCommandParams, ctx: ToolContext) -> ActionPlan:
         if not ctx.services.settings.security.shell_enabled:
-            raise PermissionDenied("Shell commands are disabled in the security settings.")
+            raise PermissionDenied(ctx.t("פקודות מערכת מושבתות בהגדרות האבטחה.", "Shell commands are disabled in the security settings."))
         cwd = ctx.resolve(params.cwd) if params.cwd else (ctx.cwd or ctx.services.paths.workspace)
         short = params.command if len(params.command) <= 160 else params.command[:157] + "…"
-        return ActionPlan(summary=f"Run: {short}", paths=[PathUse(path=str(cwd), access="read")],
+        return ActionPlan(summary=ctx.t(f"הרצת פקודה: {short}", f"Run: {short}"), paths=[PathUse(path=str(cwd), access="read")],
                           details={"command": params.command, "shell": params.shell, "cwd": str(cwd)})
 
     async def run(self, params: RunCommandParams, ctx: ToolContext) -> ToolResult:
         cwd = ctx.resolve(params.cwd) if params.cwd else (ctx.cwd or ctx.services.paths.workspace)
         if not cwd.is_dir():
-            return ToolResult.fail(f"Working folder not found: {cwd}")
+            return ToolResult.fail(ctx.t(f"תיקיית העבודה לא נמצאה: {cwd}", f"Working folder not found: {cwd}"))
         argv = shell_argv(params.command, params.shell, ctx.services.host)
         res = await run_in_context(argv, ctx, cwd=cwd, timeout=params.timeout_s)
-        result = process_result(res, "Command")
+        result = process_result(res, "Command", ctx.lang, "הפקודה")
         result.actions.append(f"ran: {params.command[:200]}")
         return result
 

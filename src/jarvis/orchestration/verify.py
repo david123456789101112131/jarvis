@@ -103,8 +103,10 @@ class Verifier:
         missing = [f for f in result.files_created[:300] if locate(f) is None]
         if missing:
             shown = ", ".join(missing[:5]) + (f" (+{len(missing) - 5})" if len(missing) > 5 else "")
-            problems.append(t(lang, f"{len(missing)} קבצים שדווחו כנוצרו לא קיימים: {shown}",
-                              f"{len(missing)} file(s) reported as created do not exist: {shown}"))
+            problems.append(t(lang, f"קובץ שדווח כנוצר לא קיים: {shown}" if len(missing) == 1
+                              else f"{len(missing)} קבצים שדווחו כנוצרו לא קיימים: {shown}",
+                              f"A file reported as created does not exist: {shown}" if len(missing) == 1
+                              else f"{len(missing)} files reported as created do not exist: {shown}"))
         produced = {Path(f).name.lower() for f in [*result.files_created, *result.files_modified]}
         for expected in sub.expected_files[:30]:
             name = Path(expected).name.lower()

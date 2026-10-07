@@ -17,6 +17,7 @@ from pydantic import BaseModel, Field
 from jarvis.agents.base import AGENT_INFO, t
 from jarvis.common.enums import TaskStatus
 from jarvis.common.errors import ProviderError
+from jarvis.common.i18n import steps_done
 from jarvis.orchestration.task import TaskOutcome, short_title
 
 if TYPE_CHECKING:
@@ -107,24 +108,26 @@ def template_outcome(task: JarvisTask, *, missing_files: list[str] | None = None
         if n == 1 and done:
             summary = done[0].summary or t(lang, f"סיימתי: {title}.", f"Done: {title}.")
         else:
-            summary = t(lang, f"סיימתי את '{title}'. {d} שלבים הושלמו ({agents}).",
-                        f"I finished '{title}'. {d} steps completed ({agents}).")
-        if outcome.issues:
-            summary += t(lang, f" יש {len(outcome.issues)} הערות בפירוט.", f" There are {len(outcome.issues)} notes below.")
+            summary = t(lang, f"סיימתי את '{title}'. {'שלב אחד הושלם' if d == 1 else f'{d} שלבים הושלמו'} ({agents}).",
+                        f"I finished '{title}'. {d} step{'' if d == 1 else 's'} completed ({agents}).")
+        k = len(outcome.issues)
+        if k:
+            summary += t(lang, " יש הערה אחת בפירוט." if k == 1 else f" יש {k} הערות בפירוט.",
+                         " There is 1 note below." if k == 1 else f" There are {k} notes below.")
     elif status == TaskStatus.CANCELLED:
-        summary = t(lang, f"עצרתי את '{title}'. הושלמו {d} מתוך {n} שלבים.",
-                    f"I stopped '{title}'. {d} of {n} steps were completed.")
+        summary = t(lang, f"עצרתי את '{title}'. {steps_done(lang, d, n)}.",
+                    f"I stopped '{title}'. {steps_done(lang, d, n).capitalize()}.")
     elif status == TaskStatus.INTERRUPTED:
         reason = f" ({task.error})" if task.error else ""
-        summary = t(lang, f"המשימה '{title}' נעצרה באמצע{reason}. הושלמו {d} מתוך {n} שלבים, ואפשר להמשיך מאותה נקודה.",
-                    f"'{title}' was paused{reason}. {d} of {n} steps are done and it can continue from there.")
+        summary = t(lang, f"המשימה '{title}' נעצרה באמצע{reason}. {steps_done(lang, d, n)}, ואפשר להמשיך מאותה נקודה.",
+                    f"'{title}' was paused{reason}. {steps_done(lang, d, n).capitalize()}, and it can continue from there.")
     elif task.plan is None:
         summary = t(lang, f"לא הצלחתי לתכנן את '{title}'.", f"I could not plan '{title}'.")
         if task.error:
             summary += f" {task.error}"
     else:
-        summary = t(lang, f"לא הצלחתי להשלים את '{title}': הושלמו {d} מתוך {n} שלבים.",
-                    f"I could not complete '{title}': {d} of {n} steps were completed.")
+        summary = t(lang, f"לא הצלחתי להשלים את '{title}': {steps_done(lang, d, n)}.",
+                    f"I could not complete '{title}': {steps_done(lang, d, n)}.")
         first = next((s for s in subs if s.status in (TaskStatus.FAILED, TaskStatus.CANCELLED) and not s.optional),
                      None)
         if first is not None and first.error:

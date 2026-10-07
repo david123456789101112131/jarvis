@@ -20,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from jarvis.common.cancel import CancelToken
 from jarvis.common.enums import Capability, Mode, RiskLevel
 from jarvis.common.errors import ToolError
+from jarvis.common.i18n import plural, t
 from jarvis.permissions.models import PathUse
 
 if TYPE_CHECKING:
@@ -96,9 +97,18 @@ class ToolContext:
     cwd: Path | None = None
     progress_fn: ProgressFn | None = None
     extra: dict[str, Any] = field(default_factory=dict)
+    lang: str = "en"                     # language of the request: summaries and messages use it
 
     def check_cancelled(self) -> None:
         self.cancel.raise_if_cancelled()
+
+    def t(self, he: str, en: str) -> str:
+        """The Hebrew or English variant of a user-facing sentence, in the request's language."""
+        return t(self.lang, he, en)
+
+    def n(self, count: int, he_one: str, he_many: str, en_one: str, en_many: str) -> str:
+        """A count with the right noun form: ctx.n(3, "קובץ אחד", "קבצים", "file", "files") -> "3 קבצים"."""
+        return plural(self.lang, count, he_one, he_many, en_one, en_many)
 
     async def progress(self, fraction: float, message: str = "") -> None:
         if self.progress_fn is None:

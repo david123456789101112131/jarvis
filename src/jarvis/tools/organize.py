@@ -114,30 +114,38 @@ class OrganizeFolderTool(Tool):
             moves = await asyncio.to_thread(plan_moves, root, params.mode, params.language, params.include_hidden)
         folders = sorted({m["folder"] for m in moves})
         if params.dry_run:
-            return ActionPlan(summary=f"Preview organizing {root}", capabilities=[C.FS_READ],
-                              paths=[PathUse(path=str(root), access="read")])
+            return ActionPlan(summary=ctx.t(f"תצוגה מקדימה של סידור {root}", f"Preview organizing {root}"),
+                              capabilities=[C.FS_READ], paths=[PathUse(path=str(root), access="read")])
         broad = len(moves) >= ctx.services.settings.security.broad_delete_threshold
-        return ActionPlan(summary=f"Move {len(moves)} file(s) in {root} into {len(folders)} folder(s): "
-                                  + ", ".join(folders[:8]),
+        names = ", ".join(folders[:8])
+        files, dirs = ctx.n(len(moves), "קובץ אחד", "קבצים", "file", "files"), ctx.n(len(folders), "תיקייה אחת", "תיקיות",
+                                                                                         "folder", "folders")
+        return ActionPlan(summary=ctx.t(f"סידור {files} ב-{root} לתוך {dirs}: {names}",
+                                        f"Move {files} in {root} into {dirs}: {names}"),
                           paths=[PathUse(path=str(root), access="write")], affected_count=len(moves),
                           risk=RiskLevel.HIGH if broad else None,
-                          risk_reasons=[f"moves {len(moves)} files into new folders"] if broad else [],
+                          risk_reasons=[ctx.t(f"מעביר {len(moves)} קבצים לתיקיות חדשות",
+                                              f"moves {len(moves)} files into new folders")] if broad else [],
                           details={"folders": folders, "examples": [Path(m["source"]).name for m in moves[:10]]})
 
     async def run(self, params: OrganizeParams, ctx: ToolContext) -> ToolResult:
         root = ctx.resolve(params.path)
         if not root.is_dir():
-            return ToolResult.fail(f"Folder not found: {root}")
+            return ToolResult.fail(ctx.t(f"התיקייה לא נמצאה: {root}", f"Folder not found: {root}"))
         if await asyncio.to_thread(looks_like_project, root):
-            return ToolResult.fail(f"{root} looks like a software project; its files are not rearranged by type.",
+            return ToolResult.fail(ctx.t(f"{root} נראית כמו פרויקט תוכנה, ולכן הקבצים שבה לא מסודרים לפי סוג.",
+                                         f"{root} looks like a software project; its files are not rearranged by type."),
                                    data={"project": True})
         moves = await asyncio.to_thread(plan_moves, root, params.mode, params.language, params.include_hidden)
         groups: dict[str, list[str]] = {}
         for m in moves:
             groups.setdefault(m["folder"], []).append(Path(m["source"]).name)
         if params.dry_run or not moves:
-            summary = (f"{len(moves)} file(s) would move into {len(groups)} folder(s)" if moves
-                       else "Nothing to organize: no loose files")
+            files = ctx.n(len(moves), "קובץ אחד", "קבצים", "file", "files")
+            dirs = ctx.n(len(groups), "תיקייה אחת", "תיקיות", "folder", "folders")
+            summary = (ctx.t(f"{'יועבר' if len(moves) == 1 else 'יועברו'} {files} לתוך {dirs}",
+                             f"{files} would move into {dirs}") if moves
+                       else ctx.t("אין מה לסדר: אין קבצים פזורים", "Nothing to organize: no loose files"))
             return ToolResult(summary=summary, data={"path": str(root), "groups": groups, "moved": 0,
                                                      "dry_run": params.dry_run})
         done: list[dict[str, str]] = []
@@ -159,7 +167,12 @@ class OrganizeFolderTool(Tool):
         await asyncio.to_thread(do_moves)
         log_file = self._write_log(ctx, root, done)
         counts = {k: len(v) for k, v in groups.items()}
-        summary = f"Moved {len(done)} file(s) into {len(counts)} folder(s)" + (f"; {len(errors)} failed" if errors else "")
+        files = ctx.n(len(done), "קובץ אחד", "קבצים", "file", "files")
+        dirs = ctx.n(len(counts), "תיקייה אחת", "תיקיות", "folder", "folders")
+        failed = ctx.t(f"; {'אחד נכשל' if len(errors) == 1 else f'{len(errors)} נכשלו'}",
+                       f"; {len(errors)} failed") if errors else ""
+        summary = ctx.t(f"{'הועבר' if len(done) == 1 else 'הועברו'} {files} לתוך {dirs}{failed}",
+                        f"Moved {files} into {dirs}{failed}")
         res = ToolResult(ok=bool(done) or not errors, summary=summary,
                          actions=[f"organize {root}: {', '.join(f'{k} ({v})' for k, v in sorted(counts.items()))}"],
                          files_modified=[str(root)],

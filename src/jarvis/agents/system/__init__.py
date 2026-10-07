@@ -3,20 +3,34 @@ system health. Its skills are the fast path for simple commands ("open Chrome", 
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
 from jarvis.agents.base import AgentResult, AgentTask, BaseAgent, RunContext, skill, t
 from jarvis.agents.common import dependency_value, launch_project, project_details, resolve_folder
 from jarvis.common.enums import AgentId, ResultStatus
-from jarvis.core.intents import I
+from jarvis.common.i18n import plural
+from jarvis.core.intents import I, place_from_text
 from jarvis.tools.base import ToolResult
+
+_ABSOLUTE = re.compile(r"^(?:[a-z]:[\\/]|\\\\|/|~)", re.I)
 
 FOLDER_NAMES_HE = {
     "desktop": "שולחן העבודה", "documents": "המסמכים", "downloads": "ההורדות", "pictures": "התמונות",
     "music": "המוזיקה", "videos": "הסרטונים", "home": "תיקיית הבית", "workspace": "סביבת העבודה",
     "projects": "הפרויקטים",
 }
+FOLDER_NAMES_EN = {
+    "desktop": "the Desktop", "documents": "Documents", "downloads": "Downloads", "pictures": "Pictures",
+    "music": "Music", "videos": "Videos", "home": "your home folder", "workspace": "the workspace",
+    "projects": "the projects folder",
+}
+
+
+def folder_label(folder: str, lang: str) -> str:
+    """A folder key ("desktop") in words for the user; a path stays as it is."""
+    return (FOLDER_NAMES_HE if lang == "he" else FOLDER_NAMES_EN).get(folder, folder)
 
 
 def fail(run: RunContext, res: ToolResult, he: str, en: str, **kw: Any) -> AgentResult:
@@ -26,7 +40,8 @@ def fail(run: RunContext, res: ToolResult, he: str, en: str, **kw: Any) -> Agent
     if res.denied == "confirmation":
         summary = t(lang, f"{he}: לא אושר.", f"{en}: not approved.")
     elif res.denied:
-        summary = t(lang, f"{he}: אין הרשאה ({reason}).", f"{en}: not allowed ({reason}).")
+        bare = re.sub(r"^(?:אין הרשאה|Not allowed):\s*", "", reason)   # the executor's own prefix
+        summary = t(lang, f"{he}: אין הרשאה ({bare}).", f"{en}: not allowed ({bare}).")
     else:
         summary = t(lang, f"{he}: {reason}", f"{en}: {reason}")
     return run.result(status=ResultStatus.FAILED, progress=0.0, summary=summary, errors=[reason] if reason else [],
@@ -67,8 +82,11 @@ def findings_report(findings: list[dict[str, str]], stats: dict[str, Any], top: 
         return t(lang, "המחשב במצב טוב: אין עומס חריג, יש מספיק זיכרון ומקום בדיסק.",
                  "Your computer looks healthy: no unusual load, enough memory and disk space.")
     warnings = sum(1 for f in findings if f.get("level") == "warning")
+    notes = len(findings) - warnings
     if lang != "he":
-        head = (f"{warnings} warning(s) and {len(findings) - warnings} note(s):" if warnings else "A few notes:")
+        head = (f"{plural(lang, warnings, '', '', 'warning', 'warnings')}"
+                + (f" and {plural(lang, notes, '', '', 'note', 'notes')}" if notes else "") + ":"
+                if warnings else "A few notes:")
         return head + " " + " ".join(f["message"] for f in findings)
     areas = {f.get("area") for f in findings}
     lines: list[str] = []
@@ -89,8 +107,14 @@ def findings_report(findings: list[dict[str, str]], stats: dict[str, Any], top: 
             if proc.get("memory_mb", 0) >= 4000:
                 lines.append(f"{proc['name']} משתמש ב-{proc['memory_mb'] / 1024:.1f} GB זיכרון.")
     if "uptime" in areas:
-        lines.append(f"המחשב פועל כבר {stats['uptime_s'] // 86400} ימים; הפעלה מחדש יכולה לעזור.")
-    head = f"נמצאו {warnings} אזהרות ו-{len(findings) - warnings} הערות:" if warnings else "כמה הערות:"
+        days = stats["uptime_s"] // 86400
+        lines.append(f"המחשב פועל כבר {'יום אחד' if days == 1 else f'{days} ימים'}; הפעלה מחדש יכולה לעזור.")
+    if warnings:
+        found = "אזהרה אחת" if warnings == 1 else f"{warnings} אזהרות"
+        found += "" if not notes else " והערה אחת" if notes == 1 else f" ו-{notes} הערות"
+        head = ("נמצאה " if warnings == 1 and not notes else "נמצאו ") + found + ":"
+    else:
+        head = "כמה הערות:"
     return head + " " + " ".join(lines)
 
 
@@ -165,7 +189,7 @@ class SystemAgent(BaseAgent):
     async def open_folder(self, task: AgentTask, run: RunContext, location: str = "", path: str = "") -> AgentResult:
         target = path or location or "workspace"
         res = await run.tool("open_path", path=target)
-        label = FOLDER_NAMES_HE.get(target, target) if run.lang == "he" else target
+        label = folder_label(target, run.lang)
         if not res.ok:
             return fail(run, res, f"לא הצלחתי לפתוח את {label}", f"Could not open {label}")
         return run.result(summary=t(run.lang, f"פתחתי את {label}.", f"Opened {label}."), data=res.data)
@@ -180,12 +204,59 @@ class SystemAgent(BaseAgent):
             return fail(run, res, f"לא יצרתי את התיקייה {folder_name}", f"Did not create the folder {folder_name}")
         created = (res.data or {}).get("path", target)
         existed = not res.files_created
-        where = FOLDER_NAMES_HE.get(location, location) if run.lang == "he" else location
+        where = folder_label(location, run.lang)
         text = t(run.lang,
                  f"התיקייה {folder_name} כבר קיימת ב{where}." if existed else f"יצרתי את התיקייה {folder_name} ב{where}.",
                  f"The folder {folder_name} already exists in {where}." if existed
                  else f"Created the folder {folder_name} in {where}.")
         return run.result(summary=text, data={"path": created}, result={"path": created})
+
+    @skill(description="Delete a file or folder: to the Recycle Bin, or permanently when asked (that always asks first)",
+           intents=(I.DELETE_PATH,))
+    async def delete_path(self, task: AgentTask, run: RunContext, name: str = "", location: str | None = None,
+                          path: str = "", kind: str | None = None, permanent: bool = False) -> AgentResult:
+        lang = run.lang
+        name = name.strip().strip("\"'")
+        if not (path or name):
+            return run.result(status=ResultStatus.FAILED, progress=0.0,
+                              summary=t(lang, "מה למחוק? צריך לציין שם של קובץ או תיקייה.",
+                                        "What should I delete? Name a file or a folder."))
+        place = place_from_text(location) if location else None
+        full_path = path or (name if _ABSOLUTE.match(name) else "")
+        if full_path:
+            target, where = full_path, ""
+        else:
+            folder = place or (location or "").strip() or "workspace"
+            target = f"{folder.rstrip('/').rstrip(chr(92))}/{name}"
+            where = folder_label(folder, lang)
+        label = name or Path(target).name
+        info = await run.tool("file_info", path=target)
+        if not info.ok:
+            if info.denied:
+                return fail(run, info, f"לא מחקתי את {label}", f"Did not delete {label}")
+            # Not there: ask where it is instead of guessing, unless the user already said.
+            ask = not location and not full_path
+            he = f"לא מצאתי את {label}" + (f" ב{where}" if where else "") + ("." + (" איפה זה נמצא?" if ask else ""))
+            en = f"I could not find {label}" + (f" in {where}" if where else "") + ("." + (" Where is it?" if ask else ""))
+            return run.result(status=ResultStatus.FAILED, progress=0.0, summary=t(lang, he, en),
+                              data={"code": "need_location" if ask else "not_found", "path": target})
+        is_dir = bool((info.data or {}).get("is_dir"))
+        if kind and kind != ("folder" if is_dir else "file"):
+            # The user described something else than what is there: never delete the wrong thing.
+            return run.result(status=ResultStatus.FAILED, progress=0.0, summary=t(
+                lang, f"{label} היא תיקייה ולא קובץ, ולכן לא מחקתי אותה." if is_dir
+                else f"{label} הוא קובץ ולא תיקייה, ולכן לא מחקתי אותו.",
+                f"{label} is a folder, not a file, so I did not delete it." if is_dir
+                else f"{label} is a file, not a folder, so I did not delete it."), data={"path": target})
+        res = await run.tool("delete_path", paths=[target], permanent=permanent)
+        if not res.ok:
+            return fail(run, res, f"לא מחקתי את {label}", f"Did not delete {label}")
+        what_he = ("התיקייה" if is_dir else "הקובץ") + f" {label}"
+        what_en = ("the folder" if is_dir else "the file") + f" {label}"
+        gone_for_good = bool((res.data or {}).get("permanent", permanent))
+        text = t(lang, f"מחקתי לצמיתות את {what_he}." if gone_for_good else f"העברתי את {what_he} לסל המחזור.",
+                 f"Permanently deleted {what_en}." if gone_for_good else f"Moved {what_en} to the Recycle Bin.")
+        return run.result(summary=text, data={"path": target, "permanent": gone_for_good})
 
     @skill(description="Find files by name", intents=(I.FIND_FILES,))
     async def find_files(self, task: AgentTask, run: RunContext, query: str = "", location: str | None = None,
@@ -206,7 +277,8 @@ class SystemAgent(BaseAgent):
             return run.result(status=ResultStatus.PARTIAL, summary=t(run.lang, f"לא מצאתי קבצים שמתאימים ל-{query}.",
                                                                      f"No files matched {query}."), data=res.data)
         names = ", ".join(h.get("name", Path(h.get("path", "")).name) for h in hits[:5])
-        return run.result(summary=t(run.lang, f"מצאתי {len(hits)} קבצים: {names}", f"Found {len(hits)} file(s): {names}"),
+        found = plural(run.lang, len(hits), "קובץ אחד", "קבצים", "file", "files")
+        return run.result(summary=t(run.lang, f"מצאתי {found}: {names}", f"Found {found}: {names}"),
                           data=res.data, result=hits)
 
     @skill(description="Tidy a folder: sort its loose files into subfolders by type or month")
@@ -229,15 +301,17 @@ class SystemAgent(BaseAgent):
                                         "The folder is already tidy: no loose files."), data=preview.data)
         if dry_run:
             listing = ", ".join(f"{k} ({len(v)})" for k, v in sorted(groups.items()))
-            return run.result(summary=t(run.lang, f"אפשר להעביר {total} קבצים לתיקיות: {listing}",
-                                        f"{total} files can move into: {listing}"), data=preview.data)
+            files = plural(run.lang, total, "קובץ אחד", "קבצים", "file", "files")
+            return run.result(summary=t(run.lang, f"אפשר להעביר {files} לתיקיות: {listing}",
+                                        f"{files} can move into: {listing}"), data=preview.data)
         res = await run.tool("organize_folder", path=target, mode=mode, dry_run=False, language=run.lang)
         if not res.ok:
             return fail(run, res, "הארגון לא בוצע", "The folder was not organized")
         counts = (res.data or {}).get("groups", {})
         listing = ", ".join(f"{k} ({v})" for k, v in sorted(counts.items()))
-        return run.result(summary=t(run.lang, f"סידרתי {res.data.get('moved', 0)} קבצים: {listing}",
-                                    f"Organized {res.data.get('moved', 0)} files: {listing}"), data=res.data)
+        moved = plural(run.lang, res.data.get("moved", 0), "קובץ אחד", "קבצים", "file", "files")
+        return run.result(summary=t(run.lang, f"סידרתי {moved}: {listing}",
+                                    f"Organized {moved}: {listing}"), data=res.data)
 
     @skill(description="Open a project so the user can see it: a website in the browser, a server started")
     async def open_project(self, task: AgentTask, run: RunContext, name: str = "", project: str = "",

@@ -9,6 +9,7 @@ import pytest
 
 from jarvis.bus import Message, MessageBus, event, topic_matches
 from jarvis.common.enums import AgentId, MessageType, Mode, Priority, RiskLevel, TaskStatus
+from jarvis.common.i18n import in_seconds, plural, steps_already_done, steps_done
 from jarvis.common.ids import new_id
 from jarvis.common.text import detect_language, normalize, slugify, strip_wake_word
 from jarvis.config import load_settings, resolve_paths, save_settings, update_settings
@@ -112,6 +113,16 @@ class TestEnumsAndText:
     def test_ids_unique_sortable(self) -> None:
         ids = [new_id("t") for _ in range(200)]
         assert len(set(ids)) == 200 and all(i.startswith("t_") for i in ids)
+
+    def test_counts_read_naturally_for_one(self) -> None:
+        assert plural("he", 1, "קובץ אחד", "קבצים", "file", "files") == "קובץ אחד"
+        assert plural("he", 3, "קובץ אחד", "קבצים", "file", "files") == "3 קבצים"
+        assert plural("en", 1, "קובץ אחד", "קבצים", "file", "files") == "1 file"
+        assert [steps_done("he", d, n) for d, n in ((1, 1), (0, 1), (0, 4), (1, 4), (2, 4))] == [
+            "השלב הושלם", "השלב לא הושלם", "אף אחד מ-4 השלבים לא הושלם", "הושלם שלב אחד מתוך 4", "הושלמו 2 מתוך 4 שלבים"]
+        assert steps_done("en", 2, 4) == "2 of 4 steps were completed"
+        assert steps_already_done("he", 1, 3) == ": שלב אחד מתוך 3 כבר הושלם." and steps_already_done("en", 0, 3) == "."
+        assert [in_seconds("he", s) for s in (0.2, 1, 5)] == ["מיד", "בעוד שנייה", "בעוד 5 שניות"]
 
 
 class TestBus:

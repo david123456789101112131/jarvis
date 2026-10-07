@@ -31,6 +31,7 @@ from jarvis.agents.planner.planning import (
 )
 from jarvis.common.enums import AgentId, AgentStatus, ResultStatus
 from jarvis.common.errors import PlanError, ProviderError, ProviderRefusal
+from jarvis.common.i18n import plural
 from jarvis.core.intents import I
 
 OwnerName = Literal["research", "system", "development", "creative", "planner", "user"]
@@ -340,12 +341,11 @@ def progress_report(tasks: list[dict[str, Any]], lang: str) -> dict[str, Any]:
     labels_he = {"completed": "הושלמו", "failed": "נכשלו", "running": "רצות", "waiting": "ממתינות לאישור",
                  "interrupted": "נקטעו", "cancelled": "בוטלו", "pending": "בהמתנה", "planning": "בתכנון",
                  "queued": "בתור", "verifying": "בבדיקה"}
-    parts = [f"{n} {labels_he.get(s, s) if he else s}" for s, n in counts.most_common()]
+    parts = [f"{labels_he.get(s, s)} {n}" if he else f"{n} {s}" for s, n in counts.most_common()]
     if not tasks:
         summary = t(lang, "אין עדיין משימות להציג.", "There are no tasks yet.")
     else:
-        summary = t(lang, f"{len(tasks)} משימות: " + ", ".join(parts) + ".",
-                    f"{len(tasks)} tasks: " + ", ".join(parts) + ".")
+        summary = plural(lang, len(tasks), "משימה אחת", "משימות", "task", "tasks") + ": " + ", ".join(parts) + "."
         if blockers:
             summary += " " + t(lang, f"חסמים: {len(blockers)}.", f"Blockers: {len(blockers)}.")
     lines = [f"# {'סקירת התקדמות' if he else 'Progress review'} — {datetime.now():%Y-%m-%d %H:%M}", "", summary, ""]
@@ -408,24 +408,38 @@ def analyze_folder(entries: list[dict[str, Any]], lang: str) -> dict[str, Any]:
         misplaced = [e["name"] for e in loose if category_for(Path(str(e["name"])), "en") in
                      ("Images", "Video", "Audio", "Archives", "Installers")]
         if misplaced:
-            suggestions.append(t(lang, f"אפשר להעביר {len(misplaced)} קבצי מדיה/ארכיון מהשורש לתיקיית assets.",
-                                 f"{len(misplaced)} media/archive files at the root could move into an assets folder."))
+            k = len(misplaced)
+            suggestions.append(t(lang, f"אפשר להעביר {plural(lang, k, 'קובץ מדיה/ארכיון אחד', 'קבצי מדיה/ארכיון', '', '')} "
+                                       "מהשורש לתיקיית assets.",
+                                 f"{plural(lang, k, '', '', 'media/archive file', 'media/archive files')} at the root "
+                                 "could move into an assets folder."))
     elif loose:
         listing = ", ".join(f"{name} ({n})" for name, n in groups.most_common())
-        suggestions.append(t(lang, f"לסדר {len(loose)} קבצים פזורים בתיקיות לפי סוג: {listing}.",
-                             f"Sort {len(loose)} loose files into folders by type: {listing}."))
+        k = len(loose)
+        suggestions.append(t(lang, f"לסדר {plural(lang, k, 'קובץ פזור אחד', 'קבצים פזורים', '', '')} בתיקיות לפי סוג: {listing}.",
+                             f"Sort {plural(lang, k, '', '', 'loose file', 'loose files')} into folders by type: {listing}."))
     if projects:
-        suggestions.append(t(lang, f"נמצאו {len(projects)} פרויקטים בתוך התיקייה; הם יישארו כמו שהם.",
-                             f"Found {len(projects)} project folder(s) inside; they stay as they are."))
+        k = len(projects)
+        suggestions.append(t(lang, "נמצא פרויקט אחד בתוך התיקייה; הוא יישאר כמו שהוא." if k == 1
+                             else f"נמצאו {k} פרויקטים בתוך התיקייה; הם יישארו כמו שהם.",
+                             "Found 1 project folder inside; it stays as it is." if k == 1
+                             else f"Found {k} project folders inside; they stay as they are."))
     if old:
-        suggestions.append(t(lang, f"{len(old)} קבצים לא שונו יותר משנה; אפשר להעביר אותם לתיקיית ארכיון.",
-                             f"{len(old)} files have not changed in over a year; they could go to an archive folder."))
+        k = len(old)
+        suggestions.append(t(lang, "קובץ אחד לא שונה יותר משנה; אפשר להעביר אותו לתיקיית ארכיון." if k == 1
+                             else f"{k} קבצים לא שונו יותר משנה; אפשר להעביר אותם לתיקיית ארכיון.",
+                             "1 file has not changed in over a year; it could go to an archive folder." if k == 1
+                             else f"{k} files have not changed in over a year; they could go to an archive folder."))
     if duplicates:
-        suggestions.append(t(lang, f"{len(duplicates)} קבצים מופיעים יותר מפעם אחת (אותו שם וגודל); כדאי לבדוק.",
-                             f"{len(duplicates)} files appear more than once (same name and size); worth checking."))
+        k = len(duplicates)
+        suggestions.append(t(lang, "קובץ אחד מופיע יותר מפעם אחת (אותו שם וגודל); כדאי לבדוק." if k == 1
+                             else f"{k} קבצים מופיעים יותר מפעם אחת (אותו שם וגודל); כדאי לבדוק.",
+                             "1 file appears more than once (same name and size); worth checking." if k == 1
+                             else f"{k} files appear more than once (same name and size); worth checking."))
     if large:
-        suggestions.append(t(lang, f"{len(large)} קבצים גדולים מ-200MB תופסים מקום.",
-                             f"{len(large)} files over 200 MB take up space."))
+        k = len(large)
+        suggestions.append(t(lang, "קובץ אחד גדול מ-200MB תופס מקום." if k == 1 else f"{k} קבצים גדולים מ-200MB תופסים מקום.",
+                             "1 file over 200 MB takes up space." if k == 1 else f"{k} files over 200 MB take up space."))
     if not suggestions:
         suggestions.append(t(lang, "התיקייה כבר מסודרת.", "The folder is already tidy."))
     return {"files": len(files), "folders": len(folders), "loose": len(loose), "groups": dict(groups),
@@ -477,8 +491,8 @@ class PlannerAgent(BaseAgent):
         await run.progress(0.9)
         data = plan.model_dump(mode="json")
         names = ", ".join(AGENT_INFO[a]["name_he" if lang == "he" else "name"] for a in plan.agents)
-        summary = t(lang, f"תוכנית ב-{len(plan.subtasks)} שלבים: {names}.",
-                    f"A {len(plan.subtasks)}-step plan: {names}.")
+        k = len(plan.subtasks)
+        summary = t(lang, f"תוכנית {'בשלב אחד' if k == 1 else f'ב-{k} שלבים'}: {names}.", f"A {k}-step plan: {names}.")
         return run.result(summary=summary, details=plan.strategy or None, result=data,
                           data={"plan": data, "source": plan.source, "notes": notes}, used_llm=used_llm)
 
@@ -512,7 +526,8 @@ class PlannerAgent(BaseAgent):
                                  text) if save else None
         phases = doc["phases"]
         first = doc["first_actions"][0] if doc.get("first_actions") else ""
-        summary = t(lang, f"הכנתי תוכנית ב-{len(phases)} שלבים עד {doc['finish']}." + (f" להתחיל ב: {first}." if first else ""),
+        stages_he = "בשלב אחד" if len(phases) == 1 else f"ב-{len(phases)} שלבים"
+        summary = t(lang, f"הכנתי תוכנית {stages_he} עד {doc['finish']}." + (f" להתחיל ב: {first}." if first else ""),
                     f"Made a {len(phases)}-phase plan through {doc['finish']}." + (f" Start with: {first}." if first else ""))
         if saved:
             summary += t(lang, f" נשמרה ב-{saved}", f" Saved to {saved}")
@@ -573,10 +588,13 @@ class PlannerAgent(BaseAgent):
         text = brief_markdown(brief, lang)
         saved = await self._save(run, f"workspace/plans/{slugify(name, 40, 'project')}-brief.md", text) if save else None
         must = sum(1 for f in brief["features"] if f.get("must"))
-        summary = t(lang, f"מסמך הפרויקט '{name}': {must} תכונות חובה, {len(brief['pages'])} עמודים/מסכים, "
-                          f"{len(brief['stages'])} שלבים.",
-                    f"Brief for '{name}': {must} must-have features, {len(brief['pages'])} pages/screens, "
-                    f"{len(brief['stages'])} stages.")
+        pages, stages = len(brief["pages"]), len(brief["stages"])
+        summary = t(lang, f"מסמך הפרויקט '{name}': {plural(lang, must, 'תכונת חובה אחת', 'תכונות חובה', '', '')}, "
+                          f"{plural(lang, pages, 'עמוד/מסך אחד', 'עמודים/מסכים', '', '')}, "
+                          f"{plural(lang, stages, 'שלב אחד', 'שלבים', '', '')}.",
+                    f"Brief for '{name}': {plural(lang, must, '', '', 'must-have feature', 'must-have features')}, "
+                    f"{plural(lang, pages, '', '', 'page/screen', 'pages/screens')}, "
+                    f"{plural(lang, stages, '', '', 'stage', 'stages')}.")
         return run.result(status=ResultStatus.SUCCESS if saved or not save else ResultStatus.PARTIAL, summary=summary,
                           details=text, result={**brief, "path": saved}, used_llm=used_llm)
 

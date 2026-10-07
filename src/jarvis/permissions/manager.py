@@ -23,6 +23,7 @@ from typing import Any
 
 from jarvis.common.clock import utcnow
 from jarvis.common.enums import AgentId, Capability, Mode, RiskLevel
+from jarvis.common.i18n import agent_name, t
 from jarvis.config.settings import SecuritySettings
 from jarvis.permissions.models import ActionRequest, Decision, Grant, GrantSource
 from jarvis.permissions.policies import AGENT_PROFILES
@@ -32,6 +33,14 @@ from jarvis.security.path_guard import PathGuard, default_user_write_roots, is_w
 log = logging.getLogger(__name__)
 
 _ACCESS_CAP = {"read": Capability.FS_READ, "write": Capability.FS_WRITE, "delete": Capability.FS_DELETE}
+_ACCESS_HE = {"read": "לקרוא", "write": "לכתוב אליהן", "delete": "למחוק מהן"}
+_RISK_HE = {RiskLevel.SAFE: "בטוח", RiskLevel.LOW: "נמוך", RiskLevel.MEDIUM: "בינוני", RiskLevel.HIGH: "גבוה",
+            RiskLevel.CRITICAL: "קריטי"}
+
+
+def _to(name: str) -> str:
+    """Hebrew "to <name>": the prefix joins a Hebrew word and takes a hyphen before a Latin one."""
+    return f"ל-{name}" if name[:1].isascii() else f"ל{name}"
 
 
 class PermissionManager:
@@ -184,17 +193,17 @@ class PermissionManager:
     def _resolve_roots(self, tokens: Iterable[str]) -> list[Path] | None:
         """Grant roots -> concrete folders. None means "no scope beyond the global path rules"."""
         out: list[Path] = []
-        for t in tokens:
-            if t == "{any}":
+        for token in tokens:
+            if token == "{any}":
                 return None
-            if t == "{workspace}":
+            if token == "{workspace}":
                 out.append(self.guard.workspace)
-            elif t == "{projects}":
+            elif token == "{projects}":
                 out.append(self.guard.projects)
-            elif t == "{user}":
+            elif token == "{user}":
                 out.extend(self.user_roots)
             else:
-                out.append(normalize_path(t))
+                out.append(normalize_path(token))
         return out
 
     def _matching_grants(self, agent: str, cap: Capability, task_id: str | None) -> list[Grant]:
@@ -202,28 +211,34 @@ class PermissionManager:
 
     def check(self, req: ActionRequest, mode: Mode | str = Mode.NORMAL) -> Decision:
         agent = req.agent_id
+        lang = req.lang
+        name = agent_name(agent, lang)
         reasons: list[str] = []
         used: list[str] = []
 
         restricted = self._task_restrictions.get(agent)
         if restricted is not None and req.task_id != restricted:
-            return Decision(allowed=False, reasons=[f"{agent} is restricted to task {restricted}"])
+            return Decision(allowed=False, reasons=[t(lang, f"{name} מוגבל למשימה {restricted}",
+                                                      f"{agent} is restricted to task {restricted}")])
 
         for cap in req.capabilities:
             matches = self._matching_grants(agent, cap, req.task_id)
             if not matches:
-                return Decision(allowed=False, reasons=[f"{agent} agent has no permission for '{cap.value}'"])
+                return Decision(allowed=False, reasons=[t(lang, f"{_to(name)} אין הרשאת {cap.value}",
+                                                          f"{agent} agent has no permission for '{cap.value}'")])
             used.extend(g.id for g in matches[:1])
 
         scope = self._folder_scopes.get(agent)
         for use in req.paths:
             path = normalize_path(use.path)
             if self.guard.is_denied(path):
-                return Decision(allowed=False, blocked=True, reasons=[f"access to protected location denied: {path}"])
+                return Decision(allowed=False, blocked=True, reasons=[t(lang, f"הגישה למיקום מוגן נחסמה: {path}",
+                                                                       f"access to protected location denied: {path}")])
             cap = _ACCESS_CAP[use.access]
             matches = self._matching_grants(agent, cap, req.task_id)
             if not matches:
-                return Decision(allowed=False, reasons=[f"{agent} agent has no '{cap.value}' permission"])
+                return Decision(allowed=False, reasons=[t(lang, f"{_to(name)} אין הרשאת {cap.value}",
+                                                          f"{agent} agent has no '{cap.value}' permission")])
             ok_grant = None
             for g in matches:
                 roots = self._resolve_roots(g.roots)
@@ -231,30 +246,38 @@ class PermissionManager:
                     ok_grant = g
                     break
             if ok_grant is None:
-                return Decision(allowed=False, reasons=[f"{path} is outside the folders {agent} may {use.access}"])
+                return Decision(allowed=False, reasons=[t(
+                    lang, f"{path} מחוץ לתיקיות ש{name} רשאי {_ACCESS_HE[use.access]}",
+                    f"{path} is outside the folders {agent} may {use.access}")])
             if use.access in ("write", "delete"):
                 extra = self._resolve_roots(ok_grant.roots) or []
                 if ok_grant.source != "policy":
                     if not self.guard.can_write(path, extra_roots=extra):
-                        return Decision(allowed=False, reasons=[f"writing to {path} is not allowed"])
+                        return Decision(allowed=False, reasons=[t(lang, f"אסור לכתוב אל {path}",
+                                                                  f"writing to {path} is not allowed")])
                 elif not self.guard.can_write(path):
-                    return Decision(allowed=False, reasons=[f"writing to {path} is outside the allowed folders"])
+                    return Decision(allowed=False, reasons=[t(lang, f"הכתיבה אל {path} מחוץ לתיקיות המותרות",
+                                                              f"writing to {path} is outside the allowed folders")])
             elif not self.guard.can_read(path):
-                return Decision(allowed=False, reasons=[f"reading {path} is not allowed"])
+                return Decision(allowed=False, reasons=[t(lang, f"אסור לקרוא את {path}",
+                                                          f"reading {path} is not allowed")])
             if scope is not None and not any(is_within(path, normalize_path(r)) for r in scope):
-                return Decision(allowed=False, reasons=[f"{agent} is restricted to folders {scope}"])
+                return Decision(allowed=False, reasons=[t(lang, f"{name} מוגבל לתיקיות: {', '.join(scope)}",
+                                                          f"{agent} is restricted to folders {scope}")])
             used.append(ok_grant.id)
 
         assessment = self.assessor.assess(req)
         risk = assessment.risk
         reasons.extend(r for r in assessment.reasons if r)
         if assessment.blocked:
-            return Decision(allowed=False, blocked=True, risk=risk, reasons=reasons or ["blocked by security policy"])
+            return Decision(allowed=False, blocked=True, risk=risk,
+                            reasons=reasons or [t(lang, "נחסם על ידי מדיניות האבטחה", "blocked by security policy")])
         ceiling = self.risk_ceiling(agent)
         if risk > ceiling:
             return Decision(
                 allowed=False, blocked=True, risk=risk,
-                reasons=[*reasons, f"risk {risk.name} exceeds what the {agent} agent may do ({ceiling.name})"],
+                reasons=[*reasons, t(lang, f"רמת הסיכון ({_RISK_HE[risk]}) גבוהה ממה ש{name} רשאי לבצע ({_RISK_HE[ceiling]})",
+                                     f"risk {risk.name} exceeds what the {agent} agent may do ({ceiling.name})")],
             )
         threshold = self.confirm_threshold(mode)
         needs = req.always_confirm or risk >= threshold or risk >= RiskLevel.CRITICAL

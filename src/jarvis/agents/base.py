@@ -42,6 +42,7 @@ from jarvis.common.enums import (
     ResultStatus,
 )
 from jarvis.common.errors import ProviderError, ProviderRefusal, TaskCancelled
+from jarvis.common.i18n import AGENT_NAMES, t
 from jarvis.common.ids import new_id
 from jarvis.tools.base import ToolResult
 
@@ -61,27 +62,27 @@ T = TypeVar("T")
 
 AGENT_INFO: dict[AgentId, dict[str, str]] = {
     AgentId.RESEARCH: {
-        "name": "Research Agent", "name_he": "סוכן מחקר",
+        "name": AGENT_NAMES["research"][0], "name_he": AGENT_NAMES["research"][1],
         "role": "Web research, comparing sources, summaries, data analysis, documentation",
         "role_he": "חיפוש ומחקר, השוואת מקורות, סיכומים, ניתוח מידע ותיעוד",
     },
     AgentId.SYSTEM: {
-        "name": "System Agent", "name_he": "סוכן מערכת",
+        "name": AGENT_NAMES["system"][0], "name_he": AGENT_NAMES["system"][1],
         "role": "Files and folders, apps and processes, PowerShell, settings and system health",
         "role_he": "קבצים ותיקיות, תוכנות ותהליכים, PowerShell, הגדרות ובריאות המערכת",
     },
     AgentId.DEVELOPMENT: {
-        "name": "Development Agent", "name_he": "סוכן פיתוח",
+        "name": AGENT_NAMES["development"][0], "name_he": AGENT_NAMES["development"][1],
         "role": "Builds apps and websites, writes and fixes code, runs tests, Git and APIs",
         "role_he": "בניית אפליקציות ואתרים, כתיבת קוד ותיקון באגים, בדיקות, Git ו-API",
     },
     AgentId.CREATIVE: {
-        "name": "Creative Agent", "name_he": "סוכן יצירתי",
+        "name": AGENT_NAMES["creative"][0], "name_he": AGENT_NAMES["creative"][1],
         "role": "Ideas, UI/UX, design, logos, icons, images, animations, texts and presentations",
         "role_he": "רעיונות, עיצוב UI/UX, לוגואים, אייקונים, תמונות, אנימציות, טקסטים ומצגות",
     },
     AgentId.PLANNER: {
-        "name": "Planner Agent", "name_he": "סוכן תכנון",
+        "name": AGENT_NAMES["planner"][0], "name_he": AGENT_NAMES["planner"][1],
         "role": "Plans, breaks work into stages, priorities, progress, blockers and roadmaps",
         "role_he": "תכנון, פירוק לשלבים, סדרי עדיפויות, מעקב התקדמות, חסמים ומפות דרכים",
     },
@@ -92,11 +93,6 @@ AGENT_NUMBER: dict[AgentId, int] = {a: n for n, a in AGENT_NUMBERS.items()}
 def agent_address(agent: AgentId | str) -> str:
     """Bus mailbox name of an agent."""
     return f"agent.{AgentId.parse(agent).value}"
-
-
-def t(lang: str, he: str, en: str) -> str:
-    """Pick the Hebrew or English variant of a user-facing sentence."""
-    return he if lang == "he" else en
 
 
 # --------------------------------------------------------------------------------------------
@@ -146,6 +142,10 @@ class AgentTask(BaseModel):
         return cls.model_validate(body)
 
 
+# Result codes that mean "one detail is missing, ask the user" (a question back, not a failure).
+QUESTION_CODES = frozenset({"need_location"})
+
+
 class AgentResult(BaseModel):
     """What every agent returns: status, progress, result, errors, files, actions, next step."""
 
@@ -176,6 +176,11 @@ class AgentResult(BaseModel):
     @property
     def ok(self) -> bool:
         return self.status in (ResultStatus.SUCCESS, ResultStatus.PARTIAL)
+
+    @property
+    def asks_user(self) -> bool:
+        """The agent stopped to ask the user for a missing detail; its summary is the question."""
+        return self.status == ResultStatus.FAILED and self.data.get("code") in QUESTION_CODES
 
     @classmethod
     def failed(cls, error: str, **kw: Any) -> AgentResult:
@@ -342,7 +347,7 @@ class RunContext:
         await self.reporter.action(self.assignment_id, _describe_call(name, params))
         result = await self.runtime.executor.execute(
             name, params, agent_id=self.agent.id.value, task_id=self.task.task_id, subtask_id=self.task.id,
-            cancel=self.cancel, cwd=self.cwd, progress=self._tool_progress, mode=self.task.mode,
+            cancel=self.cancel, cwd=self.cwd, progress=self._tool_progress, mode=self.task.mode, lang=self.lang,
         )
         self.record(result)
         return result
@@ -352,10 +357,12 @@ class RunContext:
         _extend_unique(self.files_created, result.files_created)
         _extend_unique(self.files_modified, result.files_modified)
         if result.ok:
-            if result.actions:
-                self.actions.extend(result.actions)
-            elif result.summary and not self._read_only(result.tool):
+            # "Actions taken" is read by the user: the tool's summary is in the request's language,
+            # the terse `actions` codes ("volume up") are only the fallback.
+            if result.summary and not self._read_only(result.tool):
                 self.actions.append(result.summary)
+            elif result.actions:
+                self.actions.extend(result.actions)
         else:
             message = result.error or result.summary or f"{result.tool} failed"
             if result.denied:

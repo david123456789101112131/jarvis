@@ -302,9 +302,10 @@ def plan_markdown(plan: dict[str, Any], lang: str) -> str:
     lines = [f"# {title}" if named else f"# {'תוכנית' if he else 'Plan'}: {title}", ""]
     if plan.get("summary"):
         lines += [str(plan["summary"]), ""]
+    k = len(plan["phases"])
     lines.append(("**מבנה:** " if he else "**Shape:** ")
-                 + (f"{len(plan['phases'])} שלבים, סיום משוער {plan['finish']}" if he
-                    else f"{len(plan['phases'])} phases, estimated finish {plan['finish']}"))
+                 + (f"{'שלב אחד' if k == 1 else f'{k} שלבים'}, סיום משוער {plan['finish']}" if he
+                    else f"{k} phase{'' if k == 1 else 's'}, estimated finish {plan['finish']}"))
     lines += ["", "## " + ("לוח זמנים" if he else "Timeline"), "",
               "| " + (" | ".join(["שלב", "מתאריך", "עד", "ימים"] if he else ["Phase", "From", "To", "Days"])) + " |",
               "|---|---|---|---|"]

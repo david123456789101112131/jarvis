@@ -39,6 +39,7 @@ from jarvis.common.cancel import CancelToken
 from jarvis.common.clock import utcnow
 from jarvis.common.enums import AgentId, Mode, Priority, ResultStatus, TaskStatus
 from jarvis.common.errors import PlanError, TaskRefused
+from jarvis.common.i18n import in_seconds, steps_already_done
 from jarvis.common.text import detect_language
 from jarvis.orchestration.models import PlanDraft, SubTask, TaskPlan, plan_from_draft
 from jarvis.orchestration.recovery import (
@@ -270,8 +271,8 @@ class TaskOrchestrator:
                     s.status, s.progress, s.finished_at = TaskStatus.PENDING, 0.0, None
                 done += s.status == TaskStatus.COMPLETED
         total = len(task.plan.subtasks) if task.plan else 0
-        await self._restart(task, t(lang, f"ממשיך מהמקום שבו המשימה נעצרה: {done} מתוך {total} שלבים כבר הושלמו.",
-                                    f"Continuing where the task stopped: {done} of {total} steps are already done."))
+        await self._restart(task, t(lang, "ממשיך מהמקום שבו המשימה נעצרה", "Continuing where the task stopped")
+                            + steps_already_done(lang, done, total))
         return task
 
     async def retry(self, task_id: str) -> JarvisTask:
@@ -292,8 +293,12 @@ class TaskOrchestrator:
                     again += 1
         if task.plan is not None and again == 0 and task.status == TaskStatus.COMPLETED:
             raise TaskRefused(t(lang, "אין שלבים שנכשלו במשימה הזאת.", "This task has no failed steps."))
-        await self._restart(task, t(lang, f"מנסה שוב {again} שלבים שלא הושלמו.", f"Retrying {again} unfinished steps.")
-                            if task.plan is not None else t(lang, "מתכנן את המשימה מחדש.", "Planning the task again."))
+        if task.plan is None:
+            text = t(lang, "מתכנן את המשימה מחדש.", "Planning the task again.")
+        else:
+            text = t(lang, "מנסה שוב את השלב שלא הושלם." if again == 1 else f"מנסה שוב {again} שלבים שלא הושלמו.",
+                     "Retrying the unfinished step." if again == 1 else f"Retrying {again} unfinished steps.")
+        await self._restart(task, text)
         return task
 
     async def recover(self) -> list[JarvisTask]:
@@ -485,8 +490,9 @@ class TaskOrchestrator:
         if task.auto_title and plan.title:
             task.title = plan.title[:120]
         names = ", ".join(AGENT_INFO[a]["name_he" if lang == "he" else "name"] for a in plan.agents)
-        await self._note(task, "plan", t(lang, f"התוכנית: {len(plan.subtasks)} שלבים ({names}). {plan.strategy}",
-                                         f"The plan: {len(plan.subtasks)} steps ({names}). {plan.strategy}").strip(),
+        k = len(plan.subtasks)
+        await self._note(task, "plan", t(lang, f"התוכנית: {'שלב אחד' if k == 1 else f'{k} שלבים'} ({names}). {plan.strategy}",
+                                         f"The plan: {k} step{'' if k == 1 else 's'} ({names}). {plan.strategy}").strip(),
                          agent_id=AgentId.PLANNER.value, activity=True)
         if task.mode == Mode.DEBUG:
             for s in plan.subtasks:
@@ -764,10 +770,10 @@ class TaskOrchestrator:
             if decision.offline:
                 run.offline.add(s.id)
             total = 1 + (self.cfg.max_retries if s.max_retries is None else s.max_retries)
-            await self._note(task, "retry", t(lang, f"{who} נכשל ({short}). מנסה שוב בעוד {decision.delay_s:.0f} שניות "
+            await self._note(task, "retry", t(lang, f"{who} נכשל ({short}). מנסה שוב {in_seconds(lang, decision.delay_s)} "
                                                     f"(ניסיון {s.attempts + 1} מתוך {total})"
                                                     + (" בלי מודל ה-AI" if decision.offline else "") + ".",
-                                              f"The {who} failed ({short}). Retrying in {decision.delay_s:.0f}s "
+                                              f"The {who} failed ({short}). Retrying {in_seconds(lang, decision.delay_s)} "
                                               f"(attempt {s.attempts + 1} of {total})"
                                               + (" without the AI model" if decision.offline else "") + "."),
                              agent_id=s.agent.value, subtask_id=s.id, level="warning", activity=True)

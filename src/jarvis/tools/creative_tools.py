@@ -24,6 +24,8 @@ C = Capability
 DesignKind = Literal["brand_kit", "logo", "palette", "icons", "mockup", "animation", "banner", "social_post"]
 KIND_FOLDER = {"brand_kit": "brand", "logo": "logo", "palette": "palette", "icons": "icons", "mockup": "mockup",
                "animation": "animation", "banner": "banner", "social_post": "post"}
+KIND_HE = {"brand_kit": "ערכת מיתוג", "logo": "לוגואים", "palette": "פלטת צבעים", "icons": "אייקונים",
+           "mockup": "סקיצות ממשק", "animation": "אנימציות", "banner": "באנר", "social_post": "פוסט לרשתות"}
 
 
 def folder_slug(text: str, default: str = "design") -> str:
@@ -192,7 +194,8 @@ class CreateDesignTool(Tool):
 
     async def plan(self, params: CreateDesignParams, ctx: ToolContext) -> ActionPlan:
         out_dir = await asyncio.to_thread(_output_folder, params.folder, self._default_name(params), ctx)
-        return ActionPlan(summary=f"Create {params.kind.replace('_', ' ')} files in {out_dir}",
+        return ActionPlan(summary=ctx.t(f"יצירת קבצי {KIND_HE[params.kind]} ב-{out_dir}",
+                                        f"Create {params.kind.replace('_', ' ')} files in {out_dir}"),
                           paths=[PathUse(path=str(out_dir), access="write")])
 
     async def run(self, params: CreateDesignParams, ctx: ToolContext) -> ToolResult:
@@ -200,9 +203,11 @@ class CreateDesignTool(Tool):
         try:
             data = await asyncio.to_thread(build_design, params, out_dir)
         except (RuntimeError, KeyError, ValueError) as exc:
-            return ToolResult.fail(f"Could not create the {params.kind.replace('_', ' ')}: {exc}")
+            return ToolResult.fail(ctx.t(f"לא הצלחתי ליצור {KIND_HE[params.kind]}: {exc}",
+                                         f"Could not create the {params.kind.replace('_', ' ')}: {exc}"))
         files = data["files"]
-        return ToolResult(summary=f"Created {len(files)} {params.kind.replace('_', ' ')} file(s) in {out_dir}",
+        return ToolResult(summary=ctx.t(f"נוצרו {len(files)} קבצי {KIND_HE[params.kind]} ב-{out_dir}",
+                                        f"Created {len(files)} {params.kind.replace('_', ' ')} file(s) in {out_dir}"),
                           files_created=files, actions=[f"create {params.kind} in {out_dir}"], data=data)
 
 
@@ -272,15 +277,17 @@ class CreatePresentationTool(Tool):
 
     async def plan(self, params: CreatePresentationParams, ctx: ToolContext) -> ActionPlan:
         out_dir = await self._folder(params, ctx)
-        return ActionPlan(summary=f"Create a presentation in {out_dir}", paths=[PathUse(path=str(out_dir), access="write")])
+        return ActionPlan(summary=ctx.t(f"יצירת מצגת ב-{out_dir}", f"Create a presentation in {out_dir}"),
+                          paths=[PathUse(path=str(out_dir), access="write")])
 
     async def run(self, params: CreatePresentationParams, ctx: ToolContext) -> ToolResult:
         out_dir = await self._folder(params, ctx)
         try:
             data = await asyncio.to_thread(build_presentation, params, out_dir)
         except (KeyError, ValueError) as exc:
-            return ToolResult.fail(f"Could not create the presentation: {exc}")
-        return ToolResult(summary=f"Created a {data['slides']}-slide presentation in {out_dir}",
+            return ToolResult.fail(ctx.t(f"לא הצלחתי ליצור את המצגת: {exc}", f"Could not create the presentation: {exc}"))
+        return ToolResult(summary=ctx.t(f"נוצרה מצגת של {data['slides']} שקפים ב-{out_dir}",
+                                        f"Created a {data['slides']}-slide presentation in {out_dir}"),
                           files_created=data["files"], actions=[f"create presentation in {out_dir}"], data=data)
 
 

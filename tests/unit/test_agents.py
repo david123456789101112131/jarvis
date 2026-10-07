@@ -649,3 +649,40 @@ class TestSystem:
     async def test_an_unknown_project(self, env: Env) -> None:
         result = await env.run("system", skill="open_project", params={"name": "does not exist"})
         assert result.status == S.FAILED and result.data["code"] == "project_not_found"
+
+    async def test_delete_goes_to_the_recycle_bin(self, env: Env, monkeypatch: pytest.MonkeyPatch) -> None:
+        import send2trash
+
+        trashed: list[str] = []
+        monkeypatch.setattr(send2trash, "send2trash", lambda p: (trashed.append(p), shutil.rmtree(p)))
+        folder = env.kit.paths.workspace / "ישן"
+        folder.mkdir()
+        (folder / "a.txt").write_text("x")
+        result = await env.run("system", skill="delete_path", params={"name": "ישן", "kind": "folder"})
+        assert result.ok and trashed == [str(folder)] and not folder.exists()
+        assert result.summary == "העברתי את התיקייה ישן לסל המחזור." and result.data["permanent"] is False
+
+    async def test_a_permanent_delete_waits_for_approval(self, env: Env) -> None:
+        folder = env.kit.paths.workspace / "פרויקט-דמו"
+        folder.mkdir()
+        params = {"name": "פרויקט-דמו", "kind": "folder", "permanent": True}
+        pending = await env.manager.submit(env.task("system", skill="delete_path", params=params))
+        req = await env.pending()
+        assert req.tool == "delete_path" and req.summary.startswith("מחיקה לצמיתות: פרויקט-דמו")
+        env.kit.broker.respond(req.id, False)
+        result = await asyncio.wait_for(pending, 10)
+        assert result.status == S.FAILED and result.denied and folder.exists()
+        pending = await env.manager.submit(env.task("system", skill="delete_path", params=params))
+        env.kit.broker.respond((await env.pending()).id, True)
+        result = await asyncio.wait_for(pending, 10)
+        assert result.ok and not folder.exists() and result.summary == "מחקתי לצמיתות את התיקייה פרויקט-דמו."
+
+    async def test_delete_never_guesses_the_target(self, env: Env) -> None:
+        missing = await env.run("system", skill="delete_path", params={"name": "nothing-here"})
+        assert missing.status == S.FAILED and missing.data["code"] == "need_location"
+        assert missing.summary == "לא מצאתי את nothing-here בסביבת העבודה. איפה זה נמצא?"
+        notes = env.kit.paths.workspace / "notes"
+        notes.write_text("x")
+        wrong = await env.run("system", skill="delete_path", params={"name": "notes", "kind": "folder"})
+        assert wrong.status == S.FAILED and "קובץ ולא תיקייה" in wrong.summary and notes.exists()
+        assert not env.kit.broker.pending()

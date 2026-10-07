@@ -32,10 +32,10 @@ MAX_PAGE_CHARS = 40_000
 def check_network(ctx: ToolContext, url: str) -> str:
     sec = ctx.services.settings.security
     if not sec.network_enabled:
-        raise PermissionDenied("Network access is turned off in the security settings.")
+        raise PermissionDenied(ctx.t("הגישה לרשת כבויה בהגדרות האבטחה.", "Network access is turned off in the security settings."))
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
-        raise ToolError(f"Not a web address: {url}")
+        raise ToolError(ctx.t(f"זו לא כתובת אינטרנט: {url}", f"Not a web address: {url}"))
     host = parsed.hostname.lower()
     own_port = ctx.services.extras.get("server_port")
     if own_port and _is_local(host):
@@ -44,9 +44,10 @@ def check_network(ctx: ToolContext, url: str) -> str:
         except ValueError:
             port = None
         if port == own_port:
-            raise PermissionDenied("Agents may not call JARVIS's own control server.")
+            raise PermissionDenied(ctx.t("לסוכנים אסור לפנות לשרת הבקרה של JARVIS עצמו.",
+                                         "Agents may not call JARVIS's own control server."))
     if sec.network_allowlist and not any(host == d or host.endswith("." + d) for d in sec.network_allowlist):
-        raise PermissionDenied(f"{host} is not in the network allowlist.")
+        raise PermissionDenied(ctx.t(f"{host} לא ברשימת האתרים המותרים.", f"{host} is not in the network allowlist."))
     return host
 
 
@@ -115,12 +116,13 @@ class WebSearchTool(Tool):
     timeout_s = 45.0
 
     async def plan(self, params: SearchParams, ctx: ToolContext) -> ActionPlan:
-        return ActionPlan(summary=f"Search the web for: {params.query}", outbound=params.query,
-                          destination="web search")
+        return ActionPlan(summary=ctx.t(f"חיפוש באינטרנט: {params.query}", f"Search the web for: {params.query}"),
+                          outbound=params.query, destination="web search")
 
     async def run(self, params: SearchParams, ctx: ToolContext) -> ToolResult:
         if not ctx.services.settings.security.network_enabled:
-            return ToolResult.fail("Network access is turned off in the security settings.", denied="permission")
+            return ToolResult.fail(ctx.t("הגישה לרשת כבויה בהגדרות האבטחה.", "Network access is turned off in the security settings."),
+                                   denied="permission")
         provider = ctx.services.settings.web.search_provider
         secrets = ctx.services.secrets
         brave = secrets.get("BRAVE_API_KEY") if secrets else None
@@ -145,10 +147,13 @@ class WebSearchTool(Tool):
                 errors.append(f"{name}: {type(exc).__name__}: {str(exc)[:200]}")
                 continue
             if results:
-                return ToolResult(summary=f"{len(results)} results for '{params.query}' ({name})",
+                found = ctx.n(len(results), "תוצאה אחת", "תוצאות", "result", "results")
+                return ToolResult(summary=ctx.t(f"{found} עבור '{params.query}' ({name})",
+                                                f"{found} for '{params.query}' ({name})"),
                                   data={"query": params.query, "provider": name, "results": results})
             errors.append(f"{name}: no results")
-        return ToolResult.fail(f"Web search failed: {'; '.join(errors)}", data={"query": params.query})
+        return ToolResult.fail(ctx.t(f"החיפוש באינטרנט נכשל: {'; '.join(errors)}", f"Web search failed: {'; '.join(errors)}"),
+                               data={"query": params.query})
 
 
 async def _brave(client: httpx.AsyncClient, params: SearchParams, key: str) -> list[dict[str, str]]:
@@ -227,7 +232,7 @@ class FetchUrlTool(Tool):
     async def plan(self, params: FetchParams, ctx: ToolContext) -> ActionPlan:
         url = params.url if "://" in params.url else "https://" + params.url
         check_network(ctx, url)
-        return ActionPlan(summary=f"Read {url}", destination=url)
+        return ActionPlan(summary=ctx.t(f"קריאת הדף {url}", f"Read {url}"), destination=url)
 
     async def run(self, params: FetchParams, ctx: ToolContext) -> ToolResult:
         url = params.url if "://" in params.url else "https://" + params.url
@@ -236,7 +241,8 @@ class FetchUrlTool(Tool):
         client = ctx.services.http()
         async with client.stream("GET", url) as r:
             if r.status_code >= 400:
-                return ToolResult.fail(f"{url} returned HTTP {r.status_code}", data={"status": r.status_code})
+                return ToolResult.fail(ctx.t(f"{url} החזיר HTTP {r.status_code}", f"{url} returned HTTP {r.status_code}"),
+                                       data={"status": r.status_code})
             ctype = r.headers.get("content-type", "").lower()
             body = bytearray()
             async for chunk in r.aiter_bytes():
@@ -253,13 +259,15 @@ class FetchUrlTool(Tool):
         elif "json" in ctype or ctype.startswith("text/") or not ctype:
             text, title, links = bytes(body).decode(r.charset_encoding or "utf-8", errors="replace"), "", []
         else:
-            return ToolResult.fail(f"{url} is not a readable page ({ctype or 'unknown type'}); use download_file.")
+            return ToolResult.fail(ctx.t(f"{url} אינו דף שאפשר לקרוא ({ctype or 'סוג לא ידוע'}); אפשר להוריד אותו עם download_file.",
+                                         f"{url} is not a readable page ({ctype or 'unknown type'}); use download_file."))
         truncated = len(text) > params.max_chars
         data: dict[str, Any] = {"url": final_url, "title": title, "content": text[: params.max_chars],
                                 "truncated": truncated, "total_chars": len(text)}
         if params.include_links:
             data["links"] = links
-        return ToolResult(summary=f"Read '{title or final_url}' ({len(text)} characters)", data=data)
+        return ToolResult(summary=ctx.t(f"נקרא '{title or final_url}' ({len(text)} תווים)",
+                                        f"Read '{title or final_url}' ({len(text)} characters)"), data=data)
 
 
 def _pdf_text(data: bytes) -> str:
@@ -296,9 +304,10 @@ class HttpRequestTool(Tool):
         if params.text_body:
             outbound_parts.append(params.text_body)
         writes = params.method != "GET"
-        return ActionPlan(summary=f"{params.method} {params.url}", outbound="\n".join(outbound_parts),
+        return ActionPlan(summary=ctx.t(f"פנייה לשירות רשת: {params.method} {params.url}", f"{params.method} {params.url}"),
+                          outbound="\n".join(outbound_parts),
                           destination=params.url, risk=RiskLevel.HIGH if params.method == "DELETE" else None,
-                          risk_reasons=["changes data on a remote service"] if writes else [])
+                          risk_reasons=[ctx.t("משנה מידע בשירות מרוחק", "changes data on a remote service")] if writes else [])
 
     async def run(self, params: HttpParams, ctx: ToolContext) -> ToolResult:
         check_network(ctx, params.url)
@@ -316,7 +325,8 @@ class HttpRequestTool(Tool):
         else:
             body = r.text[:MAX_PAGE_CHARS]
         ok = r.status_code < 400
-        res = ToolResult(ok=ok, summary=f"{params.method} {params.url} -> HTTP {r.status_code}",
+        res = ToolResult(ok=ok, summary=ctx.t(f"{params.method} {params.url}: תשובת HTTP {r.status_code}",
+                                              f"{params.method} {params.url} -> HTTP {r.status_code}"),
                          data={"status": r.status_code, "headers": dict(list(r.headers.items())[:30]), "body": body})
         if not ok:
             res.error = res.summary
@@ -348,10 +358,10 @@ class DownloadFileTool(Tool):
         check_network(ctx, params.url)
         target = self._target(params, ctx)
         executable = target.suffix.lower() in EXECUTABLE_EXT
-        return ActionPlan(summary=f"Download {params.url} to {target}", destination=params.url,
-                          paths=[PathUse(path=str(target), access="write")],
+        return ActionPlan(summary=ctx.t(f"הורדת {params.url} אל {target}", f"Download {params.url} to {target}"),
+                          destination=params.url, paths=[PathUse(path=str(target), access="write")],
                           risk=RiskLevel.HIGH if executable else None,
-                          risk_reasons=["downloads a program or script"] if executable else [])
+                          risk_reasons=[ctx.t("מוריד תוכנה או סקריפט", "downloads a program or script")] if executable else [])
 
     async def run(self, params: DownloadParams, ctx: ToolContext) -> ToolResult:
         check_network(ctx, params.url)
@@ -363,7 +373,7 @@ class DownloadFileTool(Tool):
         client = ctx.services.http()
         async with client.stream("GET", params.url) as r:
             if r.status_code >= 400:
-                return ToolResult.fail(f"Download failed: HTTP {r.status_code}")
+                return ToolResult.fail(ctx.t(f"ההורדה נכשלה: HTTP {r.status_code}", f"Download failed: HTTP {r.status_code}"))
             total = int(r.headers.get("content-length") or 0)
             with tmp.open("wb") as fh:
                 async for chunk in r.aiter_bytes(1 << 16):
@@ -371,11 +381,12 @@ class DownloadFileTool(Tool):
                     fh.write(chunk)
                     size += len(chunk)
                     if size > max_bytes:
-                        raise ToolError("File is larger than 2 GB; download stopped.")
+                        raise ToolError(ctx.t("הקובץ גדול מ-2GB וההורדה נעצרה.", "File is larger than 2 GB; download stopped."))
                     if total:
                         await ctx.progress(size / total, f"{size // 1024} KB")
         tmp.replace(target)
-        return ToolResult(summary=f"Downloaded {target.name} ({size // 1024} KB)", files_created=[str(target)],
+        return ToolResult(summary=ctx.t(f"הורד הקובץ {target.name} ({size // 1024} KB)", f"Downloaded {target.name} ({size // 1024} KB)"),
+                          files_created=[str(target)],
                           data={"path": str(target), "bytes": size})
 
 

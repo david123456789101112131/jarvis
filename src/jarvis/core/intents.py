@@ -54,6 +54,7 @@ class I:  # noqa: E742 - short namespace for intent names
     POWER = "power"
     SCREENSHOT = "screenshot"
     CREATE_FOLDER = "create_folder"
+    DELETE_PATH = "delete_path"
     OPEN_FOLDER = "open_folder"
     FIND_FILES = "find_files"
     RUN_PROJECT = "run_project"
@@ -120,6 +121,8 @@ V_RESEARCH_HE = _alt("תחקור", "חקור", "תחקרי", "חקרי", "תחפ
                      "תמצא", "מצא", "תמצאי", "מצאי", "תברר", "ברר", "תבררי", "בררי", "תשווה", "השווה", "תשווי", "השווי",
                      "תסכם", "סכם", "תסכמי", "סכמי", "לחקור", "לבדוק", "לחפש")
 V_SEARCH_HE = _alt("תחפש", "חפש", "תחפשי", "חפשי", "תמצא", "מצא", "תמצאי", "מצאי", "תאתר", "אתר")
+V_DELETE_HE = _alt("תמחק", "מחק", "תמחקי", "מחקי", "תמחוק")
+V_REMOVE_HE = _alt("תסיר", "הסר", "תסירי", "הסירי")
 V_DESIGN_HE = _alt("תעצב", "עצב", "תעצבי", "עצבי", "לעצב", "תצייר", "צייר", "תציירי", "ציירי")
 V_ORGANIZE_HE = _alt("תארגן", "ארגן", "תארגני", "ארגני", "לארגן", "תסדר", "סדר", "תסדרי", "סדרי")
 V_STOP_HE = _alt("תעצור", "עצור", "תעצרי", "עצרי", "תפסיק", "הפסק", "תפסיקי", "הפסיקי", "תבטל", "בטל", "תבטלי", "בטלי",
@@ -173,6 +176,16 @@ AGENT_REF_HE = (
     r"|(?:ה)?סוכן\s+מספר\s+[1-5])"
 )
 
+# "Delete ... permanently" skips the Recycle Bin (the permission manager always asks first).
+PERMANENT_HE = r"(?:לצמיתות|סופית|(?:בלי|ללא)\s+(?:ה)?(?:סל\s+(?:ה)?מחזור|פח))"
+PERMANENT_EN = r"(?:permanently|forever|for good|(?:without|skipping|skip)\s+(?:the\s+)?(?:recycle bin|trash))"
+DELETE_KIND_HE = r"(?P<kind>תיקייה|תיקיה|תיקיית|קובץ|מסמך)"
+DELETE_KIND_EN = r"(?P<kind>file|folder|directory|dir|document)"
+# A target named without "file"/"folder" must look like one: a path or a name with an extension.
+PATH_LIKE = r"(?:\"[^\"]+\"|(?:[a-z]:[\\/]|\\\\|~[\\/]|/)\S.*?|[^\s\"'/\\]+\.[a-z0-9]{1,5})"
+FROM_HE = r"(?:מ|ב|על\s+|בתוך\s+|מתוך\s+)"
+FROM_EN = r"(?:from|in|on|at|inside|off)\s+"
+
 MODE_WORDS = {
     Mode.CHAT: ("chat", "conversation", "צ'אט", "צאט", "שיחה"),
     Mode.NORMAL: ("normal", "default", "regular", "רגיל", "נורמלי", "ברירת מחדל"),
@@ -207,7 +220,7 @@ _INFINITIVES = {
     "לבדוק": "בדוק", "לעצב": "עצב", "לארגן": "ארגן", "לתכנן": "תכנן", "לעצור": "עצור", "להריץ": "הרץ", "לחקור": "חקור",
     "לפתח": "פתח", "לנעול": "נעל", "להגביר": "הגבר", "להנמיך": "הנמך", "להשתיק": "השתק", "לצלם": "צלם", "להמשיך": "המשך",
     "לזכור": "זכור", "להציג": "הצג", "להראות": "הראה", "לכבות": "כבה", "להשוות": "השווה", "לסכם": "סכם", "לברר": "ברר",
-    "למצוא": "מצא", "לנסח": "נסח", "להכין": "הכן", "לתקן": "תקן",
+    "למצוא": "מצא", "לנסח": "נסח", "להכין": "הכן", "לתקן": "תקן", "למחוק": "מחק", "להסיר": "הסר",
 }
 
 # Agent hints per kind of build request (the planner may still adjust the final plan).
@@ -281,6 +294,22 @@ def _location_key(text: str) -> str | None:
             wn = normalize(w)
             if wn in candidates or wn.removeprefix("ה") in candidates:
                 return key
+    return None
+
+
+def place_from_text(text: str) -> str | None:
+    """"משולחן העבודה", "from the desktop", "ב-C:\\data" -> a folder key or a path; None for other words."""
+    t = text.strip(" .,\"'")
+    t = re.sub(r"^(?:from|in|on|at|inside|into|off|of|to|על|בתוך|מתוך|לתוך)\s+", "", t, flags=re.I)
+    candidates = [t] + ([t[1:]] if t[:1] in ("מ", "ב", "ל") else [])
+    for c in candidates:
+        key = _location_key(c)
+        if key:
+            return key
+    for c in candidates:
+        c = c.lstrip("-")
+        if re.match(r"^(?:[a-z]:[\\/]|\\\\|/|~)", c, re.I):
+            return c
     return None
 
 
@@ -402,6 +431,24 @@ def _b_create_folder(m: re.Match[str], text: str) -> dict[str, Any] | None:
 def _b_open_folder(m: re.Match[str], text: str) -> dict[str, Any] | None:
     loc = _location_key(m.group("x"))
     return {"location": loc} if loc else None
+
+
+def _b_delete(m: re.Match[str], text: str) -> dict[str, Any] | None:
+    gd = m.groupdict()
+    name = (gd.get("name") or "").strip(" ,").strip("\"'")
+    loc = (gd.get("loc") or "").strip()
+    location = place_from_text(loc) if loc else None
+    if loc and not location:
+        name = f"{name} {loc}".strip()  # not a place: "תמחק את הקובץ דוח ממרץ" names "דוח ממרץ"
+    if not name:
+        return None
+    kind = (gd.get("kind") or "").lower()
+    return {
+        "name": name,
+        "location": location,
+        "kind": None if not kind else "file" if kind in ("file", "document", "קובץ", "מסמך") else "folder",
+        "permanent": any(gd.get(k) for k in ("p0", "p1", "p2")),
+    }
 
 
 _SITE_PREFIX = re.compile(
@@ -756,6 +803,12 @@ _RULES: list[Rule] = [
         rf"^{V_CREATE_HE}\s+{LI}(?:ה)?(?:תיקייה|תיקיה|תיקיית)(?:\s+חדשה)?(?:\s+(?:בשם|שנקראת)?\s*(?P<name>\"[^\"]+\"|[^\s].*?))?(?:\s+(?P<loc>(?:על\s+|בתוך\s+|לתוך\s+|ב)\S.*))?$",
         r"^(?:תיקייה|תיקיה)\s+חדשה(?:\s+(?:בשם\s+)?(?P<name>.+?))?(?:\s+(?P<loc>(?:על\s+|בתוך\s+|ב)\S.*))?$",
     ), "simple", (AgentId.SYSTEM,), build=_b_create_folder),
+    Rule(I.DELETE_PATH, _p(
+        rf"^(?:(?P<p0>permanently)\s+)?(?:delete|remove|erase|trash|get rid of)\s+(?:(?P<p1>permanently|forever)\s+)?(?:the\s+|my\s+|a\s+|this\s+)?{DELETE_KIND_EN}\s+(?:(?:named|called)\s+)?(?P<name>\"[^\"]+\"|\S.*?)(?:\s+(?P<loc>{FROM_EN}.+?))?(?:\s+(?P<p2>{PERMANENT_EN}))?$",
+        rf"^(?:(?P<p0>permanently)\s+)?(?:delete|erase|trash)\s+(?:(?P<p1>permanently|forever)\s+)?(?:the\s+)?(?P<name>{PATH_LIKE})(?:\s+(?P<loc>{FROM_EN}.+?))?(?:\s+(?P<p2>{PERMANENT_EN}))?$",
+        rf"^(?:{V_DELETE_HE}|{V_REMOVE_HE})\s+{LI}(?:(?P<p1>{PERMANENT_HE})\s+)?(?:את\s+)?(?:ה)?{DELETE_KIND_HE}(?:\s+(?:בשם|שנקרא|שנקראת|שקוראים\s+לו|שקוראים\s+לה))?\s+(?P<name>\"[^\"]+\"|\S.*?)(?:\s+(?P<loc>{FROM_HE}\S.*?))?(?:\s+(?P<p2>{PERMANENT_HE}))?$",
+        rf"^{V_DELETE_HE}\s+{LI}(?:(?P<p1>{PERMANENT_HE})\s+)?(?:את\s+)?(?P<name>{PATH_LIKE})(?:\s+(?P<loc>{FROM_HE}\S.*?))?(?:\s+(?P<p2>{PERMANENT_HE}))?$",
+    ), "simple", (AgentId.SYSTEM,), build=_b_delete),
     Rule(I.OPEN_FOLDER, _p(
         r"^(?:open|show)\s+(?:the\s+|my\s+)?(?P<x>desktop|documents|downloads|pictures|music|videos|workspace|projects|home)\s+(?:folder|directory)$",
         r"^(?:open|show)\s+(?:the\s+|my\s+)?(?:folder|directory)\s+(?P<x>desktop|documents|downloads|pictures|music|videos|workspace|projects)$",
@@ -874,9 +927,9 @@ _INTENT_DEFAULTS: dict[str, tuple[Complexity, tuple[AgentId, ...]]] = {
 
 # Intents that change something on the machine (used by CHAT mode to refuse actions).
 ACTION_INTENTS = frozenset({
-    I.VOLUME, I.BRIGHTNESS, I.MEDIA, I.LOCK_SCREEN, I.POWER, I.SCREENSHOT, I.CREATE_FOLDER, I.OPEN_FOLDER, I.RUN_PROJECT,
-    I.DESIGN, I.WRITE_TEXT, I.BUILD_APP, I.WRITE_CODE, I.ORGANIZE_PROJECT, I.PLAN, I.RESEARCH, I.WEB_SEARCH,
-    I.OPEN_WEBSITE, I.OPEN_APP, I.CLOSE_APP, I.AGENT_ASSIGN, I.RESUME_TASK, I.FIND_FILES, I.WEATHER, I.SYSTEM_STATUS,
+    I.VOLUME, I.BRIGHTNESS, I.MEDIA, I.LOCK_SCREEN, I.POWER, I.SCREENSHOT, I.CREATE_FOLDER, I.DELETE_PATH, I.OPEN_FOLDER,
+    I.RUN_PROJECT, I.DESIGN, I.WRITE_TEXT, I.BUILD_APP, I.WRITE_CODE, I.ORGANIZE_PROJECT, I.PLAN, I.RESEARCH,
+    I.WEB_SEARCH, I.OPEN_WEBSITE, I.OPEN_APP, I.CLOSE_APP, I.AGENT_ASSIGN, I.RESUME_TASK, I.FIND_FILES, I.WEATHER, I.SYSTEM_STATUS,
 })
 
 

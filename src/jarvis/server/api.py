@@ -510,9 +510,9 @@ def create_api(app: JarvisApp) -> FastAPI:
                 return _gate_page(403)
             # Swap the launch link for a session cookie, and drop the token from the address bar.
             response = RedirectResponse("/?view=orb" if view == "orb" else "/", status_code=303)
-            response.set_cookie(COOKIE, auth.token, httponly=True, samesite="strict", path="/")
+            response.set_cookie(COOKIE, auth.new_session(), httponly=True, samesite="strict", path="/")
             return response
-        if not auth.check_token(request.cookies.get(COOKIE)):
+        if not auth.check_session(request.cookies.get(COOKIE)):
             return _gate_page(401)
         return _index_page(app)
 
@@ -524,7 +524,7 @@ def create_api(app: JarvisApp) -> FastAPI:
                                 if path.startswith("assets/") else None)
         if path.startswith(("api/", "assets/")) or "." in Path(path).name:
             return _error(404, "not_found", f"/{path} not found")
-        if not auth.check_token(request.cookies.get(COOKIE)):    # an app route ("/tasks"): the page itself
+        if not auth.check_session(request.cookies.get(COOKIE)):    # an app route ("/tasks"): the page itself
             return _gate_page(401)
         return _index_page(app)
 
@@ -537,7 +537,8 @@ def _index_page(app: JarvisApp) -> Response:
         return HTMLResponse(_simple_page("JARVIS is running, but its interface has not been built.",
                                          "Run `npm run build` in the ui folder, then reload."), status_code=503)
     ws_url = f"ws://127.0.0.1:{app.auth.port}/ws"
-    config = {"token": app.auth.token, "version": __version__, "wsUrl": ws_url, "apiBase": ""}
+    # No credentials in the page: its requests are authorised by the HttpOnly session cookie.
+    config = {"version": __version__, "wsUrl": ws_url, "apiBase": ""}
     nonce = secrets.token_urlsafe(16)
     script = f"<script nonce=\"{nonce}\">window.__JARVIS__ = {json.dumps(config)};</script>"
     page = index.read_text(encoding="utf-8").replace("<head>", "<head>\n    " + script, 1)

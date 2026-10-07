@@ -7,7 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from jarvis.common.enums import Capability, RiskLevel
-from jarvis.tools.base import Tool, ToolContext, ToolResult
+from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
 
 C = Capability
 
@@ -25,17 +25,20 @@ class RememberTool(Tool):
     Params = RememberParams
     risk = RiskLevel.SAFE
 
+    async def plan(self, params: RememberParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t(f"שמירה בזיכרון: {params.text[:120]}", f"Remember: {params.text[:120]}"))
+
     async def run(self, params: RememberParams, ctx: ToolContext) -> ToolResult:
         memory = ctx.services.memory
         if memory is None:
-            return ToolResult.fail("Memory is not available.")
+            return ToolResult.fail(ctx.t("הזיכרון לא זמין.", "Memory is not available."))
         project_id = None
         if params.project:
             project = await memory.project(params.project)
             project_id = project.id if project else None
         fact = await memory.remember(params.text, params.category, source=ctx.agent_id, task_id=ctx.task_id,
                                      project_id=project_id)
-        return ToolResult(summary=f"Remembered: {fact.text}", data={"id": fact.id})
+        return ToolResult(summary=ctx.t(f"נשמר בזיכרון: {fact.text}", f"Remembered: {fact.text}"), data={"id": fact.id})
 
 
 class RecallParams(BaseModel):
@@ -51,13 +54,16 @@ class RecallTool(Tool):
     read_only = True
     risk = RiskLevel.SAFE
 
+    async def plan(self, params: RecallParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t(f"חיפוש בזיכרון: {params.query}", f"Search memory: {params.query}"))
+
     async def run(self, params: RecallParams, ctx: ToolContext) -> ToolResult:
         memory = ctx.services.memory
         if memory is None:
-            return ToolResult.fail("Memory is not available.")
+            return ToolResult.fail(ctx.t("הזיכרון לא זמין.", "Memory is not available."))
         recall = await memory.recall(params.query, limit=params.limit)
         text = recall.format()
-        return ToolResult(summary=text or "Nothing relevant in memory.", data={
+        return ToolResult(summary=text or ctx.t("אין בזיכרון שום דבר רלוונטי.", "Nothing relevant in memory."), data={
             "preferences": [f.text for f in recall.preferences],
             "facts": [{"text": f.text, "category": f.category} for f in recall.facts],
             "projects": [{"name": p.name, "path": p.path, "description": p.description} for p in recall.projects],
@@ -77,15 +83,19 @@ class ProjectInfoTool(Tool):
     read_only = True
     risk = RiskLevel.SAFE
 
+    async def plan(self, params: ProjectInfoParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t(f"פרטי הפרויקט {params.name}", f"Project details: {params.name}"))
+
     async def run(self, params: ProjectInfoParams, ctx: ToolContext) -> ToolResult:
         memory = ctx.services.memory
         if memory is None:
-            return ToolResult.fail("Memory is not available.")
+            return ToolResult.fail(ctx.t("הזיכרון לא זמין.", "Memory is not available."))
         project = await memory.project(params.name)
         if project is None:
-            return ToolResult.fail(f"No project called '{params.name}' in memory.")
+            return ToolResult.fail(ctx.t(f"אין בזיכרון פרויקט בשם '{params.name}'.", f"No project called '{params.name}' in memory."))
         data = await memory.project_context(project.id)
-        return ToolResult(summary=f"Project {project.name}" + (f" at {project.path}" if project.path else ""), data=data)
+        where = ctx.t(f" ב-{project.path}", f" at {project.path}") if project.path else ""
+        return ToolResult(summary=ctx.t(f"הפרויקט {project.name}{where}", f"Project {project.name}{where}"), data=data)
 
 
 class TaskHistoryParams(BaseModel):
@@ -105,10 +115,13 @@ class TaskHistoryTool(Tool):
     read_only = True
     risk = RiskLevel.SAFE
 
+    async def plan(self, params: TaskHistoryParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t("עיון בהיסטוריית המשימות", "Review the task history"))
+
     async def run(self, params: TaskHistoryParams, ctx: ToolContext) -> ToolResult:
         memory = ctx.services.memory
         if memory is None:
-            return ToolResult.fail("Memory is not available.")
+            return ToolResult.fail(ctx.t("הזיכרון לא זמין.", "Memory is not available."))
         records = await memory.tasks(statuses=list(params.status) or None, limit=max(params.limit * 3, 30))
         needle = params.query.strip().lower()
         items = []
@@ -122,7 +135,7 @@ class TaskHistoryTool(Tool):
         for item in items:
             counts[item["status"]] = counts.get(item["status"], 0) + 1
         summary = f"{len(items)} task(s): " + ", ".join(f"{n} {s}" for s, n in sorted(counts.items())) if items \
-            else "No matching tasks."
+            else ctx.t("אין משימות מתאימות.", "No matching tasks.")
         return ToolResult(summary=summary, data={"tasks": items, "counts": counts})
 
 

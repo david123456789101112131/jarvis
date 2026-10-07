@@ -11,6 +11,7 @@ from typing import Any
 
 from jarvis.agents.base import AGENT_INFO, AGENT_NUMBER, t
 from jarvis.common.enums import AgentId, Mode
+from jarvis.common.i18n import steps_already_done
 from jarvis.core.intents import I
 
 _WEEKDAYS_HE = ("שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון")
@@ -93,7 +94,8 @@ def help_text(lang: str) -> str:
         return ("אני JARVIS, ויש לי חמישה סוכנים. אפשר לבקש ממני:\n"
                 "• לפתוח ולסגור תוכנות ואתרים: \"פתח את כרום\", \"תפתח יוטיוב\"\n"
                 "• לשלוט במחשב: עוצמת שמע, בהירות, צילום מסך, נעילה, \"בדוק את המחשב\"\n"
-                "• קבצים ותיקיות: \"צור תיקייה בשם דוחות על שולחן העבודה\", \"תסדר את תיקיית ההורדות\"\n"
+                "• קבצים ותיקיות: \"צור תיקייה בשם דוחות על שולחן העבודה\", \"תסדר את תיקיית ההורדות\", "
+                "\"תמחק את הקובץ דוח.txt משולחן העבודה\"\n"
                 "• לבנות אתרים, אפליקציות, משחקים ובוטים: \"תבנה לי אתר לחנות קפה\"\n"
                 "• מחקר וסיכומים: \"תחקור את השוק של רכבים חשמליים\", \"מה מזג האוויר מחר\"\n"
                 "• עיצוב וכתיבה: לוגו, פלטת צבעים, מצגות, פוסטים ומיילים\n"
@@ -104,7 +106,8 @@ def help_text(lang: str) -> str:
     return ("I'm JARVIS, and I have five agents. You can ask me to:\n"
             "• open and close apps and websites: \"open Chrome\", \"open YouTube\"\n"
             "• control the computer: volume, brightness, screenshots, lock, \"check my system\"\n"
-            "• files and folders: \"create a folder named Reports on the desktop\", \"clean up my downloads\"\n"
+            "• files and folders: \"create a folder named Reports on the desktop\", \"clean up my downloads\", "
+            "\"delete the file notes.txt from the desktop\"\n"
             "• build websites, apps, games and bots: \"build me a website for a bakery\"\n"
             "• research and summaries: \"research electric car prices\", \"what's the weather tomorrow\"\n"
             "• design and writing: logos, palettes, presentations, posts and emails\n"
@@ -231,8 +234,8 @@ def nothing_to_resume(lang: str) -> str:
 
 def resumed(title: str, done: int, total: int, lang: str) -> str:
     if total and done:
-        return t(lang, f"ממשיך את '{title}' מהמקום שבו עצרנו: {done} מתוך {total} שלבים כבר הושלמו.",
-                 f"Continuing '{title}' where we stopped: {done} of {total} steps are already done.")
+        return t(lang, f"ממשיך את '{title}' מהמקום שבו עצרנו", f"Continuing '{title}' where we stopped") + \
+            steps_already_done(lang, done, total)
     return t(lang, f"ממשיך את '{title}'.", f"Continuing '{title}'.")
 
 
@@ -350,6 +353,7 @@ ACTION_CARDS: dict[str, tuple[str, str, str]] = {
     I.WEB_SEARCH: ("מחפש: {target}…", "Searching: {target}…", "search"),
     I.OPEN_FOLDER: ("פותח את התיקייה…", "Opening the folder…", "folder"),
     I.CREATE_FOLDER: ("יוצר תיקייה {target}…", "Creating the folder {target}…", "folder-plus"),
+    I.DELETE_PATH: ("מוחק את {target}…", "Deleting {target}…", "trash"),
     I.FIND_FILES: ("מחפש קבצים: {target}…", "Finding files: {target}…", "file-search"),
     I.SYSTEM_STATUS: ("בודק את מצב המחשב…", "Checking the computer…", "cpu"),
     I.VOLUME: ("משנה את עוצמת השמע…", "Adjusting the volume…", "volume"),

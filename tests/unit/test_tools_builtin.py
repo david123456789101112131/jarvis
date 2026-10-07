@@ -268,3 +268,40 @@ class TestSystemAndMemory:
             assert "dark mode" in r.summary
         finally:
             await memory.close()
+
+
+class TestLanguage:
+    """What a person reads (summaries, approval requests, reasons, the activity log) follows the
+    language of the request; English stays the default for callers that do not say."""
+
+    async def test_hebrew_request_gets_hebrew_texts(self, tk) -> None:
+        r = await run(tk, "create_folder", {"path": "workspace/דוחות"}, "development", lang="he")
+        assert r.ok and r.summary.startswith("נוצרה התיקייה")
+        assert tk.activity.recent()[-1].message.startswith("סוכן פיתוח: נוצרה התיקייה")
+        assert tk.audit.recent()[-1].action.startswith("יצירת התיקייה")
+        r = await run(tk, "create_folder", {"path": "workspace/reports"}, "development")
+        assert r.summary.startswith("Folder created")
+
+    async def test_approval_request_and_reasons_in_hebrew(self, tk) -> None:
+        target = tk.paths.workspace / "old.txt"
+        target.write_text("x", encoding="utf-8")
+        task = asyncio.ensure_future(run(tk, "delete_path", {"paths": [str(target)], "permanent": True}, "system",
+                                         lang="he"))
+        while not tk.broker.pending():
+            await asyncio.sleep(0.01)
+        req = tk.broker.pending()[0]
+        assert req.summary.startswith("מחיקה לצמיתות: old.txt")
+        assert "מחיקה לצמיתות (אי אפשר לבטל אותה)" in req.reasons
+        tk.broker.respond(req.id, False)
+        res = await task
+        assert not res.ok and res.error.startswith("המשתמש לא אישר") and "נדחה" in res.error
+        assert target.exists()
+
+    async def test_denials_and_command_risks_in_hebrew(self, tk) -> None:
+        r = await run(tk, "run_command", {"command": "dir"}, "planner", lang="he")
+        assert not r.ok and r.error.startswith("אין הרשאה: לסוכן תכנון אין הרשאת")
+        from jarvis.permissions import analyze_command
+
+        a = analyze_command("format c: /q", "he")
+        assert a.reasons == ["מריץ פקודת מערכת", "מפרמט כונן"]
+        assert analyze_command("format c: /q").reasons == ["runs a shell command", "formats a drive"]

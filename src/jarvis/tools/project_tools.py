@@ -57,6 +57,10 @@ def resolve_argv(argv: list[str], project: Path) -> list[str] | None:
 
 
 # ------------------------------------------------------------------------------------------ create
+PROJECT_KIND_HE = {"website": "אתר", "store": "חנות אונליין", "webapp": "אפליקציית ווב", "game": "משחק",
+                   "api": "שרת API", "script": "סקריפט", "bot": "בוט", "node-api": "שרת Node API"}
+
+
 class CreateProjectParams(BaseModel):
     kind: TemplateKind = Field(..., description="website, store, webapp, game, api, script, bot or node-api")
     name: str = Field(..., description="Project name (also the folder name)")
@@ -86,10 +90,13 @@ class CreateProjectTool(Tool):
     async def plan(self, params: CreateProjectParams, ctx: ToolContext) -> ActionPlan:
         dest = self._dest(params, ctx)
         replacing = params.overwrite and dest.is_dir() and any(dest.iterdir())
-        return ActionPlan(summary=f"Create a {params.kind} project '{params.name}' in {dest}",
+        kind_he = PROJECT_KIND_HE.get(params.kind, params.kind)
+        return ActionPlan(summary=ctx.t(f"יצירת פרויקט {kind_he} '{params.name}' ב-{dest}",
+                                        f"Create a {params.kind} project '{params.name}' in {dest}"),
                           paths=[PathUse(path=str(dest), access="write")],
                           risk=RiskLevel.HIGH if replacing else None,
-                          risk_reasons=["overwrites files in an existing folder"] if replacing else [])
+                          risk_reasons=[ctx.t("דורס קבצים בתיקייה קיימת", "overwrites files in an existing folder")]
+                          if replacing else [])
 
     async def run(self, params: CreateProjectParams, ctx: ToolContext) -> ToolResult:
         from jarvis.agents.development import scaffold
@@ -102,7 +109,7 @@ class CreateProjectTool(Tool):
             try:
                 palette = Palette.from_dict(params.palette)
             except (KeyError, TypeError, ValueError) as exc:
-                return ToolResult.fail(f"The palette is not valid: {exc}")
+                return ToolResult.fail(ctx.t(f"פלטת הצבעים לא תקינה: {exc}", f"The palette is not valid: {exc}"))
         variables = await asyncio.to_thread(scaffold.default_variables, params.kind, params.description or params.name,
                                             params.language, palette=palette, brand=params.brand or None)
         variables = {**variables, "title": params.name, **params.variables}
@@ -112,7 +119,7 @@ class CreateProjectTool(Tool):
             result = await asyncio.to_thread(scaffold.render_template, params.kind, dest, variables,
                                              overwrite=params.overwrite)
         except (FileExistsError, ValueError, KeyError) as exc:
-            return ToolResult.fail(f"Could not create the project: {exc}")
+            return ToolResult.fail(ctx.t(f"לא הצלחתי ליצור את הפרויקט: {exc}", f"Could not create the project: {exc}"))
         info = result.info
         files = [str(p) for p in result.files]
         memory = ctx.services.memory
@@ -123,7 +130,9 @@ class CreateProjectTool(Tool):
                                         meta={"kind": params.kind, "language": info.language, "entry": info.entry,
                                               "run": run_spec, "test": test_spec})
         return ToolResult(
-            summary=f"Created {info.name} '{params.name}' with {len(files)} files in {dest}",
+            summary=ctx.t(f"נוצר פרויקט {PROJECT_KIND_HE.get(params.kind, params.kind)} '{params.name}' עם "
+                          f"{ctx.n(len(files), 'קובץ אחד', 'קבצים', 'file', 'files')} ב-{dest}",
+                          f"Created {info.name} '{params.name}' with {len(files)} file{'' if len(files) == 1 else 's'} in {dest}"),
             files_created=files, actions=[f"create {params.kind} project {dest}"],
             data={"path": str(dest), "kind": params.kind, "entry": info.entry, "run": run_spec, "test": test_spec,
                   "language": info.language, "files": len(files)},
@@ -151,6 +160,9 @@ class ListTemplatesTool(Tool):
     Params = ListTemplatesParams
     read_only = True
     risk = RiskLevel.SAFE
+
+    async def plan(self, params: ListTemplatesParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t("רשימת תבניות הפרויקטים", "List the project templates"))
 
     async def run(self, params: ListTemplatesParams, ctx: ToolContext) -> ToolResult:
         from jarvis.agents.development import scaffold
@@ -185,9 +197,9 @@ class StartProcessTool(Tool):
 
     async def plan(self, params: StartProcessParams, ctx: ToolContext) -> ActionPlan:
         if not ctx.services.settings.security.shell_enabled:
-            raise PermissionDenied("Running programs is disabled in the security settings.")
+            raise PermissionDenied(ctx.t("הרצת תוכנות מושבתת בהגדרות האבטחה.", "Running programs is disabled in the security settings."))
         cwd = self._cwd(params, ctx)
-        return ActionPlan(summary=f"Start in the background: {params.command[:160]}",
+        return ActionPlan(summary=ctx.t(f"הפעלה ברקע: {params.command[:160]}", f"Start in the background: {params.command[:160]}"),
                           paths=[PathUse(path=str(cwd), access="read")],
                           details={"command": params.command, "cwd": str(cwd)})
 
@@ -222,11 +234,13 @@ class StartProcessTool(Tool):
         tail = _tail(log_path)
         if proc.poll() is not None:
             ctx.services.processes.unregister(proc.pid)
-            return ToolResult.fail(f"The program exited right away (code {proc.returncode}): {tail[-500:]}",
+            return ToolResult.fail(ctx.t(f"התוכנה נסגרה מיד (קוד {proc.returncode}): {tail[-500:]}",
+                                         f"The program exited right away (code {proc.returncode}): {tail[-500:]}"),
                                    data={"exit_code": proc.returncode, "log": str(log_path), "output": tail})
         if params.url and ctx.services.host is not None:
             await ctx.services.host.open_url(params.url)
-        return ToolResult(summary=f"Started (pid {proc.pid})" + (f" at {params.url}" if params.url else ""),
+        return ToolResult(summary=ctx.t(f"הופעל ברקע (pid {proc.pid})" + (f" בכתובת {params.url}" if params.url else ""),
+                                        f"Started (pid {proc.pid})" + (f" at {params.url}" if params.url else "")),
                           actions=[f"start {params.command[:120]} (pid {proc.pid})"],
                           data={"pid": proc.pid, "log": str(log_path), "url": params.url or None, "output": tail})
 
@@ -386,12 +400,13 @@ class CheckProjectTool(Tool):
 
     async def plan(self, params: CheckProjectParams, ctx: ToolContext) -> ActionPlan:
         root = ctx.resolve(params.path)
-        return ActionPlan(summary=f"Check the files of {root.name}", paths=[PathUse(path=str(root), access="read")])
+        return ActionPlan(summary=ctx.t(f"בדיקת הקבצים של {root.name}", f"Check the files of {root.name}"),
+                          paths=[PathUse(path=str(root), access="read")])
 
     async def run(self, params: CheckProjectParams, ctx: ToolContext) -> ToolResult:
         root = ctx.resolve(params.path)
         if not root.is_dir():
-            return ToolResult.fail(f"Project folder not found: {root}")
+            return ToolResult.fail(ctx.t(f"תיקיית הפרויקט לא נמצאה: {root}", f"Project folder not found: {root}"))
         report = await asyncio.to_thread(inspect_project_files, root)
         node = shutil.which("node") if params.syntax else None
         syntax_checked = 0
@@ -411,10 +426,13 @@ class CheckProjectTool(Tool):
         problems = report["problems"]
         if problems:
             first = "; ".join(f"{p['file']}: {p['kind']} {p['detail'][:80]}" for p in problems[:5])
-            summary = f"Found {len(problems)} problem(s) in {root.name}: {first}"
+            summary = ctx.t(f"נמצאו {len(problems)} בעיות ב-{root.name}: {first}",
+                            f"Found {len(problems)} problem(s) in {root.name}: {first}")
         else:
-            summary = (f"No problems in {root.name}: {len(report['pages'])} page(s), "
-                       f"{len(report['scripts'])} script(s)" + (" (syntax checked)" if syntax_checked else ""))
+            pages, scripts = len(report["pages"]), len(report["scripts"])
+            summary = ctx.t(f"אין בעיות ב-{root.name}: {pages} דפים, {scripts} סקריפטים" + (" (התחביר נבדק)" if syntax_checked else ""),
+                            f"No problems in {root.name}: {pages} page(s), {scripts} script(s)"
+                            + (" (syntax checked)" if syntax_checked else ""))
         return ToolResult(summary=summary, data=report)
 
 

@@ -329,9 +329,9 @@ class JarvisCore:
             return
         self._question = None
         intent = turn.intent
-        if time.monotonic() > q.expires or (intent.name != I.CHAT and intent.name != q.intent):
-            return
-        if intent.name == q.intent and intent.slots.get(q.slot):
+        # Only a bare answer ("בחיפה", "from the desktop") completes the question; anything that reads as a
+        # command of its own (even the same kind of command, said again in full) is a new command.
+        if time.monotonic() > q.expires or intent.name != I.CHAT:
             return
         value = re.sub(r"^(?:in|at|for|to)\s+", "", turn.text.strip(" .,!?"), flags=re.I)
         if not value or len(value.split()) > 6:
@@ -446,17 +446,23 @@ class JarvisCore:
         lang = turn.lang
         ok = result.ok
         summary = result.summary or (fast.title if ok else t(lang, "הפעולה נכשלה.", "The action failed."))
-        await self._action(turn.cmd_id, summary, fast.icon, "done" if ok else "error", progress=1.0)
-        await self._pipeline("executing", "done" if ok else "error", lang, summary)
-        if result.data.get("code") == "need_location":
-            self._question = _Question(turn.intent.name, dict(turn.intent.slots), "location", lang,
-                                       time.monotonic() + QUESTION_TTL_S)
+        state = self._settle(turn, result)
+        await self._action(turn.cmd_id, summary, fast.icon, state, progress=1.0)
+        await self._pipeline("executing", "error" if state == "error" else "done", lang, summary)
         text = summary
         if result.details and turn.intent.name in (I.SYSTEM_STATUS, I.FIND_FILES):
             text += "\n" + result.details[:3000]
         await self._record(turn, ok=ok)
-        return await self._reply(turn, text, kind="result" if ok else "error", ok=ok, speak=summary,
-                                 follow_up=not ok or self._question is not None)
+        return await self._reply(turn, text, kind="result" if ok else "info" if state == "info" else "error", ok=ok,
+                                 speak=summary, follow_up=not ok or self._question is not None)
+
+    def _settle(self, turn: _Turn, result: AgentResult) -> str:
+        """The action card's end state; a question back ("which city?") waits for the user's answer."""
+        if result.asks_user:
+            self._question = _Question(turn.intent.name, dict(turn.intent.slots), "location", turn.lang,
+                                       time.monotonic() + QUESTION_TTL_S)
+            return "info"
+        return "done" if result.ok else "error"
 
     async def _fast_finished_later(self, turn: _Turn, fast: _Fast, future: asyncio.Future[AgentResult]) -> None:
         self._fast.pop(turn.cmd_id, None)
@@ -466,12 +472,14 @@ class JarvisCore:
         lang = turn.lang
         ok = result.ok
         summary = result.summary or fast.title
-        await self._action(turn.cmd_id, summary, fast.icon, "done" if ok else "error", progress=1.0)
-        await self._pipeline("executing", "done" if ok else "error", lang, summary)
+        state = self._settle(turn, result)
+        await self._action(turn.cmd_id, summary, fast.icon, state, progress=1.0)
+        await self._pipeline("executing", "error" if state == "error" else "done", lang, summary)
         await self._record(turn, ok=ok)
         if result.status.value == "cancelled" and turn.cmd_id in self._quiet:
             return
-        await self.say(summary, kind="result" if ok else "error", lang=lang, intent=turn.intent.name)
+        await self.say(summary, kind="result" if ok else "info" if state == "info" else "error", lang=lang,
+                       intent=turn.intent.name)
         if turn.source == "voice":
             await self._speak(summary, lang)
 

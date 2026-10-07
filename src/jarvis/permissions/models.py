@@ -67,6 +67,7 @@ class ActionRequest(BaseModel):
     destination: str | None = None                 # host / URL the payload goes to
     always_confirm: bool = False
     params: dict[str, Any] = Field(default_factory=dict)
+    lang: str = "en"                               # language for the reasons a person will read
 
 
 class Decision(BaseModel):

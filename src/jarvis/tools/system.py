@@ -50,6 +50,9 @@ class SystemInfoTool(Tool):
     read_only = True
     risk = RiskLevel.SAFE
 
+    async def plan(self, params: SystemInfoParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t("בדיקת מצב המחשב", "Read the computer's status"))
+
     async def run(self, params: SystemInfoParams, ctx: ToolContext) -> ToolResult:
         stats = await asyncio.to_thread(monitor().sample)
         mem, cpu = stats["memory"], stats["cpu"]
@@ -73,6 +76,9 @@ class HealthCheckTool(Tool):
     Params = Empty
     read_only = True
     risk = RiskLevel.SAFE
+
+    async def plan(self, params: Empty, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t("בדיקת בריאות המחשב", "Check the computer's health"))
 
     async def run(self, params: Empty, ctx: ToolContext) -> ToolResult:
         stats = await asyncio.to_thread(monitor().sample)
@@ -99,7 +105,11 @@ class VolumeTool(Tool):
     risk = RiskLevel.LOW
 
     async def plan(self, params: VolumeParams, ctx: ToolContext) -> ActionPlan:
-        return ActionPlan(summary=f"Volume {params.action}" + (f" {params.level}%" if params.level is not None else ""),
+        level = f" {params.level}%" if params.level is not None else ""
+        he = {"set": f"כיוון עוצמת השמע ל-{params.level}%" if params.level is not None else "כיוון עוצמת השמע",
+              "up": "הגברת עוצמת השמע", "down": "הנמכת עוצמת השמע", "mute": "השתקה", "unmute": "ביטול השתקה",
+              "get": "בדיקת עוצמת השמע"}[params.action]
+        return ActionPlan(summary=ctx.t(he, f"Volume {params.action}{level}"),
                           risk=RiskLevel.SAFE if params.action == "get" else RiskLevel.LOW)
 
     async def run(self, params: VolumeParams, ctx: ToolContext) -> ToolResult:
@@ -108,16 +118,18 @@ class VolumeTool(Tool):
             level = await host.get_volume()
         elif params.action == "set":
             if params.level is None:
-                return ToolResult.fail("Give a level between 0 and 100.")
+                return ToolResult.fail(ctx.t("צריך עוצמה בין 0 ל-100.", "Give a level between 0 and 100."))
             level = await host.set_volume(params.level)
         elif params.action in ("up", "down"):
             level = await host.change_volume(params.step if params.action == "up" else -params.step)
         else:
             await host.set_mute(params.action == "mute")
-            return ToolResult(summary="Muted" if params.action == "mute" else "Unmuted",
+            muted = params.action == "mute"
+            return ToolResult(summary=ctx.t("השמע הושתק" if muted else "ההשתקה בוטלה", "Muted" if muted else "Unmuted"),
                               actions=[f"volume {params.action}"])
-        return ToolResult(summary=f"Volume is {level}%" if level is not None else "Volume changed",
-                          actions=[f"volume {params.action}"], data={"level": level})
+        summary = ctx.t(f"עוצמת השמע: {level}%", f"Volume is {level}%") if level is not None else \
+            ctx.t("עוצמת השמע שונתה", "Volume changed")
+        return ToolResult(summary=summary, actions=[f"volume {params.action}"], data={"level": level})
 
 
 class BrightnessParams(BaseModel):
@@ -133,23 +145,35 @@ class BrightnessTool(Tool):
     Params = BrightnessParams
     risk = RiskLevel.LOW
 
+    async def plan(self, params: BrightnessParams, ctx: ToolContext) -> ActionPlan:
+        he = {"set": f"כיוון הבהירות ל-{params.level}%" if params.level is not None else "כיוון הבהירות",
+              "up": "הגברת הבהירות", "down": "הנמכת הבהירות", "get": "בדיקת הבהירות"}[params.action]
+        level = f" {params.level}%" if params.level is not None else ""
+        return ActionPlan(summary=ctx.t(he, f"Brightness {params.action}{level}"),
+                          risk=RiskLevel.SAFE if params.action == "get" else RiskLevel.LOW)
+
     async def run(self, params: BrightnessParams, ctx: ToolContext) -> ToolResult:
         host = _host(ctx)
         current = await host.get_brightness()
         if params.action == "get":
-            return ToolResult(summary=f"Brightness is {current}%" if current is not None else "Brightness unknown",
-                              data={"level": current})
+            summary = ctx.t(f"הבהירות: {current}%", f"Brightness is {current}%") if current is not None else \
+                ctx.t("הבהירות לא ידועה", "Brightness unknown")
+            return ToolResult(summary=summary, data={"level": current})
         if params.action == "set":
             if params.level is None:
-                return ToolResult.fail("Give a level between 0 and 100.")
+                return ToolResult.fail(ctx.t("צריך רמה בין 0 ל-100.", "Give a level between 0 and 100."))
             target = params.level
         else:
             if current is None:
-                return ToolResult.fail("This screen does not report its brightness.")
+                return ToolResult.fail(ctx.t("המסך הזה לא מדווח על הבהירות שלו.", "This screen does not report its brightness."))
             target = current + (params.step if params.action == "up" else -params.step)
         level = await host.set_brightness(max(0, min(100, target)))
-        return ToolResult(summary=f"Brightness set to {level if level is not None else target}%",
+        value = level if level is not None else target
+        return ToolResult(summary=ctx.t(f"הבהירות כוונה ל-{value}%", f"Brightness set to {value}%"),
                           actions=[f"brightness {params.action}"], data={"level": level})
+
+
+_MEDIA_HE = {"play_pause": "הפעלה/השהיה", "next": "הבא", "previous": "הקודם", "stop": "עצירה"}
 
 
 class MediaParams(BaseModel):
@@ -163,9 +187,13 @@ class MediaTool(Tool):
     Params = MediaParams
     risk = RiskLevel.LOW
 
+    async def plan(self, params: MediaParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t(f"מדיה: {_MEDIA_HE[params.action]}", f"Media: {params.action.replace('_', '/')}"))
+
     async def run(self, params: MediaParams, ctx: ToolContext) -> ToolResult:
         await _host(ctx).media(params.action)
-        return ToolResult(summary=f"Media: {params.action.replace('_', '/')}", actions=[f"media {params.action}"])
+        return ToolResult(summary=ctx.t(f"מדיה: {_MEDIA_HE[params.action]}", f"Media: {params.action.replace('_', '/')}"),
+                          actions=[f"media {params.action}"])
 
 
 class LockTool(Tool):
@@ -175,9 +203,16 @@ class LockTool(Tool):
     Params = Empty
     risk = RiskLevel.LOW
 
+    async def plan(self, params: Empty, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t("נעילת המחשב", "Lock the computer"))
+
     async def run(self, params: Empty, ctx: ToolContext) -> ToolResult:
         await _host(ctx).lock_screen()
-        return ToolResult(summary="Screen locked", actions=["lock screen"])
+        return ToolResult(summary=ctx.t("המחשב ננעל", "Screen locked"), actions=["lock screen"])
+
+
+_POWER_HE = {"shutdown": "כיבוי המחשב", "restart": "הפעלה מחדש של המחשב", "sleep": "העברת המחשב למצב שינה",
+             "logoff": "התנתקות מהמשתמש"}
 
 
 class PowerParams(BaseModel):
@@ -194,14 +229,18 @@ class PowerTool(Tool):
     always_confirm = True
 
     async def plan(self, params: PowerParams, ctx: ToolContext) -> ActionPlan:
-        when = f" in {params.delay_s}s" if params.delay_s and params.action in ("shutdown", "restart") else ""
-        return ActionPlan(summary=f"{params.action.capitalize()} the computer{when}",
-                          risk_reasons=["unsaved work in open apps may be lost"])
+        delayed = params.delay_s and params.action in ("shutdown", "restart")
+        when = f" in {params.delay_s}s" if delayed else ""
+        when_he = f" בעוד {params.delay_s} שניות" if delayed else ""
+        return ActionPlan(summary=ctx.t(f"{_POWER_HE[params.action]}{when_he}", f"{params.action.capitalize()} the computer{when}"),
+                          risk_reasons=[ctx.t("עבודה שלא נשמרה בתוכנות פתוחות עלולה ללכת לאיבוד",
+                                              "unsaved work in open apps may be lost")])
 
     async def run(self, params: PowerParams, ctx: ToolContext) -> ToolResult:
         await _host(ctx).power(params.action, params.delay_s)
-        return ToolResult(summary=f"{params.action.capitalize()} scheduled" + (
-            f" in {params.delay_s} seconds" if params.delay_s else ""), actions=[f"power {params.action}"])
+        when_he = f" בעוד {params.delay_s} שניות" if params.delay_s else ""
+        return ToolResult(summary=ctx.t(f"נקבע: {_POWER_HE[params.action]}{when_he}", f"{params.action.capitalize()} scheduled" + (
+            f" in {params.delay_s} seconds" if params.delay_s else "")), actions=[f"power {params.action}"])
 
 
 class CancelShutdownTool(Tool):
@@ -211,9 +250,12 @@ class CancelShutdownTool(Tool):
     Params = Empty
     risk = RiskLevel.LOW
 
+    async def plan(self, params: Empty, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t("ביטול כיבוי מתוזמן", "Cancel a scheduled shutdown"))
+
     async def run(self, params: Empty, ctx: ToolContext) -> ToolResult:
         await _host(ctx).cancel_power()
-        return ToolResult(summary="Scheduled shutdown cancelled", actions=["cancel shutdown"])
+        return ToolResult(summary=ctx.t("הכיבוי המתוזמן בוטל", "Scheduled shutdown cancelled"), actions=["cancel shutdown"])
 
 
 class ScreenshotParams(BaseModel):
@@ -235,13 +277,15 @@ class ScreenshotTool(Tool):
 
     async def plan(self, params: ScreenshotParams, ctx: ToolContext) -> ActionPlan:
         target = self._target(params, ctx)
-        return ActionPlan(summary=f"Save a screenshot to {target}", paths=[PathUse(path=str(target), access="write")])
+        return ActionPlan(summary=ctx.t(f"שמירת צילום מסך ב-{target}", f"Save a screenshot to {target}"),
+                          paths=[PathUse(path=str(target), access="write")])
 
     async def run(self, params: ScreenshotParams, ctx: ToolContext) -> ToolResult:
         target = self._target(params, ctx)
         await asyncio.to_thread(target.parent.mkdir, parents=True, exist_ok=True)
         saved = await _host(ctx).screenshot(target)
-        return ToolResult(summary=f"Screenshot saved: {saved.name}", files_created=[str(saved)], data={"path": str(saved)})
+        return ToolResult(summary=ctx.t(f"צילום המסך נשמר: {saved.name}", f"Screenshot saved: {saved.name}"),
+                          files_created=[str(saved)], data={"path": str(saved)})
 
 
 class NotifyParams(BaseModel):
@@ -256,9 +300,12 @@ class NotifyTool(Tool):
     Params = NotifyParams
     risk = RiskLevel.SAFE
 
+    async def plan(self, params: NotifyParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t(f"הצגת התראה: {params.title}", f"Show a notification: {params.title}"))
+
     async def run(self, params: NotifyParams, ctx: ToolContext) -> ToolResult:
         await _host(ctx).notify(params.title, params.message)
-        return ToolResult(summary=f"Notification shown: {params.title}")
+        return ToolResult(summary=ctx.t(f"הוצגה התראה: {params.title}", f"Notification shown: {params.title}"))
 
 
 class ClipboardParams(BaseModel):
@@ -273,13 +320,20 @@ class ClipboardTool(Tool):
     Params = ClipboardParams
     risk = RiskLevel.LOW
 
+    async def plan(self, params: ClipboardParams, ctx: ToolContext) -> ActionPlan:
+        if params.action == "set":
+            return ActionPlan(summary=ctx.t(f"העתקת {len(params.text)} תווים ללוח", f"Copy {len(params.text)} characters to the clipboard"))
+        return ActionPlan(summary=ctx.t("קריאת הטקסט שבלוח", "Read the clipboard"))
+
     async def run(self, params: ClipboardParams, ctx: ToolContext) -> ToolResult:
         host = _host(ctx)
         if params.action == "set":
             await host.set_clipboard(params.text)
-            return ToolResult(summary=f"Copied {len(params.text)} characters to the clipboard")
+            return ToolResult(summary=ctx.t(f"הועתקו {len(params.text)} תווים ללוח",
+                                            f"Copied {len(params.text)} characters to the clipboard"))
         text = await host.get_clipboard()
-        return ToolResult(summary=f"Clipboard has {len(text)} characters", data={"text": text[:20000]})
+        return ToolResult(summary=ctx.t(f"בלוח יש {len(text)} תווים", f"Clipboard has {len(text)} characters"),
+                          data={"text": text[:20000]})
 
 
 SYSTEM_TOOLS: tuple[type[Tool], ...] = (

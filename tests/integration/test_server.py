@@ -156,9 +156,15 @@ class TestAccess:
             assert r.status_code == 303 and r.headers["location"] == "/"
             cookie = r.headers["set-cookie"]
             assert "httponly" in cookie.lower() and "samesite=strict" in cookie.lower()
+            session = browser.cookies.get("jarvis_session")
+            assert session and session != live.token                  # a session id, never the token itself
             r = await browser.get("/")                                # the cookie came with the redirect
             assert r.status_code == 200
-            assert f'"token": "{live.token}"' in r.text and "window.__JARVIS__" in r.text
+            assert "window.__JARVIS__" in r.text and live.token not in r.text and session not in r.text
+            assert (await browser.get("/api/state")).status_code == 200   # the cookie authorises the API
+            async with websockets.connect(f"ws://127.0.0.1:{live.app.port}/ws",
+                                          additional_headers={"Cookie": f"jarvis_session={session}"}) as ws:
+                assert json.loads(await ws.recv())["type"] == "hello"
             csp = r.headers["content-security-policy"]
             nonce = re.search(r"'nonce-([^']+)'", csp).group(1)
             assert f'nonce="{nonce}"' in r.text and "object-src 'none'" in csp
@@ -169,6 +175,9 @@ class TestAccess:
         async with httpx.AsyncClient(base_url=live.base) as browser:
             r = await browser.get(f"/?launch={live.token}&view=orb")
             assert r.headers["location"] == "/?view=orb"
+        async with httpx.AsyncClient(base_url=live.base, cookies={"jarvis_session": live.token}) as browser:
+            assert (await browser.get("/")).status_code == 401          # the token is not a session id
+            assert (await browser.get("/api/state")).status_code == 403
 
     async def test_runtime_file_lets_the_cli_find_this_run(self, live: Live) -> None:
         info = read_runtime_file(live.app.paths)

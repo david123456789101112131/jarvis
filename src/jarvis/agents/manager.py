@@ -371,7 +371,7 @@ class AgentManager:
                                            sender=agent_address(st.id), status=result.status.value,
                                            result=result.model_dump(mode="json")))
         await self._log(self._result_line(agent, task, result), st, task.task_id,
-                        level="success" if result.status == ResultStatus.SUCCESS else
+                        level="success" if result.status == ResultStatus.SUCCESS else "info" if result.asks_user else
                         "warning" if result.status in (ResultStatus.PARTIAL, ResultStatus.CANCELLED) else "error",
                         kind="result")
         await self._after_run(st, result)
@@ -452,11 +452,13 @@ class AgentManager:
             return t(lang, f"{agent.name_he} סיים חלקית: {summary}", f"{agent.name} partly completed: {summary}")
         if result.status == ResultStatus.CANCELLED:
             return t(lang, f"{agent.name_he} עצר: {summary}", f"{agent.name} stopped: {summary}")
+        if result.asks_user:
+            return t(lang, f"{agent.name_he} שואל: {summary}", f"{agent.name} asks: {summary}")
         return t(lang, f"{agent.name_he} נכשל: {summary}", f"{agent.name} failed: {summary}")
 
     async def _after_run(self, st: _AgentState, result: AgentResult) -> None:
         if not st.running:
-            if result.status == ResultStatus.CANCELLED:
+            if result.status == ResultStatus.CANCELLED or result.asks_user:   # nothing went wrong
                 st.rest = AgentStatus.IDLE
             else:
                 st.rest = AgentStatus.ERROR if result.status == ResultStatus.FAILED else AgentStatus.COMPLETED

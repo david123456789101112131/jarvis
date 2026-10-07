@@ -54,29 +54,32 @@ class OpenAppTool(Tool):
     timeout_s = 45.0
 
     async def plan(self, params: OpenAppParams, ctx: ToolContext) -> ActionPlan:
-        return ActionPlan(summary=f"Open {params.name}")
+        return ActionPlan(summary=ctx.t(f"פתיחת {params.name}", f"Open {params.name}"))
 
     async def run(self, params: OpenAppParams, ctx: ToolContext) -> ToolResult:
         host = ctx.services.host
         if host is None:
-            return ToolResult.fail("Launching apps is not available on this system.")
+            return ToolResult.fail(ctx.t("פתיחת תוכנות לא זמינה במערכת הזו.", "Launching apps is not available on this system."))
         name = params.name.strip()
         site = catalog.find_site(name)
         if site is not None or (catalog.looks_like_url(name) and catalog.find_app(name) is None):
             url = site.url if site else catalog.to_url(name)
             await host.open_url(url)
             _note(ctx, "last_url", url)
-            return ToolResult(summary=f"Opened {site.display if site else url}", actions=[f"open {url}"],
+            shown = site.display if site else url
+            return ToolResult(summary=ctx.t(f"נפתח {shown}", f"Opened {shown}"), actions=[f"open {url}"],
                               data={"url": url, "kind": "site"})
         app = await host.find_app(name)
         if app is None:
-            return ToolResult.fail(f"I couldn't find an installed app called '{name}'.", data={"name": name})
+            return ToolResult.fail(ctx.t(f"לא מצאתי תוכנה מותקנת בשם '{name}'.", f"I couldn't find an installed app called '{name}'."),
+                                   data={"name": name})
         launched = await host.launch_app(app, params.args)
         if not launched.ok:
-            return ToolResult.fail(f"Could not open {app.name}: {launched.detail or 'launch failed'}",
+            detail = launched.detail or ctx.t("ההפעלה נכשלה", "launch failed")
+            return ToolResult.fail(ctx.t(f"לא הצלחתי לפתוח את {app.name}: {detail}", f"Could not open {app.name}: {detail}"),
                                    data={"app": app.to_dict()})
         _note(ctx, "last_app", app.name)
-        return ToolResult(summary=f"Opened {app.name}", actions=[f"launch {app.name} ({launched.method})"],
+        return ToolResult(summary=ctx.t(f"נפתח {app.name}", f"Opened {app.name}"), actions=[f"launch {app.name} ({launched.method})"],
                           data={"app": app.to_dict(), "pid": launched.pid, "method": launched.method})
 
 
@@ -91,18 +94,19 @@ class OpenUrlTool(Tool):
     Params = OpenUrlParams
 
     async def plan(self, params: OpenUrlParams, ctx: ToolContext) -> ActionPlan:
-        return ActionPlan(summary=f"Open {catalog.to_url(params.url)}")
+        url = catalog.to_url(params.url)
+        return ActionPlan(summary=ctx.t(f"פתיחת {url}", f"Open {url}"))
 
     async def run(self, params: OpenUrlParams, ctx: ToolContext) -> ToolResult:
         host = ctx.services.host
         if host is None:
-            return ToolResult.fail("Opening web pages is not available on this system.")
+            return ToolResult.fail(ctx.t("פתיחת דפי אינטרנט לא זמינה במערכת הזו.", "Opening web pages is not available on this system."))
         url = catalog.to_url(params.url)
         if not url.lower().startswith(("http://", "https://")):
-            return ToolResult.fail("Only http(s) addresses can be opened.")
+            return ToolResult.fail(ctx.t("אפשר לפתוח רק כתובות http(s).", "Only http(s) addresses can be opened."))
         await host.open_url(url)
         _note(ctx, "last_url", url)
-        return ToolResult(summary=f"Opened {url}", actions=[f"open {url}"], data={"url": url})
+        return ToolResult(summary=ctx.t(f"נפתח {url}", f"Opened {url}"), actions=[f"open {url}"], data={"url": url})
 
 
 class CloseAppParams(BaseModel):
@@ -123,23 +127,25 @@ class CloseAppTool(Tool):
         procs = entry.process_names if entry else (params.name,)
         critical = any(is_critical(p) for p in procs)
         return ActionPlan(
-            summary=f"{'Force-close' if params.force else 'Close'} {target}",
+            summary=ctx.t(f"{'סגירה בכוח של' if params.force else 'סגירת'} {target}", f"{'Force-close' if params.force else 'Close'} {target}"),
             risk=RiskLevel.CRITICAL if critical else (RiskLevel.HIGH if params.force else None),
-            risk_reasons=(["closing a core Windows process"] if critical else [])
-            + (["unsaved work in the app may be lost"] if params.force else []),
+            risk_reasons=([ctx.t("סוגר תהליך חיוני של Windows", "closing a core Windows process")] if critical else [])
+            + ([ctx.t("עבודה שלא נשמרה בתוכנה עלולה ללכת לאיבוד", "unsaved work in the app may be lost")] if params.force else []),
         )
 
     async def run(self, params: CloseAppParams, ctx: ToolContext) -> ToolResult:
         host = ctx.services.host
         if host is None:
-            return ToolResult.fail("Closing apps is not available on this system.")
+            return ToolResult.fail(ctx.t("סגירת תוכנות לא זמינה במערכת הזו.", "Closing apps is not available on this system."))
         entry = catalog.find_app(params.name)
         if any(is_critical(p) for p in (entry.process_names if entry else (params.name,))):
-            return ToolResult.fail(f"{params.name} is a core system process and will not be closed.", denied="blocked")
+            return ToolResult.fail(ctx.t(f"{params.name} הוא תהליך חיוני של המערכת ולא ייסגר.",
+                                         f"{params.name} is a core system process and will not be closed."), denied="blocked")
         closed = await host.close_app(params.name, force=params.force)
+        shown = entry.display if entry else params.name
         if not closed:
-            return ToolResult.fail(f"{entry.display if entry else params.name} is not running.")
-        return ToolResult(summary=f"Closed {entry.display if entry else params.name}",
+            return ToolResult.fail(ctx.t(f"{shown} לא פועל כרגע.", f"{shown} is not running."))
+        return ToolResult(summary=ctx.t(f"נסגר {shown}", f"Closed {shown}"),
                           actions=[f"close {', '.join(sorted(set(closed)))}"], data={"closed": closed})
 
 
@@ -155,10 +161,13 @@ class RunningAppsTool(Tool):
     read_only = True
     risk = RiskLevel.SAFE
 
+    async def plan(self, params: RunningAppsParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t("רשימת התוכנות הפתוחות", "List the open apps"))
+
     async def run(self, params: RunningAppsParams, ctx: ToolContext) -> ToolResult:
         host = ctx.services.host
         apps = await host.running_apps() if host is not None else []
-        return ToolResult(summary=f"{len(apps)} apps open", data={"apps": apps})
+        return ToolResult(summary=ctx.t(f"{len(apps)} תוכנות פתוחות", f"{len(apps)} apps open"), data={"apps": apps})
 
 
 def top_processes(limit: int = 15, sort: str = "cpu", sample_s: float = 0.4) -> list[dict[str, Any]]:
@@ -196,10 +205,15 @@ class ListProcessesTool(Tool):
     read_only = True
     risk = RiskLevel.SAFE
 
+    async def plan(self, params: ListProcessesParams, ctx: ToolContext) -> ActionPlan:
+        return ActionPlan(summary=ctx.t("רשימת התהליכים הכבדים", "List the heaviest processes"))
+
     async def run(self, params: ListProcessesParams, ctx: ToolContext) -> ToolResult:
         rows = await asyncio.to_thread(top_processes, params.limit, params.sort)
         head = ", ".join(f"{r['name']} {r['cpu']}%/{r['memory_mb']:.0f}MB" for r in rows[:5])
-        return ToolResult(summary=f"Top processes by {params.sort}: {head}", data={"processes": rows})
+        by = ctx.t("זיכרון" if params.sort == "memory" else "מעבד", params.sort)
+        return ToolResult(summary=ctx.t(f"התהליכים הכבדים ביותר ({by}): {head}", f"Top processes by {by}: {head}"),
+                          data={"processes": rows})
 
 
 class KillProcessParams(BaseModel):
@@ -233,18 +247,21 @@ class KillProcessTool(Tool):
         critical = any(is_critical(n) for n in names) or (params.name is not None and is_critical(params.name))
         own = bool({t.pid for t in targets} & self_pids())
         return ActionPlan(
-            summary=f"End {', '.join(names) or params.name or params.pid} ({len(targets)} process(es))",
+            summary=ctx.t(f"סגירת {', '.join(names) or params.name or params.pid}",
+                          f"End {', '.join(names) or params.name or params.pid}")
+            + f" ({ctx.n(len(targets), 'תהליך אחד', 'תהליכים', 'process', 'processes')})",
             risk=RiskLevel.CRITICAL if critical or own else (RiskLevel.HIGH if len(targets) > 5 else None),
-            risk_reasons=(["core system process"] if critical else []) + (["JARVIS's own process"] if own else []),
+            risk_reasons=([ctx.t("תהליך חיוני של המערכת", "core system process")] if critical else [])
+            + ([ctx.t("התהליך של JARVIS עצמו", "JARVIS's own process")] if own else []),
             affected_count=len(targets),
         )
 
     async def run(self, params: KillProcessParams, ctx: ToolContext) -> ToolResult:
         if params.pid is None and not params.name:
-            return ToolResult.fail("Give a pid or a process name.")
+            return ToolResult.fail(ctx.t("צריך מספר תהליך (pid) או שם תהליך.", "Give a pid or a process name."))
         targets = await asyncio.to_thread(self._targets, params)
         if not targets:
-            return ToolResult.fail("No matching process is running.")
+            return ToolResult.fail(ctx.t("אין תהליך מתאים שפועל כרגע.", "No matching process is running."))
         protected = self_pids()
         killed: list[str] = []
 
@@ -263,8 +280,10 @@ class KillProcessTool(Tool):
 
         await asyncio.to_thread(kill)
         if not killed:
-            return ToolResult.fail("Those processes are protected and were not ended.", denied="blocked")
-        return ToolResult(summary=f"Ended {', '.join(killed)}", actions=[f"kill {k}" for k in killed])
+            return ToolResult.fail(ctx.t("התהליכים האלה מוגנים ולא נסגרו.", "Those processes are protected and were not ended."),
+                                   denied="blocked")
+        return ToolResult(summary=ctx.t(f"נסגרו: {', '.join(killed)}", f"Ended {', '.join(killed)}"),
+                          actions=[f"kill {k}" for k in killed])
 
 
 def _safe_name(p: psutil.Process) -> str:

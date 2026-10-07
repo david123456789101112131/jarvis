@@ -20,7 +20,7 @@ import jarvis.orchestration.orchestrator as orchestrator_module
 from agent_env import Env, until
 from fakes import reply
 from jarvis.ai.types import AIResponse, CompletionRequest
-from jarvis.common.enums import AgentId, Mode, Priority, TaskStatus
+from jarvis.common.enums import AgentId, AgentStatus, Mode, Priority, TaskStatus
 from jarvis.common.errors import ProviderError
 from jarvis.core.core import JarvisCore
 from jarvis.core.intents import I
@@ -157,7 +157,8 @@ class TestFastPath:
     async def test_a_question_and_its_answer(self, c: C) -> None:
         c.env.mock_http(weather_handler)
         res = await c.say("מה מזג האוויר")
-        assert res.reply["kind"] == "error" and "באיזו עיר" in res.reply["text"] and res.speech["follow_up"]
+        assert res.reply["kind"] == "info" and "באיזו עיר" in res.reply["text"] and res.speech["follow_up"]
+        assert c.of("action")[-1]["status"] == "info"          # a question, not an error
         res = await c.say("בחיפה")                    # the answer completes the question (prefix and all)
         assert res.intent["name"] == I.WEATHER and res.reply["kind"] == "result"
         assert res.reply["text"].startswith("עכשיו בחיפה")
@@ -184,6 +185,27 @@ class TestFastPath:
         await until(lambda: c.jarvis("error"))
         assert not any(call[0] == "power" for call in c.host.calls)
         assert (await c.env.memory.command_history(5))[1].ok is False
+
+    async def test_a_delete_asks_where_and_then_for_approval(self, c: C) -> None:
+        desktop = c.host.folders["desktop"] = c.env.kit.user_docs / "Desktop"   # one of the user's folders
+        (desktop / "ישן").mkdir(parents=True)
+        res = await c.say("תמחק לצמיתות את התיקייה ישן")
+        assert res.intent["name"] == I.DELETE_PATH and res.reply["text"].endswith("איפה זה נמצא?")
+        assert res.reply["kind"] == "info" and c.env.manager.status("system") == AgentStatus.IDLE
+        assert res.speech["follow_up"] and (desktop / "ישן").exists()
+        res = await c.say("משולחן העבודה")              # the answer completes the command
+        assert res.intent["name"] == I.DELETE_PATH and "לאשר" in res.reply["text"]
+        assert "מחיקה לצמיתות: ישן" in res.reply["text"] and (desktop / "ישן").exists()
+        await c.say("כן")
+        await until(lambda: not (desktop / "ישן").exists())
+        await until(lambda: c.jarvis("result"))
+        assert c.jarvis("result")[-1]["text"] == "מחקתי לצמיתות את התיקייה ישן."
+
+    async def test_a_new_command_is_not_taken_as_the_answer(self, c: C) -> None:
+        await c.say("תמחק את הקובץ ישן.txt")                       # "where is it?"
+        res = await c.say("permanently delete the folder demo")     # said in full: a command of its own
+        assert res.intent["name"] == I.DELETE_PATH
+        assert res.reply["text"] == "I could not find demo in the workspace. Where is it?"
 
     async def test_yes_without_a_pending_approval_is_conversation(self, c: C) -> None:
         res = await c.say("כן")
