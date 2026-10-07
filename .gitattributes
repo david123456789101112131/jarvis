@@ -1,0 +1,15 @@
+# LF in the repository. Windows-only scripts are checked out (and archived) with CRLF, which cmd.exe,
+# Windows PowerShell 5.1 and Inno Setup expect.
+* text=auto
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+*.iss text eol=crlf
+
+*.ico binary
+*.png binary
+*.jpg binary
+*.woff binary
+*.woff2 binary
+*.onnx binary
+*.tflite binary

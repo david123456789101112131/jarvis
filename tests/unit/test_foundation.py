@@ -205,3 +205,40 @@ class TestBus:
             await bus.publish(event("t.x", {"i": i}, task_id="k" if i % 2 else None))
         assert len(bus.history()) == 5
         assert all(m.task_id == "k" for m in bus.history(task_id="k"))
+
+
+class TestConsole:
+    def test_without_a_console_output_goes_to_a_sink(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import sys
+
+        from jarvis.common import console
+
+        assert console.ensure_std_streams() is False and console.has_console()   # a console: nothing changes
+        monkeypatch.setattr(console, "_no_console", False)
+        monkeypatch.setattr(sys, "stdout", None)                                  # how pythonw.exe starts
+        monkeypatch.setattr(sys, "stderr", None)
+        try:
+            assert console.ensure_std_streams() is True and not console.has_console()
+            print("goes nowhere")
+            assert not sys.stderr.isatty()                    # uvicorn's log formatter asks exactly this
+        finally:
+            sys.stdout.close()
+            sys.stderr.close()
+
+    def test_an_error_without_a_console_is_a_message_box(self, monkeypatch: pytest.MonkeyPatch,
+                                                           capsys: pytest.CaptureFixture[str]) -> None:
+        import ctypes
+
+        from jarvis.common import console
+
+        boxes: list[tuple[str, str]] = []
+        user32 = type("user32", (), {"MessageBoxW": staticmethod(lambda _w, text, title, _f: boxes.append((title, text)))})
+        monkeypatch.setattr(ctypes, "windll", type("windll", (), {"user32": user32}), raising=False)
+        monkeypatch.setattr(console.sys, "platform", "win32")
+        monkeypatch.setattr(console, "_no_console", True)
+        console.show_error("JARVIS could not start.")
+        assert boxes == [("JARVIS", "JARVIS could not start.")] and capsys.readouterr().err == ""
+        monkeypatch.setattr(console, "_no_console", False)                      # with a console: stderr
+        console.show_error("The configuration has an error.")
+        assert boxes == [("JARVIS", "JARVIS could not start.")]
+        assert "JARVIS: The configuration has an error." in capsys.readouterr().err

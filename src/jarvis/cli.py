@@ -5,9 +5,10 @@
     jarvis open                open the running JARVIS in the default browser
     jarvis say "<command>"     send a command to the running JARVIS and print the answer
     jarvis status              is JARVIS running? agents, tasks, voice, AI provider
+    jarvis stop                stop the running JARVIS (it saves unfinished tasks first)
     jarvis keys                which API keys are configured (never their values)
     jarvis keys set NAME       store an API key in Windows Credential Manager (typed hidden)
-    jarvis keys delete NAME
+    jarvis keys delete NAME    (--all: every stored key)
     jarvis check               is JARVIS ready on this PC? (--full: real commands in a temporary JARVIS;
                                --voice: the voice self-test too)
     jarvis voice-test          check the microphone, speakers, wake word and speech recognition
@@ -24,10 +25,12 @@ import logging
 import signal
 import sys
 import threading
+import time
 import webbrowser
 from typing import Any
 
 from jarvis import __version__
+from jarvis.common.console import ensure_std_streams, show_error
 
 log = logging.getLogger("jarvis")
 
@@ -55,9 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
     say = sub.add_parser("say", help="send a command to the running JARVIS")
     say.add_argument("text", nargs="+")
     sub.add_parser("status", help="show whether JARVIS is running and what it is doing")
+    sub.add_parser("stop", help="stop the running JARVIS")
     keys = sub.add_parser("keys", help="API keys (Windows Credential Manager)")
     keys.add_argument("action", nargs="?", choices=["list", "set", "delete"], default="list")
     keys.add_argument("name", nargs="?")
+    keys.add_argument("--all", action="store_true", help="with delete: remove every stored key")
     check = sub.add_parser("check", help="check that JARVIS is ready on this PC")
     check.add_argument("--full", action="store_true", help="also run real commands in a temporary JARVIS")
     check.add_argument("--voice", action="store_true", help="also run the voice self-test (plays two sentences)")
@@ -68,6 +73,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    ensure_std_streams()                    # pythonw.exe / the windowed JARVIS.exe have no console
     _utf8_console()
     args = build_parser().parse_args(argv)
     command = args.command or "run"
@@ -82,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         settings = load_settings()
     except ConfigError as exc:
-        print(f"The JARVIS configuration has an error: {exc}", file=sys.stderr)
+        show_error(f"יש שגיאה בהגדרות של JARVIS:\n{exc}\n\nThe JARVIS configuration has an error.")
         return EXIT_ERROR
     paths = resolve_paths(settings.paths, settings.memory.db_path).ensure()
     if command == "paths":
@@ -90,12 +96,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"{name:12} {getattr(paths, name)}")
         return EXIT_OK
     if command == "keys":
-        return _keys(paths, args.action, args.name)
+        return _keys(paths, args.action, args.name, every=args.all)
     if command == "check":
         from jarvis.selfcheck import main as check
 
         return check(settings, paths, full=args.full, voice=args.voice, as_json=args.json)
-    if command in ("open", "say", "status"):
+    if command in ("open", "say", "status", "stop"):
         running = _running(paths)
         if running is None:
             print("JARVIS is not running.", file=sys.stderr)
@@ -105,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
             return EXIT_OK
         if command == "say":
             return _say(running, " ".join(args.text))
+        if command == "stop":
+            return _stop(running)
         return _status(running)
     return _run(settings, paths, args)
 
@@ -165,7 +173,31 @@ def _status(info: dict[str, Any]) -> int:
     return EXIT_OK
 
 
-def _keys(paths: Any, action: str, name: str | None) -> int:
+def _stop(info: dict[str, Any], timeout: float = 60.0) -> int:
+    """Ask the running JARVIS to quit (as its window's Quit does) and wait until its process has ended."""
+    import psutil
+
+    try:
+        _call(info, "POST", "/api/window/quit", timeout=10.0)
+    except Exception as exc:
+        print(f"JARVIS did not answer: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            if psutil.Process(int(info["pid"])).status() == psutil.STATUS_ZOMBIE:
+                break
+        except psutil.Error:                    # the process is gone
+            break
+        time.sleep(0.2)
+    else:
+        print(f"JARVIS (pid {info['pid']}) was asked to stop but is still running.", file=sys.stderr)
+        return EXIT_ERROR
+    print("JARVIS stopped.")
+    return EXIT_OK
+
+
+def _keys(paths: Any, action: str, name: str | None, *, every: bool = False) -> int:
     from jarvis.security.secrets import KNOWN_SECRETS, SecretStore
 
     store = SecretStore(paths.data)
@@ -173,6 +205,10 @@ def _keys(paths: Any, action: str, name: str | None) -> int:
         for key, st in store.status().items():
             mark = "✓" if st["configured"] else "·"
             print(f"{mark} {key:<22} {st['label']}" + (f"  [{st['source']}]" if st["source"] else ""))
+        return EXIT_OK
+    if action == "delete" and every:
+        removed = [key for key in KNOWN_SECRETS if store.delete(key)]
+        print(f"Removed: {', '.join(removed)}." if removed else "No stored keys.")
         return EXIT_OK
     if not name or name not in KNOWN_SECRETS:
         print("Name one of: " + ", ".join(KNOWN_SECRETS), file=sys.stderr)

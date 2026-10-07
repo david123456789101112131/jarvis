@@ -65,6 +65,42 @@ def test_run_headless_then_talk_to_it(tmp_path: Path) -> None:
     assert jarvis(home, "status").returncode == 3                # not running any more
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="closes the standard streams the POSIX way")
+def test_runs_without_a_console_and_jarvis_stop_ends_it(tmp_path: Path) -> None:
+    """pythonw.exe and the windowed JARVIS.exe start JARVIS with no stdout or stderr at all."""
+    home = tmp_path / "home"
+    home.mkdir()
+    # `>&- 2>&-` starts Python with its standard streams closed, so sys.stdout and sys.stderr are None.
+    proc = subprocess.Popen(["sh", "-c", 'exec "$0" -m jarvis --no-window --port 0 <&- >&- 2>&-', sys.executable],
+                            env=cli_env(home))
+    try:
+        deadline = time.monotonic() + 60
+        while jarvis(home, "status").returncode != 0:
+            assert proc.poll() is None, f"JARVIS exited with code {proc.returncode} without a console"
+            assert time.monotonic() < deadline, "JARVIS did not start without a console"
+            time.sleep(0.5)
+        stopped = jarvis(home, "stop")
+        assert stopped.returncode == 0 and "JARVIS stopped." in stopped.stdout, stopped.stderr
+        assert proc.wait(30) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+    assert not (home / "data" / "runtime.json").exists()
+    assert jarvis(home, "stop").returncode == 3                  # nothing left to stop
+
+
+def test_keys_delete_all_removes_the_stored_keys(tmp_path: Path) -> None:
+    from jarvis.security.secrets import SecretStore
+
+    store = SecretStore(tmp_path / "data", environ={})      # JARVIS_KEYRING=0 here: the file store
+    store.set("ANTHROPIC_API_KEY", "sk-ant-api03-cli1234567890abcdef")
+    store.set("TAVILY_API_KEY", "tvly-cli1234567890abcdef")
+    out = jarvis(tmp_path, "keys", "delete", "--all")
+    assert out.returncode == 0 and out.stdout.strip() == "Removed: ANTHROPIC_API_KEY, TAVILY_API_KEY.", out.stderr
+    assert not SecretStore(tmp_path / "data", environ={}).status()["ANTHROPIC_API_KEY"]["configured"]
+    assert jarvis(tmp_path, "keys", "delete", "--all").stdout.strip() == "No stored keys."
+
+
 def test_paths_and_version(tmp_path: Path) -> None:
     out = jarvis(tmp_path, "paths")
     assert out.returncode == 0 and str(tmp_path / "workspace") in out.stdout

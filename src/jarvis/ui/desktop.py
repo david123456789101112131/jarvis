@@ -25,6 +25,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from jarvis.common.console import show_error
+
 log = logging.getLogger(__name__)
 
 ORB_SIZE = 260
@@ -124,8 +126,9 @@ def find_edge() -> str | None:
 
 
 def app_icon() -> str | None:
-    here = Path(__file__).resolve().parent
-    for candidate in (here / "static" / "jarvis.ico", Path(sys.executable).parent / "jarvis.ico"):
+    """The JARVIS icon (drawn by scripts/make_icon.py), shipped in the package and next to JARVIS.exe."""
+    package = Path(__file__).resolve().parents[1]
+    for candidate in (package / "assets" / "jarvis.ico", Path(sys.executable).parent / "jarvis.ico"):
         if candidate.is_file():
             return str(candidate)
     return None
@@ -255,15 +258,32 @@ class DesktopShell:
                 window.destroy()
 
 
+APP_USER_MODEL_ID = "JARVIS"    # the same id as the Start-menu shortcut (packaging/jarvis.iss) and the notifications
+
+
+def set_app_user_model_id() -> bool:
+    """Windows groups a program's windows with its Start-menu shortcut and pinned taskbar button only when
+    the process carries the shortcut's AppUserModelID; without it JARVIS would get a second taskbar button."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        return bool(ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID) == 0)
+    except Exception:
+        return False
+
+
 def run_desktop(make_app: Callable[[], Any]) -> int:
+    set_app_user_model_id()
     core = CoreThread(make_app)
     core.start()
     while not core.ready.wait(0.5):
         if not core.is_alive():
             break
     if core.error is not None or core.app is None:
-        print(f"JARVIS could not start: {core.error}", file=sys.stderr)
         log.error("JARVIS could not start", exc_info=core.error)
+        show_error(f"JARVIS לא הצליח לעלות:\n{core.error}\n\nJARVIS could not start. The log file has the details.")
         return 1
     try:
         import webview

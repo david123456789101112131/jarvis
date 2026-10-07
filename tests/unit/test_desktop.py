@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import re
+import sys
 import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from jarvis.config.settings import Settings
-from jarvis.ui.desktop import CoreThread, DesktopShell
+from jarvis.ui.desktop import APP_USER_MODEL_ID, CoreThread, DesktopShell, app_icon, set_app_user_model_id
+
+ROOT = Path(__file__).resolve().parents[2]
 
 
 class FakeEvent:
@@ -163,3 +169,38 @@ def test_without_mini_orb_closing_quits(tmp_path: Path) -> None:
     main.events.closing.fire()
     eventually(lambda: app.stopped and main.destroyed)
     assert not orb.visible
+
+
+def test_the_app_icon_has_every_size_windows_asks_for() -> None:
+    image = pytest.importorskip("PIL.Image")
+    icon = app_icon()
+    assert icon is not None and icon.endswith("jarvis.ico")
+    with image.open(icon) as ico:
+        assert {(16, 16), (20, 20), (24, 24), (32, 32), (40, 40), (48, 48), (64, 64), (256, 256)} <= ico.info["sizes"]
+    from jarvis.host.windows import _find_app_icon
+
+    assert (_find_app_icon() or "").endswith("jarvis.png")                    # the notifications' icon
+
+
+def test_windows_sees_one_app_the_shortcuts_the_window_and_the_notifications() -> None:
+    from jarvis.host.windows import WindowsHost
+
+    installer = (ROOT / "packaging" / "jarvis.iss").read_text(encoding="utf-8-sig")
+    shortcut_ids = re.findall(r'AppUserModelID: "([^"]+)"', installer)
+    assert shortcut_ids and set(shortcut_ids) == {APP_USER_MODEL_ID} == {WindowsHost.toast_app_id}
+    assert set_app_user_model_id() is (sys.platform == "win32")
+
+
+@pytest.mark.windows
+@pytest.mark.skipif(sys.platform != "win32", reason="needs Windows")
+def test_the_process_carries_the_app_id() -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    assert set_app_user_model_id()
+    value = wintypes.LPWSTR()
+    assert ctypes.windll.shell32.GetCurrentProcessExplicitAppUserModelID(ctypes.byref(value)) == 0
+    try:
+        assert value.value == APP_USER_MODEL_ID
+    finally:
+        ctypes.windll.ole32.CoTaskMemFree(value)

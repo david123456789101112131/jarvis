@@ -36,6 +36,7 @@ from jarvis.tools.fs import RUNS_CODE_EXT
 
 C = Capability
 MAX_PAGE_CHARS = 40_000
+SEARCH_FAILED = ("החיפוש באינטרנט נכשל", "Web search failed")     # how web_search's own failures begin
 LONG_URL = 2000                      # an address longer than this carries data out, not just a request
 
 
@@ -218,8 +219,12 @@ class WebSearchTool(Tool):
                     results = await _tavily(client, params, tavily or "")
                 else:
                     results = await _duckduckgo(client, params)
+            except httpx.HTTPStatusError as exc:
+                errors.append(f"{name}: HTTP {exc.response.status_code} {exc.response.reason_phrase}".rstrip())
+                continue
             except (httpx.HTTPError, ToolError, ValueError, KeyError) as exc:
-                errors.append(f"{name}: {type(exc).__name__}: {str(exc)[:200]}")
+                detail = (str(exc).splitlines() or [""])[0][:200]
+                errors.append(f"{name}: {type(exc).__name__}" + (f": {detail}" if detail else ""))
                 continue
             if results:
                 found = ctx.n(len(results), "תוצאה אחת", "תוצאות", "result", "results")
@@ -227,7 +232,7 @@ class WebSearchTool(Tool):
                                                 f"{found} for '{params.query}' ({name})"),
                                   data={"query": params.query, "provider": name, "results": results})
             errors.append(f"{name}: no results")
-        return ToolResult.fail(ctx.t(f"החיפוש באינטרנט נכשל: {'; '.join(errors)}", f"Web search failed: {'; '.join(errors)}"),
+        return ToolResult.fail(ctx.t(f"{SEARCH_FAILED[0]}: {'; '.join(errors)}", f"{SEARCH_FAILED[1]}: {'; '.join(errors)}"),
                                data={"query": params.query})
 
 

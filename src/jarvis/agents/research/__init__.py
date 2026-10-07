@@ -29,6 +29,7 @@ from jarvis.common.enums import AgentId, ResultStatus
 from jarvis.common.errors import KillSwitchEngaged, TaskCancelled
 from jarvis.core.intents import I
 from jarvis.tools.base import ToolResult
+from jarvis.tools.web import SEARCH_FAILED
 
 SKIP_HOSTS = ("youtube.com", "youtu.be", "facebook.com", "instagram.com", "tiktok.com", "x.com", "twitter.com",
               "pinterest.com", "linkedin.com")
@@ -73,8 +74,10 @@ class ResearchAgent(BaseAgent):
         await run.progress(0.05, "searching")
         found = await run.tool("web_search", query=query, max_results=8)
         if not found.ok:
-            return AgentResult.failed(t(lang, f"החיפוש ברשת נכשל: {found.error}", f"The web search failed: {found.error}"),
-                                      data={"code": "search_failed"})
+            error = found.error or ""
+            message = error if error.startswith(SEARCH_FAILED) else t(lang, f"החיפוש ברשת נכשל: {error}",
+                                                                       f"The web search failed: {error}")
+            return AgentResult.failed(message, data={"code": "search_failed"})
         results = [r for r in (found.data or {}).get("results", [])
                    if not any(h in urlparse(r.get("url", "")).netloc for h in SKIP_HOSTS)]
         if not results:

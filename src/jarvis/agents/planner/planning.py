@@ -25,6 +25,10 @@ KIND_NAMES = {
     "website": ("אתר", "Website"), "store": ("חנות אונליין", "Online store"), "webapp": ("אפליקציית ווב", "Web app"),
     "game": ("משחק", "Game"), "api": ("שרת API", "API service"), "bot": ("בוט", "Bot"),
 }
+# Hebrew needs the definite form ("בניית אפליקציית הווב", not "בניית האפליקציית ווב") and the gender (מלא / מלאה).
+KIND_DEFINITE_HE = {"website": "האתר", "store": "החנות", "webapp": "אפליקציית הווב", "game": "המשחק",
+                    "api": "שרת ה-API", "bot": "הבוט"}
+KIND_FEMININE_HE = frozenset({"store", "webapp"})
 _NAME_STRIP = re.compile(
     r"^(?:jarvis[,\s]*)?(?:please\s+)?(?:build|create|make|develop|code|write|generate|set up|scaffold)\s+(?:me\s+|us\s+)?"
     r"(?:a\s+|an\s+|the\s+|my\s+|new\s+|simple\s+|small\s+|full\s+|complete\s+)*|"
@@ -93,8 +97,10 @@ def _build_app(slots: dict[str, Any], goal: str, lang: str, ai: bool) -> TaskPla
                     f"Create a brand kit for '{name}': color palette, logo and icons that fit: {goal}"),
                   skill="brand_kit", params={"brief": goal, "name": name}, depends_on=[plan.id])
     build_deps = [plan.id, design.id] + ([research.id] if ai else [])
-    build = _sub(A.DEVELOPMENT, "build", t(lang, f"פיתוח: בניית ה{kind_he}", f"Build the {kind_en.lower()}"),
-                 t(lang, f"בנה {kind_he} מלא ועובד בשם '{name}' לפי הבקשה: {goal}. השתמש בתכנון ובעיצוב שהתקבלו.",
+    complete_he = "מלאה ועובדת" if template in KIND_FEMININE_HE else "מלא ועובד"
+    build = _sub(A.DEVELOPMENT, "build",
+                 t(lang, f"פיתוח: בניית {KIND_DEFINITE_HE.get(template, 'הפרויקט')}", f"Build the {kind_en.lower()}"),
+                 t(lang, f"בנה {kind_he} {complete_he} בשם '{name}' לפי הבקשה: {goal}. השתמש בתכנון ובעיצוב שהתקבלו.",
                    f"Build a complete, working {kind_en.lower()} called '{name}' for: {goal}. Use the plan and the "
                    "design from the other agents."),
                  skill="create_project", params={"kind": template, "name": name, "description": goal, "language": lang},

@@ -3,9 +3,10 @@
 Every stage of JARVIS was checked before the next one started; this is how to run those checks
 again, what each layer covers, and where it can run.
 
-Nothing here touches your real JARVIS data: every test gets a fresh temporary `JARVIS_HOME`, the
+Nothing here touches your real JARVIS data: every test gets a fresh temporary `JARVIS_HOME` and
+`JARVIS_KEYRING=0` (so API keys stored in Windows Credential Manager are never read or changed), the
 end-to-end tests start their own JARVIS processes on free ports and stop them through the API, and
-`jarvis check --full` runs its JARVIS in a temporary folder that it deletes at the end.
+`jarvis check --full` runs its JARVIS the same way, in a temporary folder that it deletes at the end.
 
 ## The layers
 
@@ -18,7 +19,8 @@ end-to-end tests start their own JARVIS processes on free ports and stop them th
 | Real Windows | Start-menu apps, clipboard, volume, known folders, process flags, the system monitor on a real desktop | Windows | `python -m pytest -m windows` |
 | Real voice models | openWakeWord hears "Hey Jarvis", faster-whisper transcribes speech | anywhere the models are downloaded | `python -m pytest -m voice_models` |
 | Interface | the UI's state, Markdown and path rendering, the approval dialog, translations | Node.js 20+ | `cd ui; npm test` |
-| Static | lint, types (checked as Windows), the interface's types | any OS | `ruff check src tests`; `python -m mypy`; `cd ui; npm run typecheck` |
+| Static | lint, types (checked as Windows), the interface's types | any OS | `ruff check src tests scripts`; `python -m mypy`; `cd ui; npm run typecheck` |
+| Packaged app | the PyInstaller build starts without a console and passes `jarvis-cli check --full` as built; the installer compiles | Windows (the PyInstaller part also builds on Linux) | `scripts\build.ps1` |
 | On the PC | is this computer ready, and does JARVIS really work here? | the user's PC | `jarvis check` (see below) |
 
 `python -m pytest` runs all the Python layers. A test that needs something this computer does not
@@ -26,6 +28,8 @@ have (Windows, a browser, the models, a microphone) is skipped with the reason, 
 silently: `python -m pytest -rs` lists the reasons.
 
 ### Setting up
+
+`setup.bat -Dev` does all of this on Windows (except the browser download). By hand:
 
 ```powershell
 py -3.11 -m venv .venv
@@ -100,4 +104,6 @@ a running JARVIS in `e2e/test_live_process.py::test_stopping_a_task_and_the_kill
 
 A build machine has no microphone, speakers, Start menu or WebView2, and may not reach the speech
 models' download site, so these run on the user's Windows PC: `python -m pytest -m windows` (a
-developer setup), and `jarvis check --full --voice` (any installation).
+developer setup), `jarvis check --full --voice` (any installation), and `scripts\build.ps1`, which
+runs the tests, builds `dist\JARVIS`, runs `jarvis-cli check --full` on the build and compiles the
+installer.

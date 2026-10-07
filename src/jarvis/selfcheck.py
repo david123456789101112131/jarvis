@@ -262,7 +262,7 @@ async def _ai(report: CheckReport, settings: Settings, secrets: SecretStore) -> 
     else:
         report.add("ai", "warn", "no AI provider: commands, projects and plans work; open conversation and "
                    "AI-written code do not", hints=["Add an Anthropic (or OpenAI) API key: `jarvis keys set "
-                                                    "ANTHROPIC_API_KEY`, or Settings > AI."], **st)
+                                                    "ANTHROPIC_API_KEY`, or in JARVIS: Settings > API keys."], **st)
 
 
 async def _tools(report: CheckReport) -> None:
@@ -356,7 +356,7 @@ class _Child:
 
         env = {k: v for k, v in os.environ.items() if not k.startswith("JARVIS__")}
         env.update(JARVIS_HOME=str(self.home), PYTHONUTF8="1", JARVIS__VOICE__ENABLED="false",
-                   JARVIS__AI__PROVIDER="none")
+                   JARVIS__AI__PROVIDER="none", JARVIS_KEYRING="0")       # never the user's stored keys
         if getattr(sys, "frozen", False):
             argv = [sys.executable]
         else:

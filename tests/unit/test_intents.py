@@ -72,6 +72,9 @@ CASES: list[tuple[str, str, dict]] = [
     ("show active agents", I.SHOW_AGENTS, {}),
     ("show all agents", I.SHOW_AGENTS, {}),
     ("תראה לי את הסוכנים", I.SHOW_AGENTS, {}),
+    ("הראה סוכנים פעילים", I.SHOW_AGENTS, {}),
+    ("תראי את כל הסוכנים", I.SHOW_AGENTS, {}),
+    ("הראה את המשימות הפעילות", I.SHOW_TASKS, {}),
     # Agent management
     ("activate Research Agent", I.AGENT_ACTIVATE, {"agent": "research"}),
     ("הפעל את סוכן המחקר", I.AGENT_ACTIVATE, {"agent": "research"}),
@@ -163,6 +166,10 @@ CASES: list[tuple[str, str, dict]] = [
     ("what's the weather in Tel Aviv tomorrow", I.WEATHER, {"location": "Tel Aviv", "when": "tomorrow"}),
     ("מה מזג האוויר בחיפה מחר", I.WEATHER, {"location": "חיפה", "when": "tomorrow"}),
     ("מה מזג האוויר", I.WEATHER, {"location": None, "when": "today"}),
+    ("תראה לי את מזג האוויר", I.WEATHER, {"location": None, "when": "today"}),
+    ("תבדוק את מזג האוויר בחיפה", I.WEATHER, {"location": "חיפה", "when": "today"}),
+    ("מה התחזית למחר בחיפה", I.WEATHER, {"location": "חיפה", "when": "tomorrow"}),
+    ("show me the weather in London", I.WEATHER, {"location": "London", "when": "today"}),
     # Complex work
     ("תבנה לי אתר לחנות", I.BUILD_APP, {"kind": "store"}),
     ("JARVIS, תבנה לי אתר לחנות", I.BUILD_APP, {"kind": "store"}),

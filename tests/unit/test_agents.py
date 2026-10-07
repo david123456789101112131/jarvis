@@ -390,6 +390,16 @@ class TestPlanner:
         assert rule_plan("design", {}, "תעצב לי לוגו לבית קפה", "he").title == "עיצוב: לוגו לבית קפה"
         assert rule_plan("write_code", {}, "write me code that sorts photos", "en").title == "Code that sorts photos"
 
+    @pytest.mark.parametrize(("kind", "step", "instruction"), [
+        ("app", "פיתוח: בניית אפליקציית הווב", "בנה אפליקציית ווב מלאה ועובדת"),
+        ("website", "פיתוח: בניית האתר", "בנה אתר מלא ועובד"),
+        ("api", "פיתוח: בניית שרת ה-API", "בנה שרת API מלא ועובד"),
+    ])
+    def test_the_build_step_reads_as_hebrew(self, kind: str, step: str, instruction: str) -> None:
+        plan = rule_plan("build_app", {"kind": kind}, "תבנה לי משהו לניהול משימות", "he")
+        build = next(s for s in plan.subtasks if s.key == "build")
+        assert build.title == step and build.instruction.startswith(instruction)
+
     async def test_files_and_results_are_recorded_in_memory(self, env: Env) -> None:
         result = await env.run("planner", "תכין לי תוכנית לטיול", task_id="task_trip")
         path = result.result["path"]
@@ -665,6 +675,12 @@ class TestResearch:
         assert "efficiency" in result.summary and "gardening" not in result.summary
         saved = Path(result.files_created[0])
         assert saved.parent == env.kit.paths.workspace / "research" and "## מקורות" in saved.read_text(encoding="utf-8")
+
+    async def test_a_blocked_search_says_why_once(self, env: Env) -> None:
+        env.mock_http(lambda request: httpx.Response(403, text="Forbidden"))
+        result = await env.run("research", skill="research", params={"query": "solar panel efficiency"})
+        assert result.status == S.FAILED and result.data["code"] == "search_failed"
+        assert result.summary == "החיפוש באינטרנט נכשל: duckduckgo: HTTP 403 Forbidden"
 
     async def test_analyze_a_table(self, env: Env) -> None:
         data = env.kit.paths.workspace / "sales.csv"

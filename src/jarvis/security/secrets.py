@@ -4,6 +4,9 @@ Lookup order for a secret: OS keyring (Windows Credential Manager) → environme
 `<data>/secrets.env` (only used when no keyring backend works, file is created with
 user-only permissions). Values are registered with the redactor the moment they are read so
 they can never appear in logs or the UI. Only `status()` is exposed to the UI.
+
+`JARVIS_KEYRING=0` keeps a JARVIS away from the keyring (the tests and the temporary JARVIS of
+`jarvis check --full` use it, so they never read or change the user's stored keys).
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from jarvis.security.redaction import Redactor, default_redactor, looks_like_sec
 log = logging.getLogger(__name__)
 
 SERVICE = "JARVIS"
+KEYRING_ENV = "JARVIS_KEYRING"
 
 KNOWN_SECRETS: dict[str, str] = {
     "ANTHROPIC_API_KEY": "Anthropic (Claude) API key",
@@ -48,6 +52,8 @@ class SecretStore:
         self._lock = threading.Lock()
         self._memory: dict[str, str] = {}
         self._environ = environ if environ is not None else os.environ
+        if os.environ.get(KEYRING_ENV, "").strip().lower() in ("0", "false", "no", "off"):
+            use_keyring = False
         self._keyring = self._init_keyring() if use_keyring else None
 
     # -- backends ------------------------------------------------------------------------

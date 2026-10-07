@@ -92,6 +92,26 @@ class TestSecrets:
         assert store.source("OPENAI_API_KEY") == "env"
         assert store.get("OPENAI_API_KEY") == "sk-envvalue1234567890abcd"
 
+    def test_jarvis_keyring_0_keeps_the_store_off_the_keyring(self, tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+        class Vault:                                    # stands in for Windows Credential Manager
+            saved: dict[str, str] = {}
+
+            def get_password(self, service: str, name: str) -> str | None:
+                return self.saved.get(name)
+
+            def set_password(self, service: str, name: str, value: str) -> None:
+                self.saved[name] = value
+
+        monkeypatch.setattr(SecretStore, "_init_keyring", staticmethod(Vault))
+        monkeypatch.delenv("JARVIS_KEYRING")
+        assert SecretStore(tmp_path, environ={}).set("OPENAI_API_KEY", "sk-vault1234567890abcdef") == "keyring"
+        monkeypatch.setenv("JARVIS_KEYRING", "0")       # what the tests and `jarvis check --full` run with
+        store = SecretStore(tmp_path, environ={})
+        assert store.backend_name == "file" and store.get("OPENAI_API_KEY") is None
+        assert store.set("OPENAI_API_KEY", "sk-test1234567890abcdef") == "file"
+        assert Vault.saved == {"OPENAI_API_KEY": "sk-vault1234567890abcdef"}
+
     def test_invalid_name_rejected(self, tmp_path: Path) -> None:
         store = SecretStore(tmp_path, use_keyring=False, environ={})
         with pytest.raises(ValueError):

@@ -1,7 +1,8 @@
 """Shared pytest fixtures.
 
-Every test runs with `JARVIS_HOME` pointing at a fresh temporary folder, so nothing touches
-the real user profile, keyring or workspace.
+Every test runs with `JARVIS_HOME` pointing at a fresh temporary folder and `JARVIS_KEYRING=0`, so
+nothing (the JARVIS processes the tests start included) touches the real user profile, keyring or
+workspace.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "jarvis_home"
     home.mkdir()
     monkeypatch.setenv("JARVIS_HOME", str(home))
+    monkeypatch.setenv("JARVIS_KEYRING", "0")
     for key in list(os.environ):
         if key.startswith("JARVIS__"):
             monkeypatch.delenv(key, raising=False)
