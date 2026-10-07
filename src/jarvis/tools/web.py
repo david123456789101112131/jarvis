@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import io
+import ipaddress
 import json
 import re
 from pathlib import Path
@@ -36,9 +37,28 @@ def check_network(ctx: ToolContext, url: str) -> str:
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
         raise ToolError(f"Not a web address: {url}")
     host = parsed.hostname.lower()
+    own_port = ctx.services.extras.get("server_port")
+    if own_port and _is_local(host):
+        try:
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        except ValueError:
+            port = None
+        if port == own_port:
+            raise PermissionDenied("Agents may not call JARVIS's own control server.")
     if sec.network_allowlist and not any(host == d or host.endswith("." + d) for d in sec.network_allowlist):
         raise PermissionDenied(f"{host} is not in the network allowlist.")
     return host
+
+
+def _is_local(host: str) -> bool:
+    name = host.strip("[]")
+    if name == "localhost" or name.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(name)
+    except ValueError:
+        return False
+    return ip.is_loopback or ip.is_unspecified
 
 
 def html_to_text(html: str, base_url: str = "") -> tuple[str, str, list[dict[str, str]]]:

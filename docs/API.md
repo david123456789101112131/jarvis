@@ -6,11 +6,20 @@ The same server hosts the built UI (`/`), so the desktop window just loads
 
 ## Authentication
 
-- A random token is created at every start. The server injects it into `index.html` as
-  `window.__JARVIS__ = { token, version, wsUrl }`.
-- REST: header `X-JARVIS-Token: <token>`. WebSocket: `ws://127.0.0.1:<port>/ws?token=<token>`.
-- Requests without the token, with a non-local `Host`, or with a foreign `Origin` get 403.
-- Secrets are never returned by any endpoint or event (only "configured: true/false").
+- A random token is created at every start and written only to `runtime.json` in the user's
+  private data folder (which the agents' tools cannot read). The CLI uses it to find the
+  running instance (`jarvis open`, `jarvis say`, a second launch brings the window forward).
+- The page is served only to a session: the desktop window (and `jarvis open`) loads
+  `/?launch=<token>`, which sets an HttpOnly, SameSite=Strict session cookie and redirects to
+  `/` (or `/?view=orb`). The page then gets `window.__JARVIS__ = { token, version, wsUrl }`
+  in a nonce'd script; a Content-Security-Policy lets no other script run.
+- REST: header `X-JARVIS-Token: <token>` (or the session cookie).
+  WebSocket: `ws://127.0.0.1:<port>/ws?token=<token>` (or the session cookie).
+- Requests without the token, with a non-local `Host` (DNS rebinding), or with a foreign
+  `Origin` get 403 (a WebSocket is closed with 4403). The server listens on 127.0.0.1 only.
+- Agents' web tools may not call the server's port.
+- Secrets are never returned by any endpoint or event (only "configured: true/false"); every
+  bus message, and so every UI event, passes the redactor.
 
 All bodies are JSON (UTF-8). Times are ISO-8601 UTC strings; `time` fields are local
 `HH:MM:SS` strings ready to display. Errors: `{"error": {"code": str, "message": str}}` with a
@@ -168,7 +177,8 @@ interface StateSnapshot {
 | DELETE `/api/secrets/{name}` | – | `{configured: false}` |
 | POST `/api/voice/{action}` | action ∈ `start, stop, mute, unmute, ptt_start, ptt_stop, cancel` | `VoiceInfo` |
 | POST `/api/voice/speak` | `{text}` | `{ok}` |
-| GET `/api/quick-tools` | – | `{id, label, label_he, icon, command}[]` (the radial menu entries) |
+| GET `/api/quick-tools?lang=he\|en` | – | `{id, label, label_he, icon, command}[]` (the radial menu entries) |
+| POST `/api/window/{action}` | action ∈ `show, hide, toggle, mini, full, quit` | `{ok}` (409 when there is no desktop window) |
 
 ## WebSocket `/ws`
 
@@ -186,7 +196,8 @@ Every server message: `{ "type": string, "data": any, "ts": string }`.
 | `activity` | `ActivityEntry` | every activity line |
 | `audit` | audit entry | every tool decision |
 | `system.stats` | `SystemStats` | every 2 s |
-| `voice.state` | `{state, level?: number (mic RMS 0..1), muted}` | voice state change; `level` up to 15×/s while listening/speaking |
+| `voice.state` | `{state, muted, error, trigger}` | voice state change |
+| `voice.level` | `{level}` (mic or speech RMS 0..1) | up to 15×/s while listening/speaking (sent straight to the UI, not via the bus) |
 | `voice.transcript` | `{text, final: boolean, language}` | live (partial) and final transcripts |
 | `voice.pipeline` | `{step: "transcribing"\|"understanding"\|"routing"\|"selecting_tool"\|"preparing_action"\|"executing"\|"done", status: "active"\|"done"\|"error", label}` | processing steps for the orb panel |
 | `action` | `{id, title, detail?, icon?: string, progress?: number, status: "running"\|"done"\|"error"}` | current fast-path action card ("Opening Google Chrome…") |
@@ -197,6 +208,11 @@ Every server message: `{ "type": string, "data": any, "ts": string }`.
 | `killswitch` | `{global, agents}` | engaged / released |
 | `notification` | `{id, level, title, message}` | toast |
 | `settings` | `{ui: UISettings}` | UI settings changed |
+| `ui.navigate` | `{screen: "agents"\|"tasks", task_id?}` | a voice/text command asked to show a screen ("show the agents") |
+| `pong` | `{}` | answer to `{type: "ping"}` |
 
 Client → server over WS (optional; REST works too): `{type: "command", text}`,
 `{type: "confirm", id, approved, remember?}`, `{type: "ping"}` (server answers `pong`).
+
+A client that falls more than 2000 events behind is closed with code 4408; it reconnects and
+starts again from a fresh `state` snapshot.
