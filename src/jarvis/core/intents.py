@@ -29,6 +29,7 @@ Complexity = Literal["instant", "simple", "complex", "chat"]
 
 class I:  # noqa: E742 - short namespace for intent names
     KILL_SWITCH = "kill_switch"
+    KILL_RELEASE = "kill_release"
     STOP_ALL_AGENTS = "stop_all_agents"
     AGENT_ACTIVATE = "agent_activate"
     AGENT_STOP = "agent_stop"
@@ -70,6 +71,7 @@ class I:  # noqa: E742 - short namespace for intent names
     CLOSE_APP = "close_app"
     REMEMBER = "remember"
     RECALL = "recall"
+    FORGET = "forget"
     CHAT = "chat"
 
 
@@ -451,7 +453,9 @@ def _b_close_target(m: re.Match[str], text: str) -> dict[str, Any] | None:
     target = _APP_SUFFIX.sub("", _APP_PREFIX.sub("", target, count=1)).strip()
     if not target or len(target.split()) > 4:
         return None
-    if normalize(target) in {"task", "the task", "משימה", "המשימה", "הכל", "הכול", "everything", "it", "זה"}:
+    # "close the task" is STOP_TASK territory; pronouns ("close it") stay as targets so the
+    # core can resolve them against the short-term context (the last app opened).
+    if normalize(target) in {"task", "the task", "משימה", "המשימה", "הכל", "הכול", "everything"}:
         return None
     app = find_app(target)
     return {"app": app.id if app else target, "app_name": app.display if app else target}
@@ -555,6 +559,11 @@ def _b_status_focus(m: re.Match[str], text: str) -> dict[str, Any] | None:
     return {}
 
 
+def _b_stop_task(m: re.Match[str], text: str) -> dict[str, Any] | None:
+    t = normalize(text)
+    return {"all": True} if re.search(r"\b(?:all|every)\b|כל ", t) else {}
+
+
 def _b_history(m: re.Match[str], text: str) -> dict[str, Any] | None:
     t = normalize(text)
     return {"last": any(w in t for w in ("last", "previous", "אחרונה", "קודמת", "האחרונה", "הקודמת"))}
@@ -581,6 +590,13 @@ _RULES: list[Rule] = [
         r"^(?:emergency stop|kill switch|stop everything|stop all(?: tasks)?(?: and agents)?|abort (?:everything|all)|shut it all down|halt everything)$",
         rf"^(?:{V_STOP_HE}\s+(?:את\s+)?(?:ה)?(?:כל|כול)(?:\s+הדברים)?|עצירת חירום|מתג חירום|עצור מיד הכל|עצור הכל מיד)$",
     ), "instant"),
+    Rule(I.KILL_RELEASE, _p(
+        r"^(?:release|reset|disengage|turn off|clear|lift)\s+(?:the\s+)?(?:emergency stop|kill switch)$",
+        r"^(?:resume operations|back to work|all clear|you can (?:continue|work) again)$",
+        r"^(?:תשחרר|שחרר|תשחררי|שחררי|תבטל|בטל|תבטלי|בטלי|תכבה|כבה)\s+(?:את\s+)?(?:ה)?(?:מתג\s+(?:ה)?חירום|עצירת\s+(?:ה)?חירום|עצירה|נעילה)$",
+        r"^(?:אפשר|מותר)\s+(?:להמשיך|לחזור)\s+לעבוד$",
+        r"^(?:תחזור|חזור|תחזרי|חזרי)\s+לעבוד$",
+    ), "instant"),
     Rule(I.STOP_ALL_AGENTS, _p(
         r"^(?:stop|halt|pause|deactivate|shut down) (?:all|every) (?:the )?agents?$",
         rf"^{V_STOP_HE}\s+(?:את\s+)?(?:כל\s+)?ה?סוכנים(?:\s+כולם)?$",
@@ -606,13 +622,17 @@ _RULES: list[Rule] = [
         rf"^{V_ACTIVATE_HE}\s+{ET}{AGENT_REF_HE}$",
     ), "instant", build=_b_agent()),
     Rule(I.STOP_TASK, _p(
+        r"^(?:stop|cancel|abort|halt|kill|end)\s+(?:all|every)\s+(?:the\s+|my\s+|running\s+|active\s+)*(?:tasks|jobs|task|job)$",
+        rf"^{V_STOP_HE}\s+(?:את\s+)?(?:כל|כול)\s+(?:ה)?משימות(?:\s+(?:ה)?(?:פעילות|רצות))?$",
         r"^(?:stop|cancel|abort|halt|kill|end)\s+(?:the\s+|this\s+|current\s+|that\s+|my\s+)?(?:task|job|operation|process|work)(?:\s+(?P<task_id>task_[a-z0-9]+))?$",
         r"^(?:stop|cancel|abort)(?:\s+(?:it|that|this))?$",
         rf"^{V_STOP_HE}(?:\s+{ET}(?:ה)?(?:משימה|משימה הנוכחית|המשימה הזאת|פעולה|זה|את זה|עבודה))?$",
-    ), "instant"),
+    ), "instant", build=_b_stop_task),
     Rule(I.RESUME_TASK, _p(
         r"^(?:resume|continue|restart)\s+(?:the\s+|my\s+|last\s+|previous\s+|interrupted\s+)*(?:task|job|work)(?:\s+(?P<task_id>task_[a-z0-9]+))?$",
         r"^continue (?:where|from where) (?:you|we) (?:stopped|left off)$",
+        r"^(?:continue|go on|keep going|carry on)$",
+        r"^(?:תמשיך|המשך|תמשיכי|המשיכי)(?:\s+(?:הלאה|בבקשה|לעבוד))?$",
         rf"^{V_RESUME_HE}\s+(?:את\s+)?(?:ה)?(?:משימה|עבודה)(?:\s+(?:האחרונה|הקודמת|שנקטעה|שעצרת))?$",
         rf"^{V_RESUME_HE}\s+מאיפה\s+ש(?:עצרת|עצרנו|הפסקת|הפסקנו)$",
     ), "complex"),
@@ -793,7 +813,8 @@ _RULES: list[Rule] = [
         rf"^(?:{V_BUILD_STRONG_HE})\s+{LI}(?:(?!את\s)(?!ה)(?P<noun>{BUILD_NOUNS_HE}))(?:\s.*)?$",
         rf"^(?:תבנה|בנה|תבני|בני|תכתוב|כתוב|תכתבי|כתבי)\s+{LI}(?:את\s+)?(?:ה)?(?P<noun>{BUILD_NOUNS_HE})(?:\s.*)?$",
         r"^(?:build|develop|make) (?:it|this|that)$",
-        r"^(?:תבנה|בנה|תבני|בני|תפתח|תפתחי)\s+(?:לי\s+)?(?:את\s+)?(?:זה|את זה)$",
+        # "תפתח את זה" means "open it" far more often than "develop it": that stays OPEN_APP.
+        r"^(?:תבנה|בנה|תבני|בני)\s+(?:לי\s+)?(?:את\s+)?(?:זה|את זה)$",
     ), "complex", (AgentId.PLANNER, AgentId.DEVELOPMENT), build=_b_build),
     Rule(I.WRITE_CODE, _p(
         r"^(?:write|create|generate|code)\s+(?:me\s+)?(?:a\s+|an\s+|the\s+|some\s+)?(?:python|javascript|js|typescript|ts|java|html|css|c#|c\+\+|sql|bash|powershell|node)?\s*(?:script|function|class|module|program|code|snippet|regex|query|component|test|tests)\b.*$",
@@ -806,6 +827,10 @@ _RULES: list[Rule] = [
         rf"^{V_PLAN_HE}\s+(?:לי\s+)?(?P<x>.+)$",
         r"^(?:תפרק|פרק|תפרקי|פרקי)\s+(?:לי\s+)?(?:את\s+)?(?P<x>.+?)\s+(?:ל)?(?:שלבים|משימות|צעדים)$",
     ), "complex", (AgentId.PLANNER,), build=_b_text("goal")),
+    Rule(I.FORGET, _p(
+        r"^(?:forget|don't remember|stop remembering)\s+(?:that\s+|about\s+|the fact that\s+)?(?P<x>.+)$",
+        r"^(?:תשכח|שכח|תשכחי|שכחי)\s+(?:ש|את\s+זה\s+ש|את\s+|מ|על\s+)?(?P<x>.+)$",
+    ), "instant", build=_b_text("query")),
     Rule(I.REMEMBER, _p(
         r"^(?:remember|note|keep in mind|don't forget)\s+(?:that\s+)?(?P<x>.+)$",
         rf"^{V_REMEMBER_HE}\s+(?:ש|את\s+זה\s+ש|לך\s+ש|לעצמך\s+ש|ש-)?(?P<x>.+)$",

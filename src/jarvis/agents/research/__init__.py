@@ -200,12 +200,19 @@ class ResearchAgent(BaseAgent):
                 t(lang, "באיזו עיר? אפשר לומר למשל: מה מזג האוויר בחיפה.", "Which city? For example: weather in London."),
                 data={"code": "need_location"},
                 next_step=t(lang, "לומר לי 'תזכור שאני גר ב...' ואזכור את העיר.", "Tell me 'remember I live in ...'."))
-        geo = await run.tool("http_request", method="GET", url=GEOCODE_URL, query=geocode_query(place_name, lang))
-        if not geo.ok:
-            return AgentResult.failed(t(lang, f"שירות מזג האוויר לא זמין: {geo.error}",
-                                        f"The weather service is unavailable: {geo.error}"))
-        body = (geo.data or {}).get("body") or {}
-        places = body.get("results") if isinstance(body, dict) else None
+        places = None
+        # "בחיפה" (in Haifa) when the place was said on its own: try the name without the prefix too.
+        names = [place_name] + ([place_name[1:]] if re.match(r"^[בל][֐-׿]{2,}", place_name) else [])
+        for name in names:
+            geo = await run.tool("http_request", method="GET", url=GEOCODE_URL, query=geocode_query(name, lang))
+            if not geo.ok:
+                return AgentResult.failed(t(lang, f"שירות מזג האוויר לא זמין: {geo.error}",
+                                            f"The weather service is unavailable: {geo.error}"))
+            body = (geo.data or {}).get("body") or {}
+            places = body.get("results") if isinstance(body, dict) else None
+            if places:
+                place_name = name
+                break
         if not places:
             return AgentResult.failed(t(lang, f"לא מצאתי מקום בשם '{place_name}'.", f"I couldn't find a place called '{place_name}'."))
         place = places[0]
