@@ -627,7 +627,7 @@ def _apply_transform(polys: list[tuple[list[Point], bool]], transform: str | Non
 
 def shape_polylines(shape: Shape) -> list[tuple[list[Point], bool]]:
     a = shape.attr_dict()
-    f = lambda k, default=0.0: float(a.get(k, default))  # noqa: E731
+    f = lambda k, default=0.0: float(a.get(k) or default)  # noqa: E731
     if shape.tag == "path":
         polys = path_to_polylines(a["d"])
     elif shape.tag == "circle":

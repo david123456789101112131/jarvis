@@ -186,7 +186,7 @@ class ListTemplatesTool(Tool):
     async def run(self, params: ListTemplatesParams, ctx: ToolContext) -> ToolResult:
         from jarvis.agents.development import scaffold
 
-        items = []
+        items: list[dict[str, Any]] = []
         for info in await asyncio.to_thread(scaffold.list_templates):
             items.append({"kind": info.kind, "name": info.name, "description": info.description,
                           "language": info.language, "run": _as_dict(info.run), "test": _as_dict(info.test)})

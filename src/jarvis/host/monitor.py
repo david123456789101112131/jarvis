@@ -47,11 +47,18 @@ def os_name() -> str:
     return f"{platform.system()} {platform.release()}"
 
 
+_VIRTUAL_FS = frozenset({"squashfs", "overlay", "tmpfs", "devtmpfs", "ramfs", "nsfs", "autofs", "proc", "sysfs"})
+
+
 def _disks() -> list[dict[str, Any]]:
     out = []
     seen: set[str] = set()
     for part in psutil.disk_partitions(all=False):
         if sys.platform == "win32" and ("cdrom" in part.opts or not part.fstype):
+            continue
+        # Elsewhere: only disks that hold the user's files, not read-only images, RAM disks or network mounts.
+        if sys.platform != "win32" and ("ro" in part.opts.split(",") or part.fstype in _VIRTUAL_FS
+                                         or part.fstype.startswith("fuse.")):
             continue
         if part.mountpoint in seen or part.mountpoint.startswith(("/snap", "/boot", "/sys", "/proc", "/dev", "/run")):
             continue

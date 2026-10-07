@@ -27,7 +27,7 @@ from jarvis.common.cancel import CancelToken
 from jarvis.common.enums import AgentId, Mode, RiskLevel
 from jarvis.common.errors import JarvisError, KillSwitchEngaged, TaskCancelled, ToolNotFound
 from jarvis.common.i18n import agent_name, t
-from jarvis.logs.activity import ActivityLog
+from jarvis.logs.activity import ActivityLog, Level
 from jarvis.logs.audit import AuditEntry, AuditLog
 from jarvis.permissions.confirm import ConfirmationBroker, ConfirmationRequest
 from jarvis.permissions.manager import PermissionManager
@@ -275,7 +275,7 @@ class ToolExecutor:
         except Exception:  # pragma: no cover
             log.exception("Audit failed")
 
-    async def _activity(self, message: str, agent: str, task_id: str | None, *, level: str = "info",
+    async def _activity(self, message: str, agent: str, task_id: str | None, *, level: Level = "info",
                         kind: str = "tool") -> None:
         if self.activity is None:
             return

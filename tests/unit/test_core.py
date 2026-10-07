@@ -254,6 +254,7 @@ class TestTasks:
         task = await c.finished(res.task_id)
         assert task.plan.source == "direct" and task.plan.subtasks[0].agent == AgentId.SYSTEM
         assert task.status == S.COMPLETED      # offline, the System Agent routes the instruction to a skill
+        assert task.title == "בדוק את המחשב"    # the task is the instruction, not the words that handed it over
 
     async def test_stop_the_task(self, c: C) -> None:
         task = await c.orch.submit("hold on", plan=c.plan("system", "hold"), language="en")

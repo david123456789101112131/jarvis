@@ -479,9 +479,9 @@ def detect_mood(brief: str) -> str | None:
     for mood, words in _MOOD_WORDS.items():
         if any(keyword_in(text, w, normalized=True) for w in words):
             return mood
-    for words, _, mood in _COLOR_WORDS:
-        if mood and any(keyword_in(text, w, normalized=True) for w in words):
-            return mood
+    for words, _, color_mood in _COLOR_WORDS:
+        if color_mood and any(keyword_in(text, w, normalized=True) for w in words):
+            return color_mood
     return detect_domain(brief).mood
 
 
@@ -518,7 +518,8 @@ def generate_palette(brief: str = "", *, base_color: str | None = None, mood: st
     if base_hex:
         _, bC, base_hue = hex_to_oklch(base_hex)
         if bC < 0.02:  # a grey base color carries no hue; keep the mood's hue for the accents
-            base_hue = detect_hue(brief) if detect_hue(brief) is not None else rng.choice(prof.hues)
+            named = detect_hue(brief)
+            base_hue = named if named is not None else rng.choice(prof.hues)
     else:
         kw_hue = detect_hue(brief)
         base_hue = (kw_hue if kw_hue is not None else rng.choice(prof.hues)) + rng.uniform(-6, 6)

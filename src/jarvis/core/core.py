@@ -487,7 +487,7 @@ class JarvisCore:
             await self._speak(summary, lang)
 
     # -- tasks ------------------------------------------------------------------------------------------
-    async def _task(self, turn: _Turn, *, plan: Any = None) -> CommandResult:
+    async def _task(self, turn: _Turn, *, plan: Any = None, title: str | None = None) -> CommandResult:
         intent = turn.intent
         lang = turn.lang
         if self._mode == Mode.CHAT:
@@ -495,8 +495,8 @@ class JarvisCore:
         await self._pipeline("routing", "done", lang, t(lang, "מחלק בין הסוכנים", "Splitting between the agents"))
         try:
             task = await self.orchestrator.submit(
-                turn.text, intent=None if intent.name == I.CHAT else intent.name, slots=dict(intent.slots),
-                language=lang, mode=self._mode, source=turn.source, plan=plan)
+                turn.text, title=title, intent=None if intent.name == I.CHAT else intent.name,
+                slots=dict(intent.slots), language=lang, mode=self._mode, source=turn.source, plan=plan)
         except TaskRefused as exc:
             return await self._reply(turn, exc.message, kind="info", ok=False)
         self._task_commands[task.id] = turn.cmd_id
@@ -517,7 +517,8 @@ class JarvisCore:
         agent = AgentId.parse(slots["agent"])
         instruction = str(slots.get("instruction") or turn.text)
         plan = self.orchestrator.direct_plan(agent, instruction, lang=turn.lang)
-        return await self._task(turn, plan=plan)
+        # The task is the instruction ("give the Development Agent this task: X" is the task X).
+        return await self._task(turn, plan=plan, title=plan.title)
 
     async def agent_task(self, agent: AgentId | str, instruction: str, *, priority: Priority | str | None = None,
                          source: str = "api", language: str | None = None) -> JarvisTask:
@@ -624,7 +625,7 @@ class JarvisCore:
                 history = history[:-1]
         messages: list[AIMessage] = []
         for rec in history[-CHAT_HISTORY_TURNS:]:
-            role = "user" if rec.role == "user" else "assistant"
+            role: Literal["user", "assistant"] = "user" if rec.role == "user" else "assistant"
             if messages and messages[-1].role == role:
                 messages[-1] = AIMessage(role=role, text=f"{messages[-1].text}\n{rec.text}")
             else:
@@ -967,7 +968,10 @@ class JarvisCore:
 
     async def _pipeline(self, step: str, status: str, lang: str, detail: str = "") -> None:
         he, en = _PIPELINE_LABELS.get(step, (step, step))
-        label = t(lang, he, en) + (f": {detail}" if detail and step not in ("understanding", "done") else "")
+        if detail and step not in ("understanding", "done"):
+            label = t(lang, he, en).rstrip("…") + f": {detail}"     # "מבצע: יוצר תיקייה…", not "מבצע…: …"
+        else:
+            label = t(lang, he, en)
         await self._publish("voice.pipeline", {"step": step, "status": status, "label": label})
 
     async def _action(self, action_id: str, title: str, icon: str, status: str, *, progress: float | None = None,

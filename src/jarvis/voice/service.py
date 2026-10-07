@@ -188,13 +188,15 @@ class VoiceService:
         else:
             self.tts, self.reasons["tts"] = create_tts_engine(settings)
             self._owned.append(self.tts)
+        sink: AudioSink
         if injected["sink"] is not None:
-            self.sink = injected["sink"]
-            self.reasons["output"] = self.sink.device_name or self.sink.name
+            sink = injected["sink"]
+            self.reasons["output"] = sink.device_name or sink.name
         else:
-            self.sink, self.reasons["output"] = await asyncio.to_thread(create_sink, settings.output_device)
-            self._owned.append(self.sink)
-        self._output_name = self.sink.device_name
+            sink, self.reasons["output"] = await asyncio.to_thread(create_sink, settings.output_device)
+            self._owned.append(sink)
+        self.sink = sink
+        self._output_name = sink.device_name
         self.source = injected["source"] or MicrophoneSource(settings.input_device or None)
 
         wake = injected["wake"]
@@ -205,7 +207,7 @@ class VoiceService:
         options = self._options or PipelineOptions.from_settings(settings)
         pipeline = VoicePipeline(
             source=self.source,
-            sink=self.sink,
+            sink=sink,
             wake=wake,
             stt=self.stt,
             tts=self.tts,
@@ -510,8 +512,9 @@ class VoiceService:
 
     def _task_done(self, task: asyncio.Task) -> None:
         self._tasks.discard(task)
-        if not task.cancelled() and task.exception() is not None:
-            log.warning("Voice background task failed: %s", _short(task.exception()))
+        error = None if task.cancelled() else task.exception()
+        if error is not None:
+            log.warning("Voice background task failed: %s", _short(error))
 
 
 __all__ = ["INPUT_RECHECK_S", "VoiceService"]

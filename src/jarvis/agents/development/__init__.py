@@ -25,6 +25,7 @@ from jarvis.common.enums import AgentId, ResultStatus
 from jarvis.common.errors import ProviderError, ProviderRefusal
 from jarvis.core.intents import I
 from jarvis.tools.base import ToolResult
+from jarvis.tools.dev import count_text
 from jarvis.tools.project_tools import project_slug
 
 WEB_KINDS = ("website", "store", "webapp", "game")
@@ -156,7 +157,8 @@ class DevelopmentAgent(BaseAgent):
                          + "\n".join(str(d)[:2500] for d in deps))
         return "\n\n".join(parts)
 
-    @skill(description="Verify a project for real: pages and links, JavaScript syntax and its automated tests")
+    @skill(description="Verify a project for real: pages and links, JavaScript syntax and its automated tests",
+           intents=(I.TEST_PROJECT,))
     async def verify_project(self, task: AgentTask, run: RunContext, name: str = "", path: str = "",
                              project: str = "", install: bool = True, fix: bool = True) -> AgentResult:
         lang = task.language
@@ -191,8 +193,9 @@ class DevelopmentAgent(BaseAgent):
         if tests.get("ok"):
             counts = tests.get("counts") or {}
             passed = counts.get("passed") or counts.get("pass")
-            parts_he.append(f"{passed} בדיקות עברו" if passed else "הבדיקות עברו")
-            parts_en.append(f"{passed} tests passed" if passed else "tests passed")
+            parts_he.append(f"{passed} בדיקות עברו" if passed and passed > 1 else
+                            "בדיקה אחת עברה" if passed == 1 else "הבדיקות עברו")
+            parts_en.append(f"{passed} test{'s' if passed > 1 else ''} passed" if passed else "tests passed")
         elif tests.get("ok") is False:
             parts_he.append("יש בדיקות שנכשלו")
             parts_en.append("some tests failed")
@@ -302,7 +305,7 @@ class DevelopmentAgent(BaseAgent):
             self.runtime.memory.short.note("last_project", str(meta.get("name") or folder.name))
         return result
 
-    @skill(description="Run a project's automated tests and report the results")
+    @skill(description="Run a project's automated tests and report the results", intents=(I.RUN_TESTS,))
     async def run_tests(self, task: AgentTask, run: RunContext, path: str = "", project: str = "",
                         name: str = "") -> AgentResult:
         lang = task.language
@@ -311,10 +314,16 @@ class DevelopmentAgent(BaseAgent):
             return AgentResult.failed(t(lang, "לא מצאתי את הפרויקט.", "I could not find the project."))
         tests = await self._run_tests(run, folder, install=True)
         if tests.get("ok"):
-            counts = tests.get("counts") or {}
-            text = ", ".join(f"{v} {k}" for k, v in counts.items()) or t(lang, "עברו", "passed")
-            return run.result(summary=t(lang, f"הבדיקות של {folder.name} עברו ({text}).",
-                                        f"The tests of {folder.name} passed ({text})."), result=tests)
+            counts = dict(tests.get("counts") or {})
+            passed = counts.pop("passed", 0)
+            extra = f" ({count_text(counts, lang)})" if counts else ""
+            if passed:
+                summary = t(lang, (f"{passed} בדיקות של {folder.name} עברו" if passed > 1
+                                   else f"הבדיקה של {folder.name} עברה") + f"{extra}.",
+                            f"{passed} test{'s' if passed > 1 else ''} of {folder.name} passed{extra}.")
+            else:
+                summary = t(lang, f"הבדיקות של {folder.name} עברו{extra}.", f"The tests of {folder.name} passed{extra}.")
+            return run.result(summary=summary, result=tests)
         if tests.get("ok") is None:
             return run.result(status=ResultStatus.PARTIAL, progress=0.5,
                               summary=t(lang, f"הבדיקות לא רצו: {tests.get('reason_he')}.",

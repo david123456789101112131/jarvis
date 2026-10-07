@@ -227,13 +227,14 @@ class SkillInfo:
 
 
 SkillFn = Callable[..., Awaitable["AgentResult | dict[str, Any] | str"]]
+F = TypeVar("F", bound=SkillFn)
 
 
 def skill(name: str | None = None, *, description: str = "", intents: Iterable[str] = (),
-          needs_llm: bool = False) -> Callable[[SkillFn], SkillFn]:
+          needs_llm: bool = False) -> Callable[[F], F]:
     """Mark an async method `async def x(self, task, run, **params)` as a skill of its agent."""
 
-    def deco(fn: SkillFn) -> SkillFn:
+    def deco(fn: F) -> F:
         doc = (fn.__doc__ or "").strip().splitlines()
         fn.__skill__ = SkillInfo(  # type: ignore[attr-defined]
             name=name or fn.__name__, description=description or (doc[0] if doc else fn.__name__),

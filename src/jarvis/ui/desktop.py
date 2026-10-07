@@ -84,25 +84,32 @@ class CoreThread(threading.Thread):
         return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
 
-def webview2_available() -> bool:
-    """Is the Edge WebView2 runtime installed (it ships with Windows 11 and current Edge)?"""
+WEBVIEW2_CLIENT = r"Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
+
+
+def webview2_version() -> str | None:
+    """The version of the Edge WebView2 runtime (it ships with Windows 11 and current Edge), or None."""
     if sys.platform != "win32":
-        return True
+        return None
     import winreg
 
-    guid = "{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}"
-    places = [(winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{guid}"),
-              (winreg.HKEY_LOCAL_MACHINE, rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{guid}"),
-              (winreg.HKEY_CURRENT_USER, rf"SOFTWARE\Microsoft\EdgeUpdate\Clients\{guid}")]
+    places = [(winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\WOW6432Node\\" + WEBVIEW2_CLIENT),
+              (winreg.HKEY_LOCAL_MACHINE, "SOFTWARE\\" + WEBVIEW2_CLIENT),
+              (winreg.HKEY_CURRENT_USER, "SOFTWARE\\" + WEBVIEW2_CLIENT)]
     for root, key in places:
         try:
             with winreg.OpenKey(root, key) as k:
                 version, _ = winreg.QueryValueEx(k, "pv")
                 if version and version != "0.0.0.0":
-                    return True
+                    return str(version)
         except OSError:
             continue
-    return False
+    return None
+
+
+def webview2_available() -> bool:
+    """Can the native window open? Only Windows needs the WebView2 runtime for it."""
+    return sys.platform != "win32" or webview2_version() is not None
 
 
 def find_edge() -> str | None:
@@ -261,7 +268,7 @@ def run_desktop(make_app: Callable[[], Any]) -> int:
     try:
         import webview
     except ImportError:
-        webview = None
+        webview = None  # type: ignore[assignment]
     if webview is not None and webview2_available():
         shell = DesktopShell(webview, core)
         try:

@@ -62,7 +62,9 @@ class ServerAuth:
         self._lock = threading.Lock()
 
     def check_token(self, value: str | None) -> bool:
-        return bool(value) and hmac.compare_digest(value.encode(), self.token.encode())
+        if not value:
+            return False
+        return hmac.compare_digest(value.encode(), self.token.encode())
 
     def new_session(self) -> str:
         """A browser session id for the cookie (the oldest is forgotten beyond MAX_SESSIONS)."""

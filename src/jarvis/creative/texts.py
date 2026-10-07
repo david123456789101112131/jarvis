@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Any
 
 from ._util import has_hebrew, keyword_in, make_rng, norm, resolve_lang
 from .domains import GENERIC, Domain, detect_domain
@@ -920,7 +921,7 @@ def testimonials(topic: str, *, lang: str | None = None, n: int = 3, seed: int |
 
 
 def landing_copy(topic: str, *, lang: str | None = None, name: str | None = None,
-                 seed: int | None = None) -> dict[str, object]:
+                 seed: int | None = None) -> dict[str, Any]:
     """Hero, features, CTA and about text for a landing page about `topic`."""
     lang = resolve_lang(lang, topic)
     c = _copy(topic, lang)

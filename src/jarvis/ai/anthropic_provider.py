@@ -331,7 +331,7 @@ class AnthropicProvider(AIProvider):
                 actions.append(action)
                 pending_server[block.get("id", "")] = action
             elif kind in ("web_search_tool_result", "web_fetch_tool_result"):
-                action = pending_server.get(block.get("tool_use_id", ""))
+                called = pending_server.get(block.get("tool_use_id", ""))
                 result = block.get("content")
                 if isinstance(result, list):
                     for item in result:
@@ -340,9 +340,9 @@ class AnthropicProvider(AIProvider):
                                                   page_age=item.get("page_age")))
                 elif isinstance(result, dict):
                     if result.get("error_code") or str(result.get("type", "")).endswith("error"):
-                        if action is not None:
-                            action.ok = False
-                            action.error = str(result.get("error_code") or "error")
+                        if called is not None:
+                            called.ok = False
+                            called.error = str(result.get("error_code") or "error")
                     elif result.get("url"):
                         sources.append(Source(url=result["url"], title=_fetch_title(result)))
             elif kind == "fallback":

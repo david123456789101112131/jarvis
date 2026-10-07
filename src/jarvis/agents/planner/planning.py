@@ -12,6 +12,7 @@ import re
 from typing import Any
 
 from jarvis.agents.base import AGENT_INFO, t
+from jarvis.agents.planner.documents import request_topic
 from jarvis.common.enums import AgentId, Priority
 from jarvis.common.text import normalize
 from jarvis.core.intents import I
@@ -124,9 +125,13 @@ def _single(agent: AgentId, skill_name: str | None, title_he: str, title_en: str
         params = dict(slots)
         if param and not params.get(param):
             params[param] = goal
-        title = t(lang, title_he, title_en)
+        kind = t(lang, title_he, title_en)
+        topic = request_topic(goal)[:70] or kind
+        # "תוכנית לימודים לשבוע" already says what it is; "לוגו לבית קפה" becomes "עיצוב: לוגו לבית קפה".
+        title = topic if normalize(topic).startswith(normalize(kind)) else f"{kind}: {topic}"
+        title = title[:1].upper() + title[1:]
         sub = _sub(agent, skill_name or "main", title, goal, skill=skill_name, params=params, priority=Priority.HIGH)
-        return TaskPlan(title=f"{title}: {goal[:60]}", strategy=t(lang, f"משימה ל{AGENT_INFO[agent]['name_he']}.",
+        return TaskPlan(title=title, strategy=t(lang, f"משימה ל{AGENT_INFO[agent]['name_he']}.",
                                                                   f"One step for the {AGENT_INFO[agent]['name']}."),
                         subtasks=[sub], source="rules")
 

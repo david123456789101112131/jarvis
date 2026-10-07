@@ -54,6 +54,13 @@ class TestSearchAndRecall:
         assert (await memory.search("jazz"))[0].layer == "long_term"
         assert await memory.search("   ") == []
 
+    async def test_hebrew_plurals_and_the_article_find_the_base_word(self, memory) -> None:
+        await memory.remember("הצבע האהוב עליי הוא כחול")
+        await memory.remember("תוכנית האימונים מתחילה ביום ראשון")
+        assert "כחול" in (await memory.search("צבעים"))[0].text
+        assert "ראשון" in (await memory.search("התוכניות"))[0].text
+        assert not await memory.search("חנויות")
+
     async def test_recall_formats_relevant_context(self, memory) -> None:
         await memory.remember("Always answer in Hebrew", "preference")
         await memory.record_decision("The store uses Stripe for payments")

@@ -76,6 +76,19 @@ CREATE INDEX IF NOT EXISTS commands_ts ON commands(ts);
 """
 
 _WORD = re.compile(r"[\w'\-\.]+", re.UNICODE)
+_HEBREW_WORD = re.compile(r"^[\u05d0-\u05ea]+$")
+
+
+def _term_forms(word: str) -> list[str]:
+    """The word as typed and, for Hebrew, its base without the article and the plural ending: "הצבעים"
+    also looks for "צבע", which (the index matching substrings) finds "הצבע" too."""
+    forms = [word]
+    if _HEBREW_WORD.match(word):
+        base = word[1:] if word.startswith("ה") and len(word) >= 4 else word
+        if base.endswith(("ים", "ות")) and len(base) >= 5:
+            base = base[:-2]
+        forms.append(base)
+    return list(dict.fromkeys(forms))
 
 
 def _ts(dt: datetime | None) -> str | None:
@@ -84,6 +97,14 @@ def _ts(dt: datetime | None) -> str | None:
 
 def _dt(value: str | None) -> datetime | None:
     return parse_iso(value) if value else None
+
+
+def _at(value: str) -> datetime:
+    """A timestamp from a NOT NULL column."""
+    when = parse_iso(value)
+    if when is None:
+        raise ValueError(f"not a timestamp: {value!r}")
+    return when
 
 
 def _json(value: Any) -> str:
@@ -178,7 +199,7 @@ class SQLiteMemoryStore(MemoryStore):
             rows = self.db.execute("SELECT * FROM chat WHERE ts < ? ORDER BY ts DESC LIMIT ?", (before, limit))
         else:
             rows = self.db.execute("SELECT * FROM chat ORDER BY ts DESC LIMIT ?", (limit,))
-        out = [ChatRecord(id=r["id"], role=r["role"], text=r["text"], ts=_dt(r["ts"]), source=r["source"] or "text",
+        out = [ChatRecord(id=r["id"], role=r["role"], text=r["text"], ts=_at(r["ts"]), source=r["source"] or "text",
                           language=r["language"] or "he", kind=r["kind"] or "answer", task_id=r["task_id"],
                           intent=r["intent"]) for r in rows]
         return list(reversed(out))
@@ -205,7 +226,7 @@ class SQLiteMemoryStore(MemoryStore):
     def _fact(self, r: sqlite3.Row) -> Fact:
         return Fact(id=r["id"], text=r["text"], category=r["category"], source=r["source"] or "user",
                     importance=r["importance"] or 1, task_id=r["task_id"], project_id=r["project_id"],
-                    created_at=_dt(r["created_at"]), updated_at=_dt(r["updated_at"]))
+                    created_at=_at(r["created_at"]), updated_at=_at(r["updated_at"]))
 
     def list_facts(self, *, category: str | None = None, query: str | None = None, limit: int = 100,
                    project_id: str | None = None) -> list[Fact]:
@@ -240,8 +261,8 @@ class SQLiteMemoryStore(MemoryStore):
 
     def _project(self, r: sqlite3.Row) -> ProjectRecord:
         return ProjectRecord(id=r["id"], name=r["name"], path=r["path"], description=r["description"] or "",
-                             status=r["status"] or "active", created_at=_dt(r["created_at"]),
-                             updated_at=_dt(r["updated_at"]), meta=_load(r["meta"], {}))
+                             status=r["status"] or "active", created_at=_at(r["created_at"]),
+                             updated_at=_at(r["updated_at"]), meta=_load(r["meta"], {}))
 
     def get_project(self, project_id: str) -> ProjectRecord | None:
         r = self.db.execute("SELECT * FROM projects WHERE id=?", (project_id,)).fetchone()
@@ -278,7 +299,7 @@ class SQLiteMemoryStore(MemoryStore):
     def _task(self, r: sqlite3.Row) -> TaskRecord:
         return TaskRecord(id=r["id"], title=r["title"] or "", goal=r["goal"] or "", status=r["status"] or "pending",
                           priority=r["priority"] or "normal", mode=r["mode"] or "normal", source=r["source"] or "text",
-                          created_at=_dt(r["created_at"]), updated_at=_dt(r["updated_at"]),
+                          created_at=_at(r["created_at"]), updated_at=_at(r["updated_at"]),
                           started_at=_dt(r["started_at"]), finished_at=_dt(r["finished_at"]), summary=r["summary"],
                           error=r["error"], project_id=r["project_id"], data=_load(r["data"], {}))
 
@@ -318,7 +339,7 @@ class SQLiteMemoryStore(MemoryStore):
         rows = self.db.execute("SELECT * FROM results WHERE task_id=? ORDER BY created_at", (task_id,))
         return [ResultRecord(id=r["id"], task_id=r["task_id"], subtask_id=r["subtask_id"], agent_id=r["agent_id"],
                              status=r["status"] or "success", summary=r["summary"] or "", data=_load(r["data"], {}),
-                             created_at=_dt(r["created_at"])) for r in rows]
+                             created_at=_at(r["created_at"])) for r in rows]
 
     # -- files ---------------------------------------------------------------------------------
     def add_file(self, rec: FileRecord) -> None:
@@ -348,7 +369,7 @@ class SQLiteMemoryStore(MemoryStore):
         args.append(limit)
         return [FileRecord(id=r["id"], path=r["path"], name=r["name"] or "", size=r["size"], kind=r["kind"] or "",
                            task_id=r["task_id"], agent_id=r["agent_id"], project_id=r["project_id"],
-                           important=bool(r["important"]), created_at=_dt(r["created_at"]))
+                           important=bool(r["important"]), created_at=_at(r["created_at"]))
                 for r in self.db.execute(sql, args)]
 
     # -- commands ------------------------------------------------------------------------------
@@ -374,16 +395,17 @@ class SQLiteMemoryStore(MemoryStore):
     def list_commands(self, limit: int = 50) -> list[CommandRecord]:
         rows = self.db.execute("SELECT * FROM commands ORDER BY ts DESC LIMIT ?", (limit,))
         return [CommandRecord(id=r["id"], text=r["text"], source=r["source"] or "text", intent=r["intent"],
-                              task_id=r["task_id"], ok=None if r["ok"] is None else bool(r["ok"]), ts=_dt(r["ts"]))
+                              task_id=r["task_id"], ok=None if r["ok"] is None else bool(r["ok"]), ts=_at(r["ts"]))
                 for r in rows]
 
     # -- search --------------------------------------------------------------------------------
     def _match_expr(self, query: str) -> str | None:
         words = [w.strip(".-'") for w in _WORD.findall(query)]
+        forms = list(dict.fromkeys(f for w in words for f in _term_forms(w)))
         if self.tokenizer == "trigram":
-            terms = [w for w in words if len(w) >= 3]
+            terms = [w for w in forms if len(w) >= 3]
             return " OR ".join('"' + t.replace('"', '""') + '"' for t in terms) or None
-        terms = [w for w in words if len(w) >= 2]
+        terms = [w for w in forms if len(w) >= 2]
         return " OR ".join('"' + t.replace('"', '""') + '"*' for t in terms) or None
 
     def search(self, query: str, *, limit: int = 20, layers: list[str] | None = None) -> list[SearchHit]:

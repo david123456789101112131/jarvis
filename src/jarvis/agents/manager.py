@@ -377,7 +377,7 @@ class AgentManager:
         await self._after_run(st, result)
 
     async def _await_handle(self, handle: asyncio.Future[AgentResult], a: _Assignment) -> AgentResult:
-        waiter = asyncio.ensure_future(a.token.wait())
+        waiter: asyncio.Future[Any] = asyncio.ensure_future(a.token.wait())
         try:
             done, _ = await asyncio.wait({handle, waiter}, return_when=asyncio.FIRST_COMPLETED)
             if handle in done:

@@ -15,7 +15,7 @@ import re
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from ._util import FONT_STACK, esc, has_hebrew, make_rng, resolve_lang, text_dir
 from .assets import Asset
@@ -81,7 +81,7 @@ _BUSINESS_WORDS = (
     "investors", "pitch", "website", "app",
 )
 
-_O = {
+_O: dict[str, dict[str, Any]] = {
     "he": {
         "subtitle": "סקירה, תובנות ותוכנית פעולה", "for_audience": "מצגת עבור {audience}",
         "agenda": "על מה נדבר היום", "background": "רקע: התמונה הגדולה", "challenge": "האתגר",
@@ -688,14 +688,15 @@ class _PptxWriter:
 
     def __init__(self, title: str, palette: Palette, lang: str) -> None:
         from pptx import Presentation
+        from pptx.util import Emu
 
         self.title = title
         self.p = palette
         self.lang = lang
         self.rtl = lang == "he"
         self.prs = Presentation()
-        self.prs.slide_width = self.W
-        self.prs.slide_height = self.H
+        self.prs.slide_width = Emu(self.W)
+        self.prs.slide_height = Emu(self.H)
         props = self.prs.core_properties
         props.title = title
         props.author = "JARVIS"
@@ -819,7 +820,7 @@ class _PptxWriter:
             else:
                 ppr.append(ppr.makeelement(qn("a:buNone"), {}))
             head, text = _head_text(line) if head_color else ("", line)
-            if head:
+            if head and head_color:
                 r1 = para.add_run()
                 r1.text = head + (" – " if self.rtl else ": ")
                 self._style_run(r1, size=size, color=head_color, bold=True)

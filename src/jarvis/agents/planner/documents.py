@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Any
 
-from jarvis.common.text import normalize
+from jarvis.common.text import WAKE_WORD_FORMS, normalize
 
 PRIORITY_LABEL = {"critical": ("קריטי", "critical"), "high": ("גבוה", "high"), "normal": ("רגיל", "normal"),
                   "low": ("נמוך", "low")}
@@ -241,9 +241,9 @@ _DATE_HINT = re.compile(r"\d{1,2}[./-]\d{1,2}|\b20\d\d\b|\b(?:by|until|before|de
 _BUDGET_HINT = re.compile(r"₪|\$|€|ש\"ח|שקל|תקציב|budget|dollars|shekels", re.I)
 
 
-def missing_information(goal: str, domain: Domain, lang: str) -> list[str]:
+def missing_information(goal: str, domain: Domain, lang: str, *, horizon: int | None = None) -> list[str]:
     out: list[str] = []
-    if not _DATE_HINT.search(goal):
+    if not horizon and not _DATE_HINT.search(goal):
         out.append("תאריך יעד" if lang == "he" else "a deadline")
     if domain.key in ("event", "trip", "business", "software") and not _BUDGET_HINT.search(goal):
         out.append("תקציב" if lang == "he" else "a budget")
@@ -266,15 +266,108 @@ def schedule(phases: list[dict[str, Any]], start: date | None = None) -> list[di
     return out
 
 
-_REQUEST_HE = re.compile(r"^(?:ג'ארוויס[,\s]*)?(?:תכין|הכן|תכיני|הכיני|תעשה|עשה|תעשי|תכתוב|כתוב|תכתבי|תבנה|בנה|תיצור|"
-                         r"צור|תתכנן|תכנן|תתכנני|תכנני|תארגן|ארגן)\s+(?:לי\s+|לנו\s+)?(?:את\s+)?")
-_REQUEST_EN = re.compile(r"^(?:jarvis[,\s]*)?(?:please\s+)?(?:make|create|write|build|prepare|draft|plan|outline|"
-                         r"draw up)\s+(?:me\s+|us\s+)?(?:a\s+|an\s+|the\s+)?", re.I)
+_WAKE = re.compile(r"^\s*(?:" + "|".join(re.escape(w) for w in sorted(WAKE_WORD_FORMS, key=len, reverse=True))
+                   + r")[\s,.:!]*", re.I)
+_REQUEST_HE = re.compile(r"^(?:בבקשה\s+)?(?:תכין|הכן|תכיני|הכיני|תעשה|עשה|תעשי|תכתוב|כתוב|תכתבי|תבנה|בנה|תיצור|"
+                         r"צור|תתכנן|תכנן|תתכנני|תכנני|תארגן|ארגן|תעצב|עצב|תעצבי|עצבי|תנסח|נסח|תנסחי|נסחי|תמציא|"
+                         r"המצא|תמציאי)\s+(?:לי\s+|לנו\s+)?(?:את\s+)?")
+_REQUEST_EN = re.compile(r"^(?:please\s+)?(?:can you\s+|could you\s+)?(?:make|create|write|build|prepare|draft|plan|"
+                         r"outline|draw up|design|compose|come up with|generate|code)\s+(?:me\s+|us\s+)?"
+                         r"(?:a\s+|an\s+|the\s+)?", re.I)
+# "…and save it as a file": how the result is delivered, not what it is about.
+_SAVE_TAIL_HE = re.compile(r"[\s,]+ו?ת?(?:שמור|שמרי|שים|שימי|כתוב|כתבי)\s+(?:לי\s+)?(?:אותה|אותו|אותם|אותן|את\s+זה|זאת)?"
+                           r"\s*(?:כקובץ|בקובץ|לקובץ|כמסמך|במסמך|בתיקי?יה|על\s+שולחן\s+העבודה|בשולחן\s+העבודה)(?!\w).*$")
+_SAVE_TAIL_EN = re.compile(r"[\s,]+(?:and\s+|then\s+)?(?:save|store|put|write|keep)\s+(?:it|this|that|them)?\s*"
+                           r"(?:as|to|in|into|on)\s+(?:a\s+|an\s+|the\s+|my\s+)?(?:file|document|doc|folder|desktop)\b.*$",
+                           re.I)
+
+
+def request_topic(goal: str) -> str:
+    """What was asked for, without the wake word, the request verb or a "save it as a file" tail:
+    "ג'ארוויס, תכין לי תוכנית לימודים לשבוע ותשמור אותה כקובץ" → "תוכנית לימודים לשבוע"."""
+    text = _WAKE.sub("", (goal or "").strip()).strip().rstrip(" .!?")
+    text = _REQUEST_EN.sub("", _REQUEST_HE.sub("", text)).strip()
+    return _SAVE_TAIL_EN.sub("", _SAVE_TAIL_HE.sub("", text)).strip(" ,.")
+
+
+_NUMBERS = {"אחד": 1, "אחת": 1, "שניים": 2, "שתיים": 2, "שני": 2, "שתי": 2, "שלושה": 3, "שלוש": 3, "ארבעה": 4, "ארבע": 4,
+            "חמישה": 5, "חמש": 5, "שישה": 6, "שש": 6, "שבעה": 7, "שבע": 7, "שמונה": 8, "תשעה": 9, "תשע": 9, "עשרה": 10,
+            "עשר": 10, "one": 1, "two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+            "ten": 10, "twelve": 12}
+_UNIT_DAYS = {"יום": 1, "ימים": 1, "שבוע": 7, "שבועות": 7, "חודש": 30, "חודשים": 30, "שנה": 365, "שנים": 365,
+              "יומיים": 2, "שבועיים": 14, "חודשיים": 60, "שנתיים": 730, "day": 1, "days": 1, "week": 7, "weeks": 7,
+              "month": 30, "months": 30, "year": 365, "years": 365, "fortnight": 14}
+_NUM = r"(\d{1,4}|" + "|".join(sorted(_NUMBERS, key=len, reverse=True)) + r")"
+# Hebrew: "לשבוע", "לשבועיים", "ל-3 שבועות", "תוך חודש", "למשך 10 ימים", "ליום אחד". A bare "ליום" is left out
+# ("ליום הולדת"), and so are frequencies ("פעם בשבוע").
+_HORIZON_HE = re.compile(
+    r"(?<!\w)(?:ל|ל-|ל־|תוך\s+|בתוך\s+|למשך\s+|במשך\s+|של\s+)\s*(?:" + _NUM + r"\s+)?"
+    r"(ימים|שבועות|חודשים|שנים|יומיים|שבועיים|חודשיים|שנתיים|שבוע|חודש|שנה|יום(?=\s+(?:אחד|בלבד)))(?!\w)"
+    r"(?:\s+(" + "|".join(sorted(_NUMBERS, key=len, reverse=True)) + r")(?!\w))?")
+_HORIZON_EN = re.compile(
+    r"\b(?:for|in|within|over|during|lasting)\s+(?:the\s+)?(?:next\s+|coming\s+|this\s+)?(?:" + _NUM
+    + r"\s+|a\s+|an\s+)?(days?|weeks?|months?|years?|fortnight)\b"
+    r"|\b" + _NUM + r"[-\s](day|week|month|year)s?\b", re.I)
+_HE_PLURALS = frozenset({"ימים", "שבועות", "חודשים", "שנים"})
+_FREQUENCY = re.compile(r"(?:פעם|פעמיים|פעמים|times?|once|twice)\s+(?:ב|a\s+|per\s+|each\s+|every\s+)?$", re.I)
+
+
+def _number(word: str | None) -> int | None:
+    if not word:
+        return None
+    return int(word) if word.isdigit() else _NUMBERS.get(word.lower())
+
+
+def horizon_days(goal: str) -> int | None:
+    """How many days the request gives the plan ("לשבוע" → 7, "for 3 months" → 90), or None."""
+    text = goal or ""
+    for m in _HORIZON_HE.finditer(text):
+        if _FREQUENCY.search(text[:m.start()]):
+            continue
+        n = _number(m.group(1)) or _number(m.group(3))
+        if n is None and m.group(2) in _HE_PLURALS:          # "לחודשים הקרובים": no length given
+            continue
+        return max(1, min(3650, (n or 1) * _UNIT_DAYS[m.group(2)]))
+    for m in _HORIZON_EN.finditer(text):
+        if _FREQUENCY.search(text[:m.start()]):
+            continue
+        if m.group(2):
+            n, unit = _number(m.group(1)), m.group(2).lower()
+            if n is None and unit.endswith("s"):             # "for weeks": no length given
+                continue
+        else:
+            n, unit = _number(m.group(3)), m.group(4).lower()
+        return max(1, min(3650, (n or 1) * _UNIT_DAYS[unit.removesuffix("s")]))
+    return None
+
+
+def fit_to(phases: list[dict[str, Any]], horizon: int) -> list[dict[str, Any]]:
+    """Stretch or squeeze the phases to fill `horizon` days. Every phase keeps at least one day; when there are more
+    phases than days, the last phases share the final day."""
+    total = sum(int(p["days"]) for p in phases)
+    if not phases or horizon <= 0 or total == horizon:
+        return phases
+    if horizon < len(phases):
+        rest = phases[horizon - 1:]
+        merged = {"title": " + ".join(str(p["title"]) for p in rest), "days": 1,
+                  "tasks": [task for p in rest for task in p["tasks"]]}
+        return [dict(p, days=1) for p in phases[:horizon - 1]] + [merged]
+    days = [max(1, round(int(p["days"]) * horizon / total)) for p in phases]
+    order = sorted(range(len(days)), key=lambda i: days[i], reverse=True)
+    i = 0
+    while sum(days) != horizon and i < 10 * horizon:          # rounding: adjust the longest phases first
+        j = order[i % len(order)]
+        if sum(days) < horizon:
+            days[j] += 1
+        elif days[j] > 1:
+            days[j] -= 1
+        i += 1
+    return [dict(p, days=d) for p, d in zip(phases, days, strict=True)]
 
 
 def plan_title(goal: str, lang: str) -> str:
-    """A document title from the request: "תכין לי תוכנית לחתונה" → "תוכנית לחתונה"."""
-    text = _REQUEST_EN.sub("", _REQUEST_HE.sub("", (goal or "").strip().rstrip(" .!?"))).strip()
+    """A document title from the request: "תכין לי תוכנית לחתונה ותשמור אותה כקובץ" → "תוכנית לחתונה"."""
+    text = request_topic(goal)
     if not text:
         return "תוכנית" if lang == "he" else "Plan"
     return (text if lang == "he" else text[:1].upper() + text[1:])[:80]
@@ -283,15 +376,17 @@ def plan_title(goal: str, lang: str) -> str:
 def build_plan(goal: str, lang: str, *, start: date | None = None) -> dict[str, Any]:
     """Structured plan: phases with dates, tasks (priority, owner), first actions and open questions."""
     domain = detect_domain(goal)
-    phases = schedule([{
+    horizon = horizon_days(goal)
+    drafted = [{
         "title": phase.he if lang == "he" else phase.en, "days": phase.days,
         "tasks": [{"title": s.he if lang == "he" else s.en, "priority": s.priority, "agent": s.agent}
                   for s in phase.steps],
-    } for phase in domain.phases], start)
+    } for phase in domain.phases]
+    phases = schedule(fit_to(drafted, horizon) if horizon else drafted, start)
     first = [t["title"] for p in phases for t in p["tasks"] if t["priority"] == "critical"][:3] or \
         [phases[0]["tasks"][0]["title"]]
     return {"goal": goal, "title": plan_title(goal, lang), "domain": domain.key, "phases": phases,
-            "first_actions": first, "missing": missing_information(goal, domain, lang),
+            "first_actions": first, "missing": missing_information(goal, domain, lang, horizon=horizon),
             "finish": phases[-1]["end"] if phases else None, "source": "template"}
 
 

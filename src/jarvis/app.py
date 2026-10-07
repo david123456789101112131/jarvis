@@ -31,6 +31,7 @@ from jarvis.bus import MessageBus
 from jarvis.bus.message import Message, event
 from jarvis.common.clock import iso
 from jarvis.common.enums import Mode, TaskStatus
+from jarvis.common.i18n import t
 from jarvis.config.loader import load_settings, save_settings, update_settings
 from jarvis.config.paths import AppPaths, default_config_file, resolve_paths
 from jarvis.config.settings import Settings
@@ -72,6 +73,9 @@ REVEAL_ONLY_EXT = RUNS_CODE_EXT
 UI_KEYS = ("theme_color", "orb_size", "orb_opacity", "follow_mouse", "always_active", "mini_orb")
 # Changing these needs a restart (they shape objects built once at start-up).
 RESTART_SECTIONS = ("paths", "server", "memory")
+SECTION_NAMES_HE = {"general": "כללי", "paths": "תיקיות", "server": "שרת", "ai": "AI", "agents": "סוכנים",
+                    "orchestrator": "משימות", "memory": "זיכרון", "security": "אבטחה", "voice": "קול", "ui": "ממשק",
+                    "web": "אינטרנט"}
 
 QUICK_TOOLS = (
     ("chrome", "Chrome", "כרום", "chrome", "open Chrome", "פתח את כרום"),
@@ -230,7 +234,7 @@ class JarvisApp:
         if self.serve_api:
             await self._start_server()
         self.spawn(self._monitor_loop(), "system-monitor")
-        await self.activity.log(f"JARVIS {__version__} is online"
+        await self.activity.log(t(self.lang, f"JARVIS {__version__} פעיל", f"JARVIS {__version__} is online")
                                 + (f" ({self.url})" if self.server else ""), source="JARVIS", level="success",
                                 kind="system")
 
@@ -389,7 +393,7 @@ class JarvisApp:
         return {k: ui[k] for k in UI_KEYS}
 
     def quick_tools(self, lang: str | None = None) -> list[dict[str, Any]]:
-        lang = lang if lang in ("he", "en") else ("en" if self.settings.general.language == "en" else "he")
+        lang = lang if lang in ("he", "en") else self.lang
         return [{"id": i, "label": label, "label_he": label_he, "icon": icon, "command": he if lang == "he" else en}
                 for i, label, label_he, icon, en, he in QUICK_TOOLS]
 
@@ -429,23 +433,39 @@ class JarvisApp:
             self.router.refresh()
         if "security" in patch:
             self.broker.timeout_s = self.settings.security.confirm_timeout_s
-        await self.activity.log("Settings updated: " + ", ".join(sorted(patch)), source="Settings", kind="settings")
+        lang = self.lang
+        names = ", ".join(self._section_name(k, lang) for k in sorted(patch))
+        await self.activity.log(t(lang, f"ההגדרות עודכנו: {names}", f"Settings updated: {names}"),
+                                source=t(lang, "הגדרות", "Settings"), kind="settings")
         if restart:
-            await self.notify("info", "JARVIS", "Some changes apply after JARVIS restarts: " + ", ".join(restart))
+            later = ", ".join(self._section_name(k, lang) for k in restart)
+            await self.notify("info", "JARVIS", t(lang, f"חלק מהשינויים ייכנסו לתוקף אחרי הפעלה מחדש של JARVIS: {later}",
+                                                  f"Some changes apply after JARVIS restarts: {later}"))
         return restart
+
+    @property
+    def lang(self) -> str:
+        """The language JARVIS speaks to the user in when no request sets one."""
+        return "en" if self.settings.general.language == "en" else "he"
+
+    @staticmethod
+    def _section_name(key: str, lang: str) -> str:
+        return SECTION_NAMES_HE.get(key, key) if lang == "he" else key
 
     async def set_secret(self, name: str, value: str) -> str:
         if name not in KNOWN_SECRETS:
             raise KeyError(name)
         source = await asyncio.to_thread(self.secrets.set, name, value)
         self.router.refresh()
-        await self.activity.log(f"{KNOWN_SECRETS[name]} saved ({source})", source="Settings", kind="settings")
+        await self.activity.log(t(self.lang, f"המפתח {name} נשמר ({source})", f"{KNOWN_SECRETS[name]} saved ({source})"),
+                                source=t(self.lang, "הגדרות", "Settings"), kind="settings")
         return source
 
     async def delete_secret(self, name: str) -> None:
         await asyncio.to_thread(self.secrets.delete, name)
         self.router.refresh()
-        await self.activity.log(f"{KNOWN_SECRETS.get(name, name)} removed", source="Settings", kind="settings")
+        await self.activity.log(t(self.lang, f"המפתח {name} נמחק", f"{KNOWN_SECRETS.get(name, name)} removed"),
+                                source=t(self.lang, "הגדרות", "Settings"), kind="settings")
 
     # ================================================================== files (UI)
     def _browse_roots(self) -> list[Path]:
@@ -459,7 +479,7 @@ class JarvisApp:
             raise FileNotFoundError(f"No folder {target}")
 
         def scan() -> list[dict[str, Any]]:
-            rows = []
+            rows: list[dict[str, Any]] = []
             with os.scandir(target) as it:
                 for entry in it:
                     try:
@@ -525,7 +545,7 @@ class JarvisApp:
 
     async def _on_confirm_request(self, req: ConfirmationRequest) -> None:
         if not self.ui_visible:
-            title = "JARVIS מבקש אישור" if self.settings.general.language != "en" else "JARVIS needs your approval"
+            title = t(self.lang, "JARVIS מבקש אישור", "JARVIS needs your approval")
             with contextlib.suppress(Exception):
                 await self.host.notify(title, req.summary[:240])
 

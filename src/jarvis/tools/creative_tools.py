@@ -273,7 +273,7 @@ class CreatePresentationTool(Tool):
                                                                                    "presentation")
                 chosen = await asyncio.to_thread(fresh_folder, base)
             ctx.extra["output_folder"] = chosen
-        return Path(chosen)
+        return Path(str(chosen))
 
     async def plan(self, params: CreatePresentationParams, ctx: ToolContext) -> ActionPlan:
         out_dir = await self._folder(params, ctx)

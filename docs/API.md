@@ -10,11 +10,13 @@ The same server hosts the built UI (`/`), so the desktop window just loads
   private data folder (which the agents' tools cannot read). The CLI uses it to find the
   running instance (`jarvis open`, `jarvis say`, a second launch brings the window forward).
 - The page is served only to a session: the desktop window (and `jarvis open`) loads
-  `/?launch=<token>`, which sets an HttpOnly, SameSite=Strict session cookie and redirects to
-  `/` (or `/?view=orb`). The page then gets `window.__JARVIS__ = { token, version, wsUrl }`
-  in a nonce'd script; a Content-Security-Policy lets no other script run.
-- REST: header `X-JARVIS-Token: <token>` (or the session cookie).
-  WebSocket: `ws://127.0.0.1:<port>/ws?token=<token>` (or the session cookie).
+  `/?launch=<token>`, which sets an HttpOnly, SameSite=Strict session cookie (for this run of
+  JARVIS; at most 32 windows) and redirects to `/` (or `/?view=orb`), so the token leaves the
+  address bar. The page then gets `window.__JARVIS__ = { version, wsUrl, apiBase }` in a
+  nonce'd script: no credentials, because its REST calls and its WebSocket are authorised by the
+  cookie, which scripts cannot read. A Content-Security-Policy lets no other script run.
+- Other clients (the CLI, the tests): REST header `X-JARVIS-Token: <token>`;
+  WebSocket `ws://127.0.0.1:<port>/ws?token=<token>`.
 - Requests without the token, with a non-local `Host` (DNS rebinding), or with a foreign
   `Origin` get 403 (a WebSocket is closed with 4403). The server listens on 127.0.0.1 only.
 - Agents' web tools may not call the server's port.

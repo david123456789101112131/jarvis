@@ -371,6 +371,8 @@ ACTION_CARDS: dict[str, tuple[str, str, str]] = {
     I.SCREENSHOT: ("מצלם את המסך…", "Taking a screenshot…", "camera"),
     I.WEATHER: ("בודק את מזג האוויר…", "Checking the weather…", "cloud"),
     I.RUN_PROJECT: ("מפעיל את הפרויקט…", "Starting the project…", "play"),
+    I.TEST_PROJECT: ("בודק את הפרויקט {target}…", "Checking the project {target}…", "code"),
+    I.RUN_TESTS: ("מריץ את הבדיקות {target}…", "Running the tests {target}…", "check"),
     "open_project": ("פותח את {target}…", "Opening {target}…", "play"),
 }
 

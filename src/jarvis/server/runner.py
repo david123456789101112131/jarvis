@@ -8,6 +8,7 @@ import logging
 import socket
 import sys
 from collections.abc import Iterator
+from typing import Any
 
 import uvicorn
 
@@ -59,7 +60,7 @@ def bind_loopback(host: str, port: int, span: int) -> socket.socket:
 
 
 class LocalServer:
-    def __init__(self, app: object, *, host: str = "127.0.0.1", port: int = 8765, span: int = 20) -> None:
+    def __init__(self, app: Any, *, host: str = "127.0.0.1", port: int = 8765, span: int = 20) -> None:
         self.app = app
         self.host = host
         self.port_wanted = port

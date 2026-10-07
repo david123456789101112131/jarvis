@@ -14,6 +14,7 @@ import pytest
 from fakes import FakeHost
 from jarvis.memory import create_memory
 from jarvis.tools.builtin import create_registry
+from jarvis.tools.dev import count_text, parse_test_counts
 from jarvis.tools.web import parse_duckduckgo
 
 
@@ -182,6 +183,20 @@ class TestShellAndCode:
             run(tk, "git", {"args": ["push", "origin", "main"], "path": str(repo)}, "development"),
             answer(tk, False))
         assert r.denied == "confirmation"
+
+
+@pytest.mark.parametrize(("output", "counts", "he"), [
+    ("===== 5 passed, 1 skipped in 0.21s =====", {"passed": 5, "skipped": 1}, "5 עברו, 1 דולגה"),
+    ("Tests:       1 failed, 5 passed, 6 total", {"failed": 1, "passed": 5}, "1 נכשלה, 5 עברו"),
+    (" Test Files  1 passed (1)\n      Tests  7 passed (7)", {"passed": 7}, "7 עברו"),
+    # Node's own test runner: TAP when piped, the spec reporter in a terminal
+    ("ok 18 - orders\n1..18\n# tests 18\n# pass 18\n# fail 0\n# skipped 0\n", {"passed": 18}, "18 עברו"),
+    ("ℹ tests 7\nℹ pass 6\nℹ fail 1\nℹ cancelled 0\n", {"passed": 6, "failed": 1}, "6 עברו, 1 נכשלה"),
+    ("nothing to see", {}, ""),
+])
+def test_test_results_are_counted_for_every_runner(output: str, counts: dict, he: str) -> None:
+    assert parse_test_counts(output) == counts
+    assert count_text(counts, "he") == he
 
 
 DDG_HTML = """

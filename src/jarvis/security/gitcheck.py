@@ -23,6 +23,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 READ = frozenset({"status", "log", "diff", "show", "blame", "ls-files", "ls-tree", "rev-parse", "rev-list",
                   "describe", "shortlog", "grep", "cat-file", "whatchanged", "count-objects", "check-ignore",
@@ -110,7 +111,7 @@ class GitRefused(ValueError):
 class GitCheck:
     sub: str
     kind: str                                                      # "read", "write" or "network"
-    paths: list[tuple[str, str]] = field(default_factory=list)     # (path as given, "read" | "write")
+    paths: list[tuple[str, Literal["read", "write"]]] = field(default_factory=list)     # (path as given, access)
     irreversible: list[tuple[str, str]] = field(default_factory=list)   # (English, Hebrew) reasons
 
 

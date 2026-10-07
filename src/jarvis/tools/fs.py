@@ -270,7 +270,9 @@ class WriteFileTool(Tool):
     async def plan(self, params: WriteFileParams, ctx: ToolContext) -> ActionPlan:
         p = ctx.resolve(params.path)
         exists = await asyncio.to_thread(p.exists)
-        risk, reasons, irreversible = None, [], False
+        risk: RiskLevel | None = None
+        reasons: list[str] = []
+        irreversible = False
         if params.mode == "append":
             summary = ctx.t(f"הוספת תוכן לקובץ {p.name}", f"Append to {p.name}")
         elif exists:
@@ -356,7 +358,9 @@ class CopyPathTool(Tool):
     async def plan(self, params: CopyMoveParams, ctx: ToolContext) -> ActionPlan:
         src, dst = ctx.resolve(params.source), ctx.resolve(params.destination)
         n = await asyncio.to_thread(count_files, src)
-        risk, reasons, irreversible = None, [], False
+        risk: RiskLevel | None = None
+        reasons: list[str] = []
+        irreversible = False
         if params.overwrite:
             replaced = await asyncio.to_thread(_replaced_files, src, dst)
             risk, reasons, irreversible = await asyncio.to_thread(overwrite_risk, ctx, replaced)
@@ -405,7 +409,9 @@ class MovePathTool(Tool):
     async def plan(self, params: CopyMoveParams, ctx: ToolContext) -> ActionPlan:
         src, dst = ctx.resolve(params.source), ctx.resolve(params.destination)
         n = await asyncio.to_thread(count_files, src)
-        risk, reasons, irreversible = None, [], False
+        risk: RiskLevel | None = None
+        reasons: list[str] = []
+        irreversible = False
         target = dst / src.name if dst.is_dir() else dst
         if params.overwrite:
             risk, reasons, irreversible = await asyncio.to_thread(overwrite_risk, ctx, [target])

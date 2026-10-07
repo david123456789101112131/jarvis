@@ -289,12 +289,12 @@ def openwakeword_files(model: str = "hey_jarvis") -> dict[str, tuple[str, str | 
     if custom.suffix.lower() == ".onnx":
         if not custom.is_file():
             raise WakeWordError(f"Wake-word model file not found: {custom}")
-        wake = (str(custom.resolve()), None)
+        wake: tuple[str, str | None] = (str(custom.resolve()), None)
     else:
         key = _resolve_oww_key(model, openwakeword.MODELS)
         url = openwakeword.MODELS[key]["download_url"].replace(".tflite", ".onnx")
         wake = (url.rsplit("/", 1)[-1], url)
-    out = {"model": wake}
+    out: dict[str, tuple[str, str | None]] = {"model": wake}
     for role, key in (("melspectrogram", "melspectrogram"), ("embedding", "embedding")):
         url = openwakeword.FEATURE_MODELS[key]["download_url"].replace(".tflite", ".onnx")
         out[role] = (url.rsplit("/", 1)[-1], url)
@@ -616,8 +616,8 @@ def create_wake_engine(
     """
     choice = settings.wake_word_engine
     if choice == "none":
-        engine = NullWakeEngine("Wake word is turned off in settings (push-to-talk only).")
-        return engine, engine.reason
+        off = NullWakeEngine("Wake word is turned off in settings (push-to-talk only).")
+        return off, off.reason
     notes: list[str] = []
     for kind in _WAKE_ORDER.get(choice, _WAKE_ORDER["auto"]):
         try:

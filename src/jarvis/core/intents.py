@@ -58,6 +58,8 @@ class I:  # noqa: E742 - short namespace for intent names
     OPEN_FOLDER = "open_folder"
     FIND_FILES = "find_files"
     RUN_PROJECT = "run_project"
+    TEST_PROJECT = "test_project"
+    RUN_TESTS = "run_tests"
     WEATHER = "weather"
     DESIGN = "design"
     WRITE_TEXT = "write_text"
@@ -626,10 +628,21 @@ def _b_organize(m: re.Match[str], text: str) -> dict[str, Any] | None:
 
 
 def _b_project(m: re.Match[str], text: str) -> dict[str, Any] | None:
+    """The project's name without the words around it ("my flower shop project" -> "flower shop"); no name
+    means the project JARVIS worked on last."""
     name = (m.groupdict().get("x") or "").strip(" .,\"'")
-    if normalize(name) in {"", "this", "the", "my", "this project", "הזה", "שלי", "הנוכחי", "current"}:
+    name = re.sub(r"^(?:(?:the|my|this|our|current)\s+)*(?:project(?:\s+|$))?", "", name, flags=re.I)
+    name = re.sub(r"(?:^|\s+)project$", "", name, flags=re.I)
+    name = re.sub(r"^(?:ה)?פרויקט(?:\s+|$)", "", name)
+    name = re.sub(r"(?:^|\s+)(?:ה)?(?:זה|שלי|הנוכחי|האחרון)$", "", name).strip()
+    if normalize(name) in {"", "this", "the", "my", "current", "last", "הזה", "שלי", "הנוכחי", "האחרון"}:
         name = ""
     return {"project": name or None}
+
+
+def _b_test_project(m: re.Match[str], text: str) -> dict[str, Any] | None:
+    """Checking a project reports what it finds; changing the code to fix it is the user's next call."""
+    return {**(_b_project(m, text) or {}), "fix": False}
 
 
 _RULES: list[Rule] = [
@@ -821,8 +834,26 @@ _RULES: list[Rule] = [
     ), "simple", (AgentId.SYSTEM,), build=_b_find_files),
     Rule(I.RUN_PROJECT, _p(
         r"^(?:run|start|launch|execute|build and run)\s+(?:this|the|my|current)?\s*project(?:\s+(?P<x>.+))?$",
+        r"^(?:open|show)\s+(?:me\s+)?(?:this|the|my|current)?\s*project(?:\s+(?!folder$|directory$)(?P<x>.+))?$",
         rf"^{V_OPEN_HE}\s+{LI}(?:את\s+)?(?:ה)?פרויקט(?:\s+(?P<x>.+))?$",
     ), "simple", (AgentId.DEVELOPMENT,), build=_b_project),
+    # Before WRITE_CODE and OPEN_APP: "run the tests" runs a project's tests, it does not open an app called "tests".
+    Rule(I.RUN_TESTS, _p(
+        r"^(?:run|execute|rerun|re-run)\s+(?:the\s+|my\s+|all\s+(?:the\s+)?)?(?:unit\s+|automated\s+)?tests?(?:\s+(?:of|for|in|on)\s+(?P<x>.+?))?$",
+        r"^(?:תריץ|הרץ|תריצי|הריצי|תפעיל|הפעל)\s+(?:לי\s+)?(?:שוב\s+)?(?:את\s+)?(?:כל\s+)?(?:ה)?(?:בדיקות|טסטים)(?:\s+(?:ה)?(?:אוטומטיות|יחידה))?(?:\s+(?:של|על|ב|ל)\s*(?P<x>.+))?$",
+    ), "simple", (AgentId.DEVELOPMENT,), build=_b_project),
+    Rule(I.TEST_PROJECT, _p(
+        r"^(?:test|verify|check|validate)\s+(?:the\s+|my\s+|this\s+)?project(?:\s+(?P<x>.+))?$",
+        r"^(?:test|verify|check|validate)\s+(?:the\s+|my\s+|this\s+)?(?P<x>.+?)\s+project$",
+        r"^(?:check|see|make sure|verify)\s+(?:if|whether|that)\s+(?:the\s+|my\s+|this\s+)?(?:(?P<x>.+?)\s+)?project\s+(?:works|is working|runs)$",
+        r"^(?:תבדוק|בדוק|תבדקי|בדקי|תוודא|וודא|ודא|תוודאי|וודאי)\s+(?:לי\s+)?(?:את\s+)?(?:ה)?(?:קוד\s+של\s+(?:ה)?)?פרויקט(?:\s+(?P<x>.+))?$",
+        r"^(?:תבדוק|בדוק|תבדקי|בדקי|תוודא|וודא|ודא|תוודאי|וודאי)\s+(?:לי\s+)?(?:ש|אם\s+|האם\s+)(?:ה)?פרויקט(?:\s+(?P<x>.+?))?\s+(?:עובד|תקין|רץ)$",
+    ), "simple", (AgentId.DEVELOPMENT,), build=_b_test_project),
+    # Before BUILD_APP: "write tests for the calculator" asks for tests, not for a calculator.
+    Rule(I.WRITE_CODE, _p(
+        r"^(?:write|create|add|generate)\s+(?:me\s+)?(?:some\s+|more\s+|the\s+)?(?:unit\s+|automated\s+|integration\s+)?tests?\b.*$",
+        r"^(?:כתוב|תכתוב|כתבי|תכתבי|תוסיף|הוסף|תוסיפי|הוסיפי)\s+(?:לי\s+)?(?:עוד\s+)?(?:בדיקות|טסטים)\b.*$",
+    ), "complex", (AgentId.DEVELOPMENT,), build=_b_code),
     Rule(I.ORGANIZE_PROJECT, _p(
         r"^(?:organize|organise|clean up|tidy up|tidy|structure|sort out)\s+(?:my|the|this)?\s*(?P<x>desktop|downloads|documents|pictures|music|videos|workspace|projects)(?:\s+folder)?$",
         r"^(?:organize|organise|clean up|tidy up|structure|sort out)\s+(?:my|the|this)?\s*(?:project|folder|files|workspace)(?:\s+(?P<x>.+))?$",
@@ -928,8 +959,8 @@ _INTENT_DEFAULTS: dict[str, tuple[Complexity, tuple[AgentId, ...]]] = {
 # Intents that change something on the machine (used by CHAT mode to refuse actions).
 ACTION_INTENTS = frozenset({
     I.VOLUME, I.BRIGHTNESS, I.MEDIA, I.LOCK_SCREEN, I.POWER, I.SCREENSHOT, I.CREATE_FOLDER, I.DELETE_PATH, I.OPEN_FOLDER,
-    I.RUN_PROJECT, I.DESIGN, I.WRITE_TEXT, I.BUILD_APP, I.WRITE_CODE, I.ORGANIZE_PROJECT, I.PLAN, I.RESEARCH,
-    I.WEB_SEARCH, I.OPEN_WEBSITE, I.OPEN_APP, I.CLOSE_APP, I.AGENT_ASSIGN, I.RESUME_TASK, I.FIND_FILES, I.WEATHER, I.SYSTEM_STATUS,
+    I.RUN_PROJECT, I.TEST_PROJECT, I.RUN_TESTS, I.DESIGN, I.WRITE_TEXT, I.BUILD_APP, I.WRITE_CODE, I.ORGANIZE_PROJECT,
+    I.PLAN, I.RESEARCH, I.WEB_SEARCH, I.OPEN_WEBSITE, I.OPEN_APP, I.CLOSE_APP, I.AGENT_ASSIGN, I.RESUME_TASK, I.FIND_FILES, I.WEATHER, I.SYSTEM_STATUS,
 })
 
 

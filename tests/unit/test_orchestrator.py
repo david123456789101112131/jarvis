@@ -33,7 +33,7 @@ from jarvis.agents import (
     skill,
 )
 from jarvis.ai.types import AIResponse, CompletionRequest
-from jarvis.common.enums import AgentId, Mode, Priority, ResultStatus, TaskStatus
+from jarvis.common.enums import AgentId, AgentStatus, Mode, Priority, ResultStatus, TaskStatus
 from jarvis.common.errors import ProviderError, TaskRefused
 from jarvis.core.intents import detect_intent
 from jarvis.memory.models import TaskRecord
@@ -351,6 +351,28 @@ class TestScheduling:
         starts = [ts for kind, _, ts in log if kind == "start"]
         ends = [ts for kind, _, ts in log if kind == "end"]
         assert len(starts) == 3 and max(starts) < min(ends)      # all three were running at the same time
+
+    async def test_all_five_agents_work_at_the_same_time(self, o: Orch) -> None:
+        agents = ("research", "system", "development", "creative", "planner")
+        plan = plan_of(*(step(a[:3], a, params={"delay": 0.5}) for a in agents))
+        busy: list[set[str]] = []
+
+        async def watch() -> None:
+            while True:
+                busy.append({a for a in agents if o.env.manager.status(a) == AgentStatus.WORKING})
+                await asyncio.sleep(0.02)
+
+        watcher = asyncio.create_task(watch())
+        t0 = time.monotonic()
+        try:
+            task = await o.run(plan=plan)
+        finally:
+            watcher.cancel()
+        assert task.status == S.COMPLETED and time.monotonic() - t0 < 1.4      # five half-second steps at once
+        assert set(agents) in busy                                             # all five were working together
+        starts = [ts for kind, _, ts in o.extras["log"] if kind == "start"]
+        ends = [ts for kind, _, ts in o.extras["log"] if kind == "end"]
+        assert len(starts) == 5 and max(starts) < min(ends)
 
     async def test_dependencies_order_and_context(self, o: Orch) -> None:
         plan = plan_of(step("a", "research", params={"delay": 0.1}), step("b", "creative", after=("a",)),
@@ -698,6 +720,31 @@ class TestPlanningAndAI:
         assert [s.key for s in task.plan.subtasks] == ["facts", "post"]
         assert task.outcome.summary == "The post is ready." and task.outcome.used_llm
         assert task.outcome.next_step == "Publish it."
+
+    async def test_the_plan_and_every_step_see_what_jarvis_remembers(self, o: Orch) -> None:
+        await o.env.memory.remember("The user prefers Python for new projects", "preference")
+        seen: dict[str, list[str]] = {"plan": [], "agent": []}
+
+        def capture(kind: str, answer: Any) -> Callable[[CompletionRequest], Any]:
+            def respond(request: CompletionRequest) -> Any:
+                seen[kind].append(json.dumps([m.model_dump(mode="json") for m in request.messages], ensure_ascii=False)
+                                  + (request.system or ""))
+                return answer
+            return respond
+
+        draft = {"title": "Tool plan", "strategy": "One step.", "steps": [
+            {"key": "code", "agent": "development", "title": "Write the tool", "instruction": "Write the tool",
+             "depends_on": [], "acceptance_criteria": [], "expected_files": [], "optional": False, "priority": "normal"}]}
+        o.env.use_ai(default=responder({
+            "PlanDraft": [capture("plan", draft)],
+            "agent": [capture("agent", "Done.\n\nSTATUS: success")],
+            "SynthesisDraft": [{"summary": "Written.", "details": "", "next_step": ""}],
+        }))
+        task = await o.run("write a small tool that renames photos")
+        assert task.status == S.COMPLETED
+        assert "prefers Python" in task.context.get("memory", "")
+        assert seen["plan"] and all("prefers Python" in text for text in seen["plan"])
+        assert seen["agent"] and all("prefers Python" in text for text in seen["agent"])
 
     async def test_autonomous_mode_adds_follow_up_steps(self, o: Orch) -> None:
         missing_step = {"key": "faq", "agent": "creative", "title": "Write the FAQ", "instruction": "Write an FAQ",

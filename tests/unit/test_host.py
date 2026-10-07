@@ -30,7 +30,7 @@ import psutil
 import pytest
 
 from jarvis.common.errors import PermissionDenied
-from jarvis.host import posix, winapi, windows
+from jarvis.host import monitor, posix, winapi, windows
 from jarvis.host.app_index import (
     DEFAULT_TTL_S,
     INDEX_VERSION,
@@ -2168,3 +2168,40 @@ class TestRealWindows:
     async def test_get_start_apps(self) -> None:
         apps = await WindowsHost()._start_apps()
         assert apps and all(a.name and a.target for a in apps)
+
+
+# ================================================================================ system monitor
+class TestSystemMonitor:
+    def test_a_snapshot_has_what_the_hud_shows(self) -> None:
+        mon = monitor.SystemMonitor()
+        first = mon.sample()
+        second = mon.sample()
+        assert 0 <= second["cpu"]["percent"] <= 100 and len(second["cpu"]["per_core"]) == second["cpu"]["cores"]
+        assert 0 < second["memory"]["percent"] <= 100 and second["memory"]["used_gb"] <= second["memory"]["total_gb"]
+        assert second["disks"] and all(0 <= d["percent"] <= 100 for d in second["disks"])
+        assert first["network"]["up_kbps"] == 0.0                 # rates need two samples
+        assert second["network"]["up_kbps"] >= 0 and second["network"]["down_kbps"] >= 0
+        assert second["uptime_s"] > 0 and second["processes"] > 0 and second["os"] and second["hostname"]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX mount table")
+    def test_only_disks_with_the_users_files_are_listed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        part = lambda mount, fstype, opts="rw": SimpleNamespace(  # noqa: E731
+            device="/dev/x", mountpoint=mount, fstype=fstype, opts=opts)
+        monkeypatch.setattr(psutil, "disk_partitions", lambda all=False: [
+            part("/", "ext4"), part("/home", "ext4"), part("/opt/tool", "squashfs", "ro,nodev"),
+            part("/mnt/cloud", "fuse.rclone"), part("/tmp", "tmpfs"), part("/boot/efi", "vfat"),
+            part("/media/usb", "vfat", "ro"), part("/home", "ext4")])
+        usage = SimpleNamespace(percent=40.0, used=40 * monitor.GB, total=100 * monitor.GB, free=60 * monitor.GB)
+        monkeypatch.setattr(psutil, "disk_usage", lambda mount: usage)
+        assert [d["mount"] for d in monitor._disks()] == ["/", "/home"]
+        monkeypatch.setattr(psutil, "disk_partitions", lambda all=False: [part("/", "overlay")])
+        assert [d["mount"] for d in monitor._disks()] == ["/"]          # a container's root still shows
+
+    def test_findings_in_plain_language(self) -> None:
+        stats = {"cpu": {"percent": 97.0}, "memory": {"percent": 93.0, "total_gb": 16.0},
+                 "disks": [{"mount": "C:\\", "percent": 96.0, "free_gb": 3.0}], "battery": None, "uptime_s": 3600}
+        areas = {f["area"]: f["level"] for f in monitor.health_findings(stats)}
+        assert areas == {"cpu": "warning", "memory": "warning", "disk": "warning"}
+        calm = {"cpu": {"percent": 5.0}, "memory": {"percent": 30.0, "total_gb": 16.0},
+                "disks": [{"mount": "C:\\", "percent": 40.0, "free_gb": 200.0}], "battery": None, "uptime_s": 3600}
+        assert monitor.health_findings(calm) == []

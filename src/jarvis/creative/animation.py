@@ -9,7 +9,7 @@ from __future__ import annotations
 import re
 import xml.etree.ElementTree as ET
 from collections.abc import Sequence
-from typing import Literal
+from typing import Any, Literal
 
 from ._util import FONT_STACK, MONO_STACK, esc, stable_seed, text_dir
 from .assets import Asset
@@ -397,7 +397,7 @@ def animate_logo_svg(svg: str, kind: LogoAnimation = "draw", *, duration_s: floa
 # Demo page
 # --------------------------------------------------------------------------------------------
 
-_DEMO_TEXT = {
+_DEMO_TEXT: dict[str, dict[str, Any]] = {
     "he": {
         "title": "ספריית אנימציות", "lead": "אנימציות CSS ו-SVG מוכנות להעתקה – בלי ספריות ובלי חיבור לאינטרנט.",
         "css": "אנימציות CSS", "loaders": "אנימציות טעינה", "logo": "לוגו מונפש", "replay": "הפעלה מחדש",

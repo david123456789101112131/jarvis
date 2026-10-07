@@ -213,6 +213,24 @@ def detect_test_command(root: Path) -> tuple[list[str], str] | None:
 
 
 _COUNT_HE = {"passed": "עברו", "failed": "נכשלו", "error": "שגיאות", "errors": "שגיאות", "skipped": "דולגו"}
+_COUNT_HE_ONE = {"passed": "עברה", "failed": "נכשלה", "error": "שגיאה", "errors": "שגיאה", "skipped": "דולגה"}
+_NODE_COUNTS = {"pass": "passed", "fail": "failed", "skipped": "skipped", "skip": "skipped"}
+
+
+def parse_test_counts(output: str) -> dict[str, int]:
+    """Passed/failed/skipped counts from pytest, jest or vitest ("5 passed") or Node's test runner ("# pass 5")."""
+    counts = {k: int(v) for v, k in re.findall(r"(\d+) (passed|failed|error|errors|skipped)", output)}
+    if not counts:
+        for k, v in re.findall(r"^\s*(?:#|ℹ)\s*(pass|fail|skipped|skip)\s+(\d+)\s*$", output, re.M):
+            counts[_NODE_COUNTS[k]] = int(v)
+    return {k: v for k, v in counts.items() if v or k == "passed"}
+
+
+def count_text(counts: dict[str, int], lang: str) -> str:
+    """"18 passed, 1 skipped" in the user's language."""
+    if lang != "he":
+        return ", ".join(f"{v} {k}" for k, v in counts.items())
+    return ", ".join(f"{v} {(_COUNT_HE_ONE if v == 1 else _COUNT_HE).get(k, k)}" for k, v in counts.items())
 
 
 class RunTestsTool(Tool):
@@ -262,11 +280,11 @@ class RunTestsTool(Tool):
         res = await run_in_context(argv, ctx, cwd=root, timeout=params.timeout_s)
         result = process_result(res, f"Tests ({label})", ctx.lang, f"הבדיקות ({label})")
         out = (res.stdout or "") + "\n" + (res.stderr or "")
-        counts = {k: int(v) for v, k in re.findall(r"(\d+) (passed|failed|error|errors|skipped)", out)}
+        counts = parse_test_counts(out)
         result.data = {**(result.data or {}), "counts": counts, "runner": label}
         if counts:
-            result.summary = ctx.t(f"הבדיקות ({label}): " + ", ".join(f"{v} {_COUNT_HE.get(k, k)}" for k, v in counts.items()),
-                                   f"Tests ({label}): " + ", ".join(f"{v} {k}" for k, v in counts.items()))
+            result.summary = ctx.t(f"הבדיקות ({label}): {count_text(counts, 'he')}",
+                                   f"Tests ({label}): {count_text(counts, 'en')}")
             if not result.ok:
                 result.error = result.summary + "\n" + res.summary(1500)
         return result

@@ -23,13 +23,13 @@ import contextlib
 import importlib.util
 import json
 import logging
-import platform
 import re
 import sys
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
+from jarvis.common.checks import CheckReport, format_checks, short_error
 from jarvis.common.text import normalize
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -63,12 +63,6 @@ PACKAGES: dict[str, tuple[str, bool]] = {  # module → (what it is for, require
 }
 
 _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
-_STATUS_ORDER = {"ok": 0, "skip": 1, "warn": 2, "fail": 3}
-
-
-def _short(exc: BaseException) -> str:
-    text = getattr(exc, "message", None) or str(exc) or type(exc).__name__
-    return text.splitlines()[0][:300]
 
 
 def _have(module: str) -> bool:
@@ -88,24 +82,6 @@ def similarity(expected: str, heard: str) -> float:
     return sum(1 for w in want if w in got) / len(want)
 
 
-class _Report:
-    def __init__(self, progress: Callable[[str], None] | None) -> None:
-        self.checks: list[dict[str, Any]] = []
-        self.progress = progress
-
-    def add(self, name: str, status: str, detail: str, *, seconds: float | None = None, **data: Any) -> dict[str, Any]:
-        check = {"name": name, "status": status, "detail": detail, "seconds": None if seconds is None else round(seconds, 3)}
-        if data:
-            check["data"] = data
-        self.checks.append(check)
-        return check
-
-    def note(self, message: str) -> None:
-        if self.progress is not None:
-            with contextlib.suppress(Exception):
-                self.progress(message)
-
-
 async def run_selftest(
     settings: VoiceSettings,
     paths: AppPaths,
@@ -121,34 +97,33 @@ async def run_selftest(
     """Run every check and return ``{"ok", "checks": [{name, status, detail, seconds, data?}], ...}``.
 
     status is "ok" | "warn" | "fail" | "skip"; ``ok`` is False when any check failed."""
-    report = _Report(progress)
-    started = time.monotonic()
+    report = CheckReport(progress)
     clips: dict[str, AudioClip] = {}
     tts_engine: TTSEngine | None = None
     stt_engine: STTEngine | None = None
     try:
         if not _check_packages(report):
-            return _finish(report, started)
-        await _guard(report, "devices", _check_devices(report, settings))
+            return report.finish()
+        await report.guard("devices", _check_devices(report, settings))
         if microphone:
-            await _guard(report, "microphone", _check_microphone(report, settings, mic_seconds))
+            await report.guard("microphone", _check_microphone(report, settings, mic_seconds))
         else:
             report.add("microphone", "skip", "skipped (--no-mic)")
-        tts_engine = await _guard(report, "tts", _check_tts(report, settings, clips))
+        tts_engine = await report.guard("tts", _check_tts(report, settings, clips))
         if play:
-            await _guard(report, "playback", _check_playback(report, settings, clips))
+            await report.guard("playback", _check_playback(report, settings, clips))
         else:
             report.add("playback", "skip", "skipped (--no-play)")
         if stt:
-            stt_engine = await _guard(report, "stt", _check_stt(report, settings, paths, secrets, clips))
+            stt_engine = await report.guard("stt", _check_stt(report, settings, paths, secrets, clips))
         else:
             report.add("stt", "skip", "skipped (--no-stt)")
         if wake:
-            await _guard(report, "wake", _check_wake(report, settings, paths, secrets, stt_engine, tts_engine))
+            await report.guard("wake", _check_wake(report, settings, paths, secrets, stt_engine, tts_engine))
         else:
             report.add("wake", "skip", "skipped (--no-wake)")
         if tts_engine is not None:
-            await _guard(report, "phrases", _check_phrases(report, paths, tts_engine))
+            await report.guard("phrases", _check_phrases(report, paths, tts_engine))
     finally:
         if stt_engine is not None:
             with contextlib.suppress(Exception):
@@ -156,39 +131,18 @@ async def run_selftest(
         if tts_engine is not None:
             with contextlib.suppress(Exception):
                 await tts_engine.close()
-    return _finish(report, started)
-
-
-def _finish(report: _Report, started: float) -> dict[str, Any]:
-    worst = max((_STATUS_ORDER.get(c["status"], 0) for c in report.checks), default=0)
-    return {
-        "ok": worst < _STATUS_ORDER["fail"],
-        "status": next(k for k, v in _STATUS_ORDER.items() if v == worst),
-        "platform": f"{platform.system()} {platform.release()} ({platform.machine()})",
-        "python": platform.python_version(),
-        "seconds": round(time.monotonic() - started, 2),
-        "checks": report.checks,
-    }
-
-
-async def _guard(report: _Report, name: str, job: Awaitable[Any]) -> Any:
-    """Run one check; an unexpected exception becomes a failed check instead of a crash."""
-    try:
-        return await job
-    except Exception as exc:
-        log.debug("Self-test check %s crashed", name, exc_info=True)
-        report.add(name, "fail", f"unexpected error: {_short(exc)}")
-        return None
+    return report.finish()
 
 
 # ---------------------------------------------------------------------------------------------
 # Checks
 # ---------------------------------------------------------------------------------------------
-def _check_packages(report: _Report) -> bool:
+def _check_packages(report: CheckReport) -> bool:
     installed = {m: _have(m) for m in PACKAGES}
     missing_required = [m for m, ok in installed.items() if not ok and PACKAGES[m][1]]
     missing_optional = [m for m, ok in installed.items() if not ok and not PACKAGES[m][1]]
-    data = {"installed": [m for m, ok in installed.items() if ok], "missing": missing_required + missing_optional}
+    data: dict[str, Any] = {"installed": [m for m, ok in installed.items() if ok],
+                            "missing": missing_required + missing_optional}
     if not installed["numpy"]:
         report.add("packages", "fail", 'numpy is missing — install the voice extra: pip install "jarvis-assistant[voice]"', **data)
         return False
@@ -201,7 +155,7 @@ def _check_packages(report: _Report) -> bool:
     return True
 
 
-async def _check_devices(report: _Report, settings: VoiceSettings) -> None:
+async def _check_devices(report: CheckReport, settings: VoiceSettings) -> None:
     from jarvis.voice.audio import AudioError, list_devices, resolve_device
 
     report.note("Listing audio devices…")
@@ -230,7 +184,7 @@ async def _check_devices(report: _Report, settings: VoiceSettings) -> None:
         report.add("devices", "ok", detail, **data)
 
 
-async def _check_microphone(report: _Report, settings: VoiceSettings, seconds: float) -> None:
+async def _check_microphone(report: CheckReport, settings: VoiceSettings, seconds: float) -> None:
     from jarvis.voice.audio import FRAME_SECONDS, AudioError, MicrophoneSource, np_module, rms_level
 
     np = np_module()
@@ -242,7 +196,7 @@ async def _check_microphone(report: _Report, settings: VoiceSettings, seconds: f
     except AudioError as exc:
         report.add("microphone", "fail", exc.message, seconds=time.monotonic() - started)
         return
-    frames = []
+    frames: list[Any] = []
     try:
         wanted = max(1, round(seconds / FRAME_SECONDS))
         while len(frames) < wanted:
@@ -282,7 +236,7 @@ async def _check_microphone(report: _Report, settings: VoiceSettings, seconds: f
     )
 
 
-async def _check_tts(report: _Report, settings: VoiceSettings, clips: dict[str, AudioClip]) -> TTSEngine | None:
+async def _check_tts(report: CheckReport, settings: VoiceSettings, clips: dict[str, AudioClip]) -> TTSEngine | None:
     from jarvis.voice.tts import FallbackTTS, create_tts_engine
 
     tts, reason = create_tts_engine(settings)
@@ -296,7 +250,7 @@ async def _check_tts(report: _Report, settings: VoiceSettings, clips: dict[str, 
         try:
             clip = await tts.synthesize(text, lang)
         except Exception as exc:
-            errors.append(f"{lang}: {_short(exc)}")
+            errors.append(f"{lang}: {short_error(exc)}")
             continue
         clips[lang] = clip
         results[lang] = {"engine": clip.engine, "voice": clip.voice, "audio_s": round(clip.duration_s, 2),
@@ -315,7 +269,7 @@ async def _check_tts(report: _Report, settings: VoiceSettings, clips: dict[str, 
     return tts
 
 
-async def _check_playback(report: _Report, settings: VoiceSettings, clips: dict[str, AudioClip]) -> None:
+async def _check_playback(report: CheckReport, settings: VoiceSettings, clips: dict[str, AudioClip]) -> None:
     from jarvis.voice.audio import AudioError, NullSink, create_sink
 
     if not clips:
@@ -339,7 +293,7 @@ async def _check_playback(report: _Report, settings: VoiceSettings, clips: dict[
 
 
 async def _check_stt(
-    report: _Report, settings: VoiceSettings, paths: AppPaths, secrets: SecretStore | None, clips: dict[str, AudioClip]
+    report: CheckReport, settings: VoiceSettings, paths: AppPaths, secrets: SecretStore | None, clips: dict[str, AudioClip]
 ) -> STTEngine | None:
     from jarvis.voice.audio import SAMPLE_RATE, np_module
     from jarvis.voice.stt import create_stt_engine
@@ -351,7 +305,7 @@ async def _check_stt(
     try:
         await asyncio.to_thread(engine.load)
     except Exception as exc:
-        report.add("stt", "fail", f"{reason}: {_short(exc)}", seconds=time.monotonic() - started)
+        report.add("stt", "fail", f"{reason}: {short_error(exc)}", seconds=time.monotonic() - started)
         return engine
     load_s = time.monotonic() - started
     if not clips:
@@ -366,7 +320,7 @@ async def _check_stt(
         try:
             heard = await engine.transcribe(audio, settings.stt_language)
         except Exception as exc:
-            results[lang] = {"error": _short(exc)}
+            results[lang] = {"error": short_error(exc)}
             worst = "fail"
             continue
         took = time.monotonic() - t0
@@ -385,7 +339,7 @@ async def _check_stt(
 
 
 async def _check_wake(
-    report: _Report,
+    report: CheckReport,
     settings: VoiceSettings,
     paths: AppPaths,
     secrets: SecretStore | None,
@@ -445,7 +399,7 @@ async def _check_wake(
         engine.close()
 
 
-async def _check_phrases(report: _Report, paths: AppPaths, tts: TTSEngine) -> None:
+async def _check_phrases(report: CheckReport, paths: AppPaths, tts: TTSEngine) -> None:
     from jarvis.voice.tts import PhraseCache
 
     cache = PhraseCache(tts, paths.tts_cache)
@@ -455,7 +409,7 @@ async def _check_phrases(report: _Report, paths: AppPaths, tts: TTSEngine) -> No
         try:
             clip = await cache.get("listening", lang)
         except Exception as exc:
-            failures.append(f"{lang}: {_short(exc)}")
+            failures.append(f"{lang}: {short_error(exc)}")
             continue
         if clip is None:
             continue
@@ -472,17 +426,8 @@ async def _check_phrases(report: _Report, paths: AppPaths, tts: TTSEngine) -> No
 # ---------------------------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------------------------
-_MARKS = {"ok": "[ OK ]", "warn": "[WARN]", "fail": "[FAIL]", "skip": "[SKIP]"}
-
-
 def format_report(report: dict[str, Any]) -> str:
-    lines = [f"JARVIS voice self-test — {report['platform']}, Python {report['python']}", ""]
-    for check in report["checks"]:
-        took = f" ({check['seconds']:.1f} s)" if check.get("seconds") else ""
-        lines.append(f"{_MARKS.get(check['status'], check['status'])} {check['name']:<10} {check['detail']}{took}")
-    verdict = {"ok": "All good.", "warn": "Usable, with warnings.", "fail": "Problems found.", "skip": "Nothing checked."}
-    lines += ["", f"{verdict.get(report['status'], report['status'])} ({report['seconds']:.1f} s)"]
-    return "\n".join(lines)
+    return format_checks("JARVIS voice self-test", report)
 
 
 def main(argv: list[str] | None = None) -> int:

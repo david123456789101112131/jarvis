@@ -41,7 +41,7 @@ class Sentence:
 
 def split_sentences(text: str) -> list[str]:
     text = re.sub(r"[ \t]+", " ", text or "").strip()
-    parts = []
+    parts: list[str] = []
     for block in re.split(r"\n+", text):
         block = block.strip(" -•*#\t")
         if not block:
@@ -72,8 +72,8 @@ def summarize(texts: list[str] | str, query: str = "", *, max_sentences: int = 6
     docs = [texts] if isinstance(texts, str) else list(texts)
     sentences: list[Sentence] = []
     for d, doc in enumerate(docs):
-        for i, s in enumerate(split_sentences(doc)):
-            sentences.append(Sentence(text=s, index=i, source=d))
+        for i, text in enumerate(split_sentences(doc)):
+            sentences.append(Sentence(text=text, index=i, source=d))
     if not sentences:
         return []
     freq = Counter(term for s in sentences for term in set(terms(s.text)))

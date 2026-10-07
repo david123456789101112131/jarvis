@@ -523,7 +523,7 @@ class TaskOrchestrator:
         except Exception:
             log.exception("Memory recall failed")
             return ""
-        return "" if recall.is_empty else recall.format(2500)
+        return "" if recall.is_empty() else recall.format(2500)
 
     # -- scheduling ------------------------------------------------------------------------------
     async def _execute(self, run: _Run) -> None:
@@ -613,7 +613,7 @@ class TaskOrchestrator:
         await self._save(task)
 
     async def _wait_any(self, run: _Run) -> None:
-        waker = asyncio.ensure_future(run.wake.wait())
+        waker: asyncio.Future[Any] = asyncio.ensure_future(run.wake.wait())
         try:
             await asyncio.wait([*run.running.values(), waker], timeout=self._next_due(run),
                                return_when=asyncio.FIRST_COMPLETED)
@@ -705,8 +705,8 @@ class TaskOrchestrator:
                                  agent_id=s.agent.value, subtask_id=s.id, level="warning")
                 await self._emit_subtask(task, s)
                 return
-            code = "kill_switch" if self.manager.kill_switch.is_engaged(s.agent.value) else "agent_stopped"
-            await self._failed(run, s, result, code=code, error=result.summary or code)
+            stop = "kill_switch" if self.manager.kill_switch.is_engaged(s.agent.value) else "agent_stopped"
+            await self._failed(run, s, result, code=stop, error=result.summary or stop)
             return
         code = failure_code(result.status, result.data.get("code"), result.denied)
         error = (result.errors[-1] if result.errors else result.summary) or t(lang, "שגיאה לא ידועה", "Unknown error")
@@ -1137,9 +1137,9 @@ class TaskOrchestrator:
         conf_id = str(msg.data.get("id") or "")
         for run in list(self._runs.values()):
             sid = run.confirmations.pop(conf_id, None)
-            if sid is None or run.task.plan is None:
-                continue
             task = run.task
+            if sid is None or task.plan is None:
+                continue
             lang = task.language
             s = task.plan.get(sid)
             if s.status == TaskStatus.WAITING and sid not in run.confirmations.values():

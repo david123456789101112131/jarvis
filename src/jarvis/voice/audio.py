@@ -982,7 +982,7 @@ class SoundDeviceSink(AudioSink):
 
     async def _play(self, clip: AudioClip) -> bool:
         sd = _sounddevice()
-        device = self.device or await asyncio.to_thread(self.resolve)
+        device = self.device if self.device is not None else await asyncio.to_thread(self.resolve)
         loop = asyncio.get_running_loop()
         finished = asyncio.Event()
         try:

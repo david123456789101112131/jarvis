@@ -26,6 +26,8 @@ from jarvis.agents import (
 )
 from jarvis.agents.base import parse_report
 from jarvis.agents.creative import DESIGN_ROUTES, parse_email, route
+from jarvis.agents.planner import documents
+from jarvis.agents.planner.planning import rule_plan
 from jarvis.common.cancel import CancelToken
 from jarvis.common.enums import AgentId, AgentStatus, Priority, ResultStatus
 from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable, TaskCancelled
@@ -102,6 +104,28 @@ class TestManager:
         assert progress and progress[0].data["subtask_id"] == task.id
         lines = [e.message for e in env.kit.activity.recent(task_id=task.task_id)]
         assert any(line.startswith("סוכן מערכת סיים") for line in lines), lines
+
+    async def test_an_agent_answers_with_the_whole_result_record(self, env: Env) -> None:
+        result = await env.run("system", "צור תיקייה בשם דוחות", skill="create_folder", params={"name": "דוחות"})
+        folder = env.kit.paths.workspace / "דוחות"
+        assert folder.is_dir()
+        assert (result.status, result.progress, result.errors) == (S.SUCCESS, 1.0, [])
+        assert result.result == {"path": str(folder)} and result.files_created == [str(folder)]
+        assert result.actions_taken == [f"נוצרה התיקייה: {folder}"] and result.next_step is None
+        failed = await env.run("system", "crash", skill="crash")
+        assert failed.status == S.FAILED and failed.errors == ["RuntimeError: boom"] and not failed.files_created
+
+    async def test_statuses_show_thinking_working_completed_and_error(self, env: Env) -> None:
+        seen: list[tuple[str, str]] = []
+        env.kit.bus.subscribe("agent.status", lambda m: seen.append((m.data["id"], m.data["status"])))
+        env.use_ai(default=reply("Three names: Bean There, Daily Grind, Brew Lab.\n\nSTATUS: success"))
+        assert (await env.run("creative", "תן לי שלושה שמות לבית קפה")).used_llm
+        assert not (await env.run("system", "crash", skill="crash")).ok
+        await until(lambda: env.manager.status("system") == AgentStatus.IDLE)
+        creative = [s for a, s in seen if a == "creative"]
+        system = [s for a, s in seen if a == "system"]
+        assert creative.index("thinking") < creative.index("completed")
+        assert system.index("working") < system.index("error") < len(system) - 1 and system[-1] == "idle"
 
     async def test_status_events_follow_the_work(self, env: Env) -> None:
         seen: list[tuple[str, str]] = []
@@ -336,6 +360,35 @@ class TestPlanner:
         plan = result.result["plan"]
         assert text.startswith("# תוכנית לחתונה") and len(plan["phases"]) >= 3
         assert all(p["title"] in text for p in plan["phases"]) and plan["finish"] in result.summary
+
+    async def test_a_plan_fits_the_time_the_request_gives(self, env: Env) -> None:
+        result = await env.run("planner", "ג'ארוויס, תכין לי תוכנית לימודים לשבוע ותשמור אותה כקובץ",
+                               skill="make_plan", params={"start": "2026-11-01"})
+        plan = result.result["plan"]
+        assert plan["title"] == "תוכנית לימודים לשבוע" and plan["finish"] == "2026-11-07"
+        assert sum(p["days"] for p in plan["phases"]) == 7 and "תאריך יעד" not in plan["missing"]
+        assert Path(result.result["path"]).name.endswith("-תוכנית-לימודים-לשבוע.md")
+
+    @pytest.mark.parametrize(("goal", "days"), [
+        ("תוכנית לימודים לשבועיים", 14), ("תכנן לי טיול ל-3 ימים בצפון", 3), ("תוכנית ליום אחד בירושלים", 1),
+        ("תכין לי תוכנית למשך 10 ימים", 10), ("תוך חודש לסיים את הפרויקט", 30), ("תוכנית לשנה הבאה", 365),
+        ("a study plan for a week", 7), ("plan a 10-day trip to Italy", 10), ("build a website within 2 months", 60),
+        ("תוכנית אימונים 3 פעמים לשבוע", None), ("תוכנית ליום הולדת של הבת שלי", None),
+        ("תכנן לי את החודשים הקרובים", None), ("a workout plan for weeks", None), ("train 3 times a week", None),
+    ])
+    def test_the_time_a_request_gives(self, goal: str, days: int | None) -> None:
+        assert documents.horizon_days(goal) == days
+        plan = documents.build_plan(goal, "en")
+        if days is not None:
+            assert sum(p["days"] for p in plan["phases"]) == days and all(p["days"] >= 1 for p in plan["phases"])
+
+    def test_titles_say_what_was_asked_for(self) -> None:
+        assert documents.request_topic("ג'ארוויס, תעצב לי לוגו לבית קפה ותשמור אותו בתיקייה") == "לוגו לבית קפה"
+        assert documents.request_topic("Jarvis, please write me an email to my landlord and save it to a file") == \
+            "email to my landlord"
+        assert rule_plan("plan", {}, "תכין לי תוכנית לחתונה ותשמור אותה כקובץ", "he").title == "תוכנית לחתונה"
+        assert rule_plan("design", {}, "תעצב לי לוגו לבית קפה", "he").title == "עיצוב: לוגו לבית קפה"
+        assert rule_plan("write_code", {}, "write me code that sorts photos", "en").title == "Code that sorts photos"
 
     async def test_files_and_results_are_recorded_in_memory(self, env: Env) -> None:
         result = await env.run("planner", "תכין לי תוכנית לטיול", task_id="task_trip")

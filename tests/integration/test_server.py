@@ -344,6 +344,8 @@ class TestRest:
         await events.wait("settings", lambda d: d["ui"]["theme_color"] == "green")
         saved = live.app.config_file.read_text(encoding="utf-8")
         assert 'theme_color = "green"' in saved
+        lines = [a["message"] for a in await live.get("/api/activity")]
+        assert "ההגדרות עודכנו: כללי, ממשק" in lines                      # in the user's language
         r = await live.http.patch("/api/settings", json={"ui": {"theme_color": "pink"}})
         assert r.status_code == 400 and live.app.settings.ui.theme_color == "green"
         r = await live.http.patch("/api/settings", content=b"[1, 2]", headers={"Content-Type": "application/json"})

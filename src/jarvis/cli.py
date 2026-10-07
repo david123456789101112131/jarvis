@@ -8,6 +8,8 @@
     jarvis keys                which API keys are configured (never their values)
     jarvis keys set NAME       store an API key in Windows Credential Manager (typed hidden)
     jarvis keys delete NAME
+    jarvis check               is JARVIS ready on this PC? (--full: real commands in a temporary JARVIS;
+                               --voice: the voice self-test too)
     jarvis voice-test          check the microphone, speakers, wake word and speech recognition
     jarvis paths               where JARVIS keeps its data, logs, workspace and projects
 """
@@ -56,6 +58,10 @@ def build_parser() -> argparse.ArgumentParser:
     keys = sub.add_parser("keys", help="API keys (Windows Credential Manager)")
     keys.add_argument("action", nargs="?", choices=["list", "set", "delete"], default="list")
     keys.add_argument("name", nargs="?")
+    check = sub.add_parser("check", help="check that JARVIS is ready on this PC")
+    check.add_argument("--full", action="store_true", help="also run real commands in a temporary JARVIS")
+    check.add_argument("--voice", action="store_true", help="also run the voice self-test (plays two sentences)")
+    check.add_argument("--json", action="store_true", help="print the report as JSON")
     sub.add_parser("voice-test", help="check the voice stack on this PC")
     sub.add_parser("paths", help="show JARVIS's folders")
     return p
@@ -85,6 +91,10 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     if command == "keys":
         return _keys(paths, args.action, args.name)
+    if command == "check":
+        from jarvis.selfcheck import main as check
+
+        return check(settings, paths, full=args.full, voice=args.voice, as_json=args.json)
     if command in ("open", "say", "status"):
         running = _running(paths)
         if running is None:

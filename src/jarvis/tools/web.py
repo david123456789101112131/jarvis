@@ -164,9 +164,9 @@ def html_to_text(html: str, base_url: str = "") -> tuple[str, str, list[dict[str
     for line in lines:
         if not deduped or deduped[-1] != line:
             deduped.append(line)
-    links = []
+    links: list[dict[str, str]] = []
     for a in root.find_all("a", href=True)[:80]:
-        href = a["href"]
+        href = str(a["href"])
         if href.startswith("#") or href.lower().startswith("javascript:"):
             continue
         links.append({"text": a.get_text(" ", strip=True)[:120], "url": str(httpx.URL(base_url).join(href))
@@ -334,14 +334,15 @@ class FetchUrlTool(Tool):
             if refused is None:
                 raise
             return refused
+        links: list[dict[str, str]] = []
         if "pdf" in ctype or final_url.lower().endswith(".pdf"):
-            text, title, links = await asyncio.to_thread(_pdf_text, bytes(body)), Path(urlparse(final_url).path).name, []
+            text, title = await asyncio.to_thread(_pdf_text, bytes(body)), Path(urlparse(final_url).path).name
         elif "html" in ctype or body[:200].lstrip().lower().startswith((b"<!doctype", b"<html")):
             encoding = r.charset_encoding or "utf-8"
             title, text, links = await asyncio.to_thread(html_to_text, bytes(body).decode(encoding, errors="replace"),
                                                          final_url)
         elif "json" in ctype or ctype.startswith("text/") or not ctype:
-            text, title, links = bytes(body).decode(r.charset_encoding or "utf-8", errors="replace"), "", []
+            text, title = bytes(body).decode(r.charset_encoding or "utf-8", errors="replace"), ""
         else:
             return ToolResult.fail(ctx.t(f"{url} אינו דף שאפשר לקרוא ({ctype or 'סוג לא ידוע'}); אפשר להוריד אותו עם download_file.",
                                          f"{url} is not a readable page ({ctype or 'unknown type'}); use download_file."))

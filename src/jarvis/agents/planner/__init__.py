@@ -522,7 +522,8 @@ class PlannerAgent(BaseAgent):
             doc = documents.build_plan(goal, lang, start=begin)
         await run.progress(0.7)
         text = documents.plan_markdown(doc, lang)
-        saved = await self._save(run, f"workspace/plans/{datetime.now():%Y%m%d}-{slugify(goal, 40, 'plan')}.md",
+        name = slugify(str(doc.get("title") or goal), 40, "plan")
+        saved = await self._save(run, f"workspace/plans/{datetime.now():%Y%m%d}-{name}.md",
                                  text) if save else None
         phases = doc["phases"]
         first = doc["first_actions"][0] if doc.get("first_actions") else ""

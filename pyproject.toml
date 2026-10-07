@@ -79,7 +79,7 @@ markers = [
   "voice_models: needs downloaded wake-word/STT models (skipped when unavailable)",
   "network: needs internet access (skipped when offline)",
   "windows: runs only on Windows",
-  "e2e: drives the real UI in a browser",
+  "e2e: starts a real JARVIS process and drives it like the user does (API, WebSocket, the UI in a browser)",
 ]
 filterwarnings = [
   "ignore::DeprecationWarning:websockets.*",
@@ -104,6 +104,8 @@ ignore = ["E501", "RUF001", "RUF002", "RUF003", "RUF012", "B008", "ASYNC109", "A
 
 [tool.mypy]
 python_version = "3.11"
+# JARVIS runs on Windows: check the Windows code paths (winreg, process flags) wherever mypy runs.
+platform = "win32"
 packages = ["jarvis"]
 mypy_path = "src"
 ignore_missing_imports = true

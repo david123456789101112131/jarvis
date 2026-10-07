@@ -99,7 +99,8 @@ class Mailbox:
 
     async def remove(self, predicate: Callable[[Message], bool]) -> list[Message]:
         async with self._cond:
-            kept, removed = [], []
+            kept: list[tuple[int, int, Message]] = []
+            removed: list[tuple[int, int, Message]] = []
             for item in self._heap:
                 (removed if predicate(item[2]) else kept).append(item)
             heapq.heapify(kept)

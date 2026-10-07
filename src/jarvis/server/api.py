@@ -20,6 +20,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field, ValidationError
 from starlette.types import ASGIApp, Receive, Scope, Send
+from starlette.types import Message as ASGIMessage
 
 from jarvis import __version__
 from jarvis.common.enums import AgentId, Capability, Mode
@@ -193,7 +194,7 @@ def _replay(body: bytes, receive: Receive) -> Receive:
     """Hand a body that was already read to the app, then pass on what comes next (a disconnect)."""
     sent = False
 
-    async def wrapped() -> dict:
+    async def wrapped() -> ASGIMessage:
         nonlocal sent
         if not sent:
             sent = True
@@ -548,6 +549,9 @@ def create_api(app: JarvisApp) -> FastAPI:
             elif kind == "confirm" and isinstance(msg.get("id"), str):
                 app.broker.respond(msg["id"], bool(msg.get("approved")), by="ui", remember=bool(msg.get("remember")))
 
+        if app.hub is None:                                       # still starting: the page reconnects
+            await socket.close(code=1013)
+            return
         await app.hub.serve(socket, snapshot=app.state_snapshot, version=__version__, on_message=on_message)
 
     # ---------------------------------------------------------------------------- the page

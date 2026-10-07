@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import random
 from collections.abc import Sequence
+from typing import Any
 
 from ._util import FONT_STACK, esc, make_rng, resolve_lang, text_dir
 from .assets import Asset
@@ -26,7 +27,7 @@ _LABELS = {
     "login": ("התחברות", "Sign in"), "product": ("עמוד מוצר", "Product page"),
     "settings": ("הגדרות", "Settings"), "mobile": ("אפליקציה לנייד", "Mobile app"),
 }
-_UI = {
+_UI: dict[str, dict[str, Any]] = {
     "he": {
         "nav": ("בית", "שירותים", "אודות", "צור קשר"), "login": "התחברות", "features": "למה דווקא אנחנו",
         "testimonials": "מה הלקוחות אומרים", "ready": "מוכנים להתחיל?", "rights": "כל הזכויות שמורות",
@@ -517,7 +518,7 @@ def wireframe_svg(screen: str, lang: str = "he") -> str:
         boxes += [(14, 340, 172, 48, 0, "#d4d4d8")]
     else:
         w, h = 400, 260
-        layouts: dict[str, list[tuple[float, float, float, float, float, str]]] = {
+        layouts: dict[str, list[tuple[int, int, int, int, int, str]]] = {
             "landing": [(0, 0, 400, 26, 0, "#d4d4d8"), (20, 46, 190, 18, 4, "#a1a1aa"), (20, 70, 160, 10, 3, "#d4d4d8"),
                         (20, 86, 140, 10, 3, "#d4d4d8"), (20, 106, 70, 18, 9, "#a1a1aa"), (250, 40, 130, 100, 14, "#e4e4e7")]
             + [(20 + i * 124, 160, 112, 70, 10, "#e4e4e7") for i in range(3)],
@@ -564,7 +565,7 @@ def generate_mockup(brief: str, *, screens: Sequence[str] | None = None, palette
     swatches = "".join(f'<span style="background:{palette.hex(role)}" title="{role}"></span>'
                        for role in ("primary", "secondary", "accent", "background", "text"))
     cards = "".join(
-        f'<a class="card" href="{page.filename}"><div class="thumb">{frame.content}</div>'
+        f'<a class="card" href="{page.filename}"><div class="thumb">{frame.read_text()}</div>'
         f'<div class="meta"><b>{esc(page.description)}</b><span class="badge">{esc(ctx.ui["open"])}</span></div></a>'
         for page, frame in zip(pages, frames, strict=True)
     )

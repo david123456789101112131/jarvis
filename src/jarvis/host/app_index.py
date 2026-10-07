@@ -325,13 +325,13 @@ def catalog_entry_for(app: InstalledApp) -> AppEntry | None:
             if evidence & _entry_process_keys(entry):
                 return entry
     for form in name_forms(app.name):
-        entry = _CATALOG_KEYS.get(form.replace(" ", ""))
-        if entry is None:
+        named = _CATALOG_KEYS.get(form.replace(" ", ""))
+        if named is None:
             continue
         # An exe that contradicts the name ("Calculator" → foocalc.exe) is a different app.
-        if evidence and entry.process_names and not evidence & _entry_process_keys(entry):
+        if evidence and named.process_names and not evidence & _entry_process_keys(named):
             continue
-        return entry
+        return named
     if app.kind == "uri":
         target = app.target.lower()
         for entry in APPS:
