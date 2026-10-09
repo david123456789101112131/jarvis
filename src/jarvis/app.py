@@ -525,7 +525,7 @@ class JarvisApp:
         """A toast in the UI; a Windows notification too when the window is not on screen."""
         await self.bus.publish(event("notification", {"id": f"n{time.monotonic_ns()}", "level": level,
                                                       "title": title, "message": message}, sender="jarvis"))
-        if toast if toast is not None else not self.ui_visible:
+        if self.settings.ui.desktop_notifications and (toast if toast is not None else not self.ui_visible):
             try:
                 await self.host.notify(title, message[:240])
             except Exception as exc:
@@ -544,7 +544,7 @@ class JarvisApp:
         await self.notify(level, task.title, summary)
 
     async def _on_confirm_request(self, req: ConfirmationRequest) -> None:
-        if not self.ui_visible:
+        if self.settings.ui.desktop_notifications and not self.ui_visible:
             title = t(self.lang, "JARVIS מבקש אישור", "JARVIS needs your approval")
             with contextlib.suppress(Exception):
                 await self.host.notify(title, req.summary[:240])
@@ -586,7 +586,9 @@ class JarvisApp:
         return self.paths.data / RUNTIME_FILE
 
     def _write_runtime_file(self) -> None:
-        info = {"pid": os.getpid(), "port": self.port, "token": self.auth.token, "version": __version__,
+        # ppid: on Windows a venv's python.exe is a launcher that runs the real interpreter as its child,
+        # so whoever started JARVIS through it knows the launcher's pid, not ours.
+        info = {"pid": os.getpid(), "ppid": os.getppid(), "port": self.port, "token": self.auth.token, "version": __version__,
                 "started_at": iso()}
         path = self.runtime_file
         tmp = path.with_suffix(".tmp")

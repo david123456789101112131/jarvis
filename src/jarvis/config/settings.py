@@ -231,6 +231,7 @@ class UISettings(_Section):
     window_width: int = 1480
     window_height: int = 920
     debug_devtools: bool = False
+    desktop_notifications: bool = True     # Windows notifications while the JARVIS window is not on screen
 
 
 class WebSettings(_Section):

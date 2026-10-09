@@ -1923,6 +1923,7 @@ class TestPosixHost:
         apps = await host.running_apps()
         assert [(a["pid"], a["title"], a["windows"]) for a in apps] == [(me, "Terminal — bash", 2)]
 
+    @not_windows                                     # psutil has no uids on Windows
     async def test_running_apps_without_wmctrl_lists_processes(self, px: tuple[PosixHost, FakeRunner]) -> None:
         host, runner = px
         rows = await host.running_apps()
@@ -1995,6 +1996,7 @@ class TestPosixHost:
         assert host._terminate(procs, True) == ["gedit", "gedit-helper"]
         assert all(p.killed for p in procs)
 
+    @not_windows
     def test_find_processes_never_returns_jarvis_itself(self) -> None:
         found = PosixHost._find_processes([psutil.Process().name()])
         assert os.getpid() not in {p.pid for p in found}

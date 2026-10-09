@@ -436,3 +436,21 @@ class TestSecrets:
         assert SECRET not in logs
         assert (await live.http.delete("/api/secrets/ANTHROPIC_API_KEY")).json() == {"configured": False}
         await events.close()
+
+
+# =========================================================================== desktop notifications
+class TestDesktopNotifications:
+    async def test_notifications_follow_the_window_and_the_setting(self, live: Live) -> None:
+        from jarvis.permissions.confirm import ConfirmationRequest
+
+        req = ConfirmationRequest(agent_id="system", tool="delete_path", summary="Delete the folder x")
+        assert live.app.settings.ui.desktop_notifications is True        # on by default
+        live.app.ui_visible = False
+        await live.app.notify("success", "Done", "The task finished")
+        await live.app._on_confirm_request(req)
+        assert [c[0] for c in live.host.calls if c[0] == "notify"] == ["notify", "notify"]
+        live.host.calls.clear()
+        live.app.settings.ui.desktop_notifications = False                 # what the tests' and check's JARVIS use
+        await live.app.notify("success", "Done", "The task finished")
+        await live.app._on_confirm_request(req)
+        assert not [c for c in live.host.calls if c[0] == "notify"]

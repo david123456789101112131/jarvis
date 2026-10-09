@@ -109,6 +109,35 @@ def is_within(path: Path, root: Path) -> bool:
     return p.startswith(r if r.endswith(sep) else r + sep)
 
 
+def _windows_profile_secrets(appdata: str, local: str) -> list[str]:
+    """Browser profiles, credential stores and chat apps inside one Windows user profile."""
+    return [
+        os.path.join(appdata, "Microsoft", "Credentials"),
+        os.path.join(appdata, "Microsoft", "Protect"),
+        os.path.join(appdata, "Microsoft", "Crypto"),
+        os.path.join(appdata, "Microsoft", "SystemCertificates"),
+        os.path.join(appdata, "Microsoft", "Windows", "PowerShell", "PSReadLine"),   # typed commands, passwords
+        os.path.join(local, "Microsoft", "Credentials"),
+        os.path.join(local, "Microsoft", "Vault"),
+        os.path.join(local, "Google", "Chrome", "User Data"),
+        os.path.join(local, "Microsoft", "Edge", "User Data"),
+        os.path.join(local, "BraveSoftware"),
+        os.path.join(local, "Vivaldi", "User Data"),
+        os.path.join(appdata, "Mozilla", "Firefox", "Profiles"),
+        os.path.join(appdata, "Thunderbird", "Profiles"),
+        os.path.join(appdata, "Opera Software"),
+        os.path.join(appdata, "FileZilla"),
+        os.path.join(appdata, "Telegram Desktop", "tdata"),
+        os.path.join(appdata, "discord"),
+        os.path.join(appdata, "Slack"),
+        os.path.join(appdata, "Signal"),
+        os.path.join(appdata, "Bitwarden"),
+        os.path.join(appdata, "KeePass"),
+        os.path.join(local, "1Password"),
+        os.path.join(appdata, "gcloud"),
+    ]
+
+
 def default_denied_roots(home: Path | None = None) -> list[Path]:
     home = home or Path.home()
     out: list[str] = []
@@ -119,32 +148,13 @@ def default_denied_roots(home: Path | None = None) -> list[Path]:
                 out.append(env[var])
         if env.get("ProgramData"):
             out.append(os.path.join(env["ProgramData"], "Microsoft"))
-        appdata = env.get("APPDATA", str(home / "AppData" / "Roaming"))
-        local = env.get("LOCALAPPDATA", str(home / "AppData" / "Local"))
+        # The profile under `home` and wherever APPDATA / LOCALAPPDATA point (redirected profiles differ).
+        roots = {(str(home / "AppData" / "Roaming"), str(home / "AppData" / "Local")),
+                 (env.get("APPDATA", str(home / "AppData" / "Roaming")),
+                  env.get("LOCALAPPDATA", str(home / "AppData" / "Local")))}
+        for appdata, local in sorted(roots):
+            out += _windows_profile_secrets(appdata, local)
         out += [
-            os.path.join(appdata, "Microsoft", "Credentials"),
-            os.path.join(appdata, "Microsoft", "Protect"),
-            os.path.join(appdata, "Microsoft", "Crypto"),
-            os.path.join(appdata, "Microsoft", "SystemCertificates"),
-            os.path.join(appdata, "Microsoft", "Windows", "PowerShell", "PSReadLine"),   # typed commands, passwords
-            os.path.join(local, "Microsoft", "Credentials"),
-            os.path.join(local, "Microsoft", "Vault"),
-            os.path.join(local, "Google", "Chrome", "User Data"),
-            os.path.join(local, "Microsoft", "Edge", "User Data"),
-            os.path.join(local, "BraveSoftware"),
-            os.path.join(local, "Vivaldi", "User Data"),
-            os.path.join(appdata, "Mozilla", "Firefox", "Profiles"),
-            os.path.join(appdata, "Thunderbird", "Profiles"),
-            os.path.join(appdata, "Opera Software"),
-            os.path.join(appdata, "FileZilla"),
-            os.path.join(appdata, "Telegram Desktop", "tdata"),
-            os.path.join(appdata, "discord"),
-            os.path.join(appdata, "Slack"),
-            os.path.join(appdata, "Signal"),
-            os.path.join(appdata, "Bitwarden"),
-            os.path.join(appdata, "KeePass"),
-            os.path.join(local, "1Password"),
-            os.path.join(appdata, "gcloud"),
             "C:\\System Volume Information",
             "C:\\$Recycle.Bin",
         ]

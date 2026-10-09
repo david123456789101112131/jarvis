@@ -298,7 +298,7 @@ class AgentManager:
         agent = st.agent
         task = AgentTask.from_message(msg)       # the agent works from the (sanitized) bus message
         lang = task.language
-        a.state, a.started, a.started_at = "running", time.monotonic(), utcnow()
+        a.state, a.started, a.started_at = "running", time.perf_counter(), utcnow()   # monotonic() ticks every 16 ms on Windows
         a.phase = AgentStatus.THINKING if not task.skill and agent.ai_available else AgentStatus.WORKING
         st.running[a.id] = a
         st.current_id = a.id
@@ -399,7 +399,7 @@ class AgentManager:
         if st.current_id == a.id:
             st.current_id = next(iter(st.running), None)
         if a.started is not None:
-            result.duration_s = round(time.monotonic() - a.started, 3)
+            result.duration_s = round(time.perf_counter() - a.started, 6)
             st.durations.append(result.duration_s)
         if result.status in (ResultStatus.SUCCESS, ResultStatus.PARTIAL):
             st.completed += 1
@@ -637,6 +637,8 @@ class AgentManager:
                 for a in list(st.running.values()):
                     a.token.cancel(reason)
                     stopped += 1
+            if self.broker is not None:             # their open approvals go now, before the tasks report back
+                self.broker.deny_all(reason, agents={st.id.value for st in targets})
             processes = self.runtime.executor.services.processes
             if evt.agent_id is None:
                 await asyncio.to_thread(processes.kill)

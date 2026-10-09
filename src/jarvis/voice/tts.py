@@ -390,8 +390,7 @@ class SapiTTS(TTSEngine):
         fd, tmp = tempfile.mkstemp(prefix="jarvis-tts-", suffix=".wav")
         os.close(fd)
         try:
-            engine.save_to_file(text, tmp)
-            engine.runAndWait()
+            self._save_to_file(engine, text, tmp)
             samples, rate = read_wav(tmp)
         except TTSError:
             raise
@@ -403,6 +402,22 @@ class SapiTTS(TTSEngine):
         if len(samples) == 0:
             raise TTSError("Offline speech produced no audio")
         return AudioClip(samples, rate, text=text, language=lang, engine=self.name, voice=voice[1], source_id=self.cache_id(lang))
+
+    @staticmethod
+    def _save_to_file(engine: Any, text: str, path: str) -> None:
+        # pyttsx3's SAPI5 driver writes the file synchronously, but its runAndWait() loop only ends on an
+        # EndStream event that (pyttsx3 2.99) never arrives after the first file: the second call hangs forever.
+        # So on SAPI5 call the driver directly and just drain the COM events it queued.
+        driver = getattr(getattr(engine, "proxy", None), "_driver", None)
+        if sys.platform == "win32" and type(driver).__name__ == "SAPI5Driver" and hasattr(driver, "save_to_file"):
+            driver.save_to_file(text, path)
+            with contextlib.suppress(Exception):
+                import pythoncom
+
+                pythoncom.PumpWaitingMessages()
+            return
+        engine.save_to_file(text, path)
+        engine.runAndWait()
 
     async def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)

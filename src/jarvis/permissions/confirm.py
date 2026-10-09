@@ -142,16 +142,18 @@ class ConfirmationBroker:
             if req.task_id == task_id and not fut.done():
                 req.status, req.decided_by = "cancelled", reason
                 fut.set_result(False)
+                self._pending.pop(req.id, None)     # gone now, not when the waiting agent next gets to run
                 n += 1
         self.forget_task(task_id)
         return n
 
-    def deny_all(self, reason: str = "kill switch") -> int:
+    def deny_all(self, reason: str = "kill switch", agents: set[str] | None = None) -> int:
         n = 0
         for req, fut in list(self._pending.values()):
-            if not fut.done():
+            if not fut.done() and (agents is None or req.agent_id in agents):
                 req.status, req.decided_by = "denied", reason
                 fut.set_result(False)
+                self._pending.pop(req.id, None)
                 n += 1
         return n
 

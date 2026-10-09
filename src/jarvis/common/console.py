@@ -6,10 +6,18 @@
 from __future__ import annotations
 
 import contextlib
+import io
 import os
 import sys
 
 _no_console = False
+
+
+class _Sink(io.TextIOWrapper):
+    """os.devnull that is never a terminal: on Windows NUL is a character device, so isatty() says True."""
+
+    def isatty(self) -> bool:
+        return False
 
 
 def ensure_std_streams() -> bool:
@@ -17,7 +25,7 @@ def ensure_std_streams() -> bool:
     global _no_console
     for name in ("stdout", "stderr"):
         if getattr(sys, name) is None:
-            setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))     # open for the life of the process
+            setattr(sys, name, _Sink(open(os.devnull, "wb"), encoding="utf-8"))    # open for the life of the process
             _no_console = True
     return _no_console
 

@@ -174,7 +174,8 @@ class MemoryManager:
     async def chat_history(self, limit: int = 100) -> list[ChatRecord]:
         records = await self._run(self.store.recent_chat, limit)
         if self._visible_since is not None:
-            records = [r for r in records if r.ts >= self._visible_since]
+            # strictly after: the Windows clock can give the clear and the messages before it the same time
+            records = [r for r in records if r.ts > self._visible_since]
         return records
 
     def clear_visible_chat(self) -> None:

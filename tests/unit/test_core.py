@@ -227,6 +227,11 @@ class TestFastPath:
 # ================================================================================== tasks
 class TestTasks:
     async def test_build_a_store_website(self, c: C) -> None:
+        def offline(request: httpx.Request) -> httpx.Response:
+            # Fail fast: a real connect to the kit's stand-in address can hang for the whole timeout on some networks.
+            raise httpx.ConnectError("offline in tests", request=request)
+
+        c.env.mock_http(offline)
         res = await c.say("ג'ארוויס, תבנה לי אתר לחנות קפה", source="voice")
         assert res.reply["text"] == "קיבלתי. אני מחלק את המשימה בין הסוכנים." and res.reply["kind"] == "ack"
         assert res.speech == {"text": None, "ack_key": "complex_ack", "language": "he", "follow_up": False}

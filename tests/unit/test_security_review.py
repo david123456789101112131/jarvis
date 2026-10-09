@@ -410,14 +410,14 @@ class TestGit:
         repo = tk.paths.projects / "fsm"
         assert (await run(tk, "git", {"args": ["init"], "path": str(repo)}, "development")).ok
         with (repo / ".git" / "config").open("a") as fh:
-            fh.write(f"[core]\n\tfsmonitor = \"echo x > '{marker}'\"\n")
+            fh.write(f"[core]\n\tfsmonitor = \"echo x > '{marker.as_posix()}'\"\n")   # git config reads \ as an escape
         r = await silent(tk, "git", {"args": ["status"], "path": str(repo)}, "development")
         assert r.ok and not marker.exists()
         # A bare repository planted inside an ordinary folder (git would read its config and hooks).
         planted = tk.paths.projects / "download" / "evil"
         await asyncio.to_thread(subprocess.run, ["git", "init", "--bare", "-q", str(planted)], check=True)
         with (planted / "config").open("a") as fh:
-            fh.write(f"[core]\n\tfsmonitor = \"echo x > '{marker}'\"\n")
+            fh.write(f"[core]\n\tfsmonitor = \"echo x > '{marker.as_posix()}'\"\n")   # git config reads \ as an escape
         r = await run(tk, "git", {"args": ["status"], "path": str(planted)}, "development")
         assert not r.ok and not marker.exists()
 

@@ -356,6 +356,7 @@ class _Child:
 
         env = {k: v for k, v in os.environ.items() if not k.startswith("JARVIS__")}
         env.update(JARVIS_HOME=str(self.home), PYTHONUTF8="1", JARVIS__VOICE__ENABLED="false",
+                   JARVIS__UI__DESKTOP_NOTIFICATIONS="false",                          # no toasts from the check's JARVIS
                    JARVIS__AI__PROVIDER="none", JARVIS_KEYRING="0")       # never the user's stored keys
         if getattr(sys, "frozen", False):
             argv = [sys.executable]
@@ -377,7 +378,7 @@ class _Child:
             if self.proc.returncode is not None:
                 raise RuntimeError(f"JARVIS exited with code {self.proc.returncode}: {self.tail()}")
             info = _read_runtime(runtime)
-            if info and info.get("pid") == self.proc.pid:
+            if info and self.proc.pid in (info.get("pid"), info.get("ppid")):
                 self.client = httpx.AsyncClient(base_url=f"http://127.0.0.1:{info['port']}", timeout=60.0,
                                                 trust_env=False, headers={"X-JARVIS-Token": info["token"]})
                 with contextlib.suppress(httpx.HTTPError):

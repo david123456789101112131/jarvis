@@ -1193,6 +1193,7 @@ class TestService:
                 assert info["devices"]["input"] is None
             else:  # pragma: no cover - a machine with a microphone
                 assert info["state"] in ("idle", "disabled")
+            await wait_for(lambda: "wake" in service.details()["reasons"], what="the wake word reason")  # warm-up sets it
             details = service.details()
             assert "turned off" in details["reasons"]["wake"]
         finally:

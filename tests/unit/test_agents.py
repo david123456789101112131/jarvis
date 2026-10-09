@@ -121,7 +121,7 @@ class TestManager:
         env.use_ai(default=reply("Three names: Bean There, Daily Grind, Brew Lab.\n\nSTATUS: success"))
         assert (await env.run("creative", "תן לי שלושה שמות לבית קפה")).used_llm
         assert not (await env.run("system", "crash", skill="crash")).ok
-        await until(lambda: env.manager.status("system") == AgentStatus.IDLE)
+        await until(lambda: env.manager.status("system") == AgentStatus.IDLE and seen[-1] == ("system", "idle"))
         creative = [s for a, s in seen if a == "creative"]
         system = [s for a, s in seen if a == "system"]
         assert creative.index("thinking") < creative.index("completed")
@@ -134,7 +134,7 @@ class TestManager:
         statuses = [s for a, s in seen if a == "system"]
         assert "working" in statuses and statuses[-1] == "completed"
         assert env.manager.view("system")["stats"]["completed"] == 1
-        await until(lambda: env.manager.status("system") == AgentStatus.IDLE)
+        await until(lambda: env.manager.status("system") == AgentStatus.IDLE and seen[-1] == ("system", "idle"))
         assert seen[-1] == ("system", "idle")
 
     async def test_stop_start_and_restart_an_agent(self, env: Env) -> None:

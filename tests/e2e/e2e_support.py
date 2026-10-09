@@ -53,7 +53,7 @@ class Jarvis:
     async def start(self, timeout: float = 90.0) -> Jarvis:
         env = {k: v for k, v in os.environ.items() if not k.startswith("JARVIS__")}
         env.update(JARVIS_HOME=str(self.home), PYTHONPATH=str(ROOT / "src"), PYTHONUTF8="1",
-                   JARVIS__VOICE__ENABLED="false")
+                   JARVIS__VOICE__ENABLED="false", JARVIS__UI__DESKTOP_NOTIFICATIONS="false")
         for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "BRAVE_API_KEY", "TAVILY_API_KEY"):
             env.pop(key, None)
         self.proc = await asyncio.create_subprocess_exec(
@@ -66,7 +66,7 @@ class Jarvis:
         except TimeoutError:
             raise AssertionError("JARVIS did not start:\n" + self.log()) from None
         info = read_json(self.home / "data" / "runtime.json")
-        assert info and info["pid"] == self.proc.pid, self.log()
+        assert info and self.proc.pid in (info["pid"], info.get("ppid")), self.log()   # ppid: a venv launcher
         self.info = info
         self.http = httpx.AsyncClient(base_url=f"http://127.0.0.1:{info['port']}", timeout=60,
                                       headers={"X-JARVIS-Token": info["token"]})

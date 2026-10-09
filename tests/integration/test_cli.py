@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[2]
 
 def cli_env(home: Path) -> dict[str, str]:
     env = {k: v for k, v in os.environ.items() if not k.startswith("JARVIS__")}
-    env.update(JARVIS_HOME=str(home), PYTHONPATH=str(ROOT / "src"), PYTHONUTF8="1", JARVIS__VOICE__ENABLED="false")
+    env.update(JARVIS_HOME=str(home), PYTHONPATH=str(ROOT / "src"), PYTHONUTF8="1", JARVIS__VOICE__ENABLED="false",
+               JARVIS__UI__DESKTOP_NOTIFICATIONS="false")
     for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY"):
         env.pop(key, None)
     return env
