@@ -6,8 +6,10 @@
   installed), espeak-ng on Linux, NSSpeech on macOS. pyttsx3 is blocking and not thread-safe,
   so it lives on one dedicated worker thread (COM initialised there on Windows) and renders to
   a temporary WAV file.
+* `OneCoreTTS` — Windows only: the voices Windows Settings installs (Speech_OneCore, e.g. "Microsoft
+  Asaf" for Hebrew), which SAPI5 cannot see, through WinRT in Windows PowerShell 5.1.
 * `NullTTS` — silent (reports why).
-* `FallbackTTS` — tries engines in order on every call (edge → sapi); an engine that just
+* `FallbackTTS` — tries engines in order on every call (edge → onecore → sapi); an engine that just
   failed is skipped for a minute so an offline PC does not pay a network timeout per sentence.
 
 `PhraseCache` pre-synthesizes the `ACK_PHRASES` in Hebrew and English at start-up into
@@ -249,7 +251,8 @@ class EdgeTTS(TTSEngine):
         except TimeoutError as exc:
             raise TTSError("edge-tts timed out") from exc
         except Exception as exc:
-            raise TTSError(f"edge-tts failed: {_short(exc)}") from exc
+            status = getattr(exc, "status", None)        # e.g. 403 when Microsoft refuses the edge-tts client
+            raise TTSError(f"edge-tts failed: {_short(exc)}" + (f" (HTTP {status})" if status else "")) from exc
         if not audio:
             raise TTSError("edge-tts returned no audio")
         clip = await asyncio.to_thread(decode_audio_bytes, bytes(audio), sample_rate=24_000)
@@ -381,8 +384,8 @@ class SapiTTS(TTSEngine):
         self._init_sync()
         voice = self.voices.get(lang)
         if voice is None:
-            hint = " (Windows: Settings → Time & language → Speech → Add voices)" if sys.platform == "win32" else ""
-            raise TTSUnavailable(f"No {LANGUAGE_NAMES.get(lang, lang)} voice is installed for offline speech{hint}")
+            raise TTSUnavailable(f"No {LANGUAGE_NAMES.get(lang, lang)} voice is installed for offline speech"
+                                 + (" (SAPI5)" if sys.platform == "win32" else ""))
         engine = self._engine
         engine.setProperty("voice", voice[0])
         if self._words_per_minute:
@@ -419,8 +422,182 @@ class SapiTTS(TTSEngine):
         engine.save_to_file(text, path)
         engine.runAndWait()
 
+    def _release_sync(self) -> None:
+        # The SAPI voice and its COM event connection belong to this worker thread's apartment. Freed later by
+        # the garbage collector on another thread, comtypes unadvises from the wrong apartment: access violation.
+        engine, self._engine = self._engine, None
+        if engine is None:
+            return
+        advise = getattr(getattr(getattr(engine, "proxy", None), "_driver", None), "_advise", None)
+        with contextlib.suppress(Exception):
+            if advise is not None:
+                advise.disconnect()
+        del engine, advise
+        import gc
+
+        gc.collect()
+
     async def close(self) -> None:
+        if self._engine is not None:
+            with contextlib.suppress(Exception):
+                await asyncio.get_running_loop().run_in_executor(self._executor, self._release_sync)
         self._executor.shutdown(wait=False, cancel_futures=True)
+
+
+# Windows' own voices (Settings → Time & language → Speech, e.g. "Microsoft Asaf" for Hebrew) live under
+# Speech_OneCore and are reachable only through WinRT, not SAPI5. Windows PowerShell 5.1 speaks WinRT, so
+# these need no extra package and work in the frozen build. Text, voice, rate and output path arrive in
+# environment variables, so nothing user-controlled is parsed as code.
+_ONECORE_PRELUDE = (
+    "$ErrorActionPreference = 'Stop'; "
+    "$null = [Windows.Media.SpeechSynthesis.SpeechSynthesizer, Windows.Media.SpeechSynthesis, ContentType = WindowsRuntime]; "
+)
+ONECORE_VOICES_PS = _ONECORE_PRELUDE + (
+    "@([Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices | "
+    "ForEach-Object { [pscustomobject]@{ id = $_.Id; name = $_.DisplayName; language = $_.Language } }) | "
+    "ConvertTo-Json -Compress"
+)
+ONECORE_SPEAK_PS = _ONECORE_PRELUDE + (
+    "$null = [Windows.Storage.Streams.DataReader, Windows.Storage.Streams, ContentType = WindowsRuntime]; "
+    "Add-Type -AssemblyName System.Runtime.WindowsRuntime; "
+    "$asTask = [System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object { $_.Name -eq 'AsTask' -and "
+    "$_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq 'IAsyncOperation`1' } | "
+    "Select-Object -First 1; "
+    "function Wait-Op($op, [Type]$type) { $t = $asTask.MakeGenericMethod($type).Invoke($null, @($op)); "
+    "if (-not $t.Wait(60000)) { throw 'speech synthesis timed out' }; $t.Result }; "
+    "$s = New-Object Windows.Media.SpeechSynthesis.SpeechSynthesizer; "
+    "$v = [Windows.Media.SpeechSynthesis.SpeechSynthesizer]::AllVoices | "
+    "Where-Object { $_.Id -eq $env:JARVIS_TTS_VOICE } | Select-Object -First 1; "
+    "if (-not $v) { Write-Error 'voice not found'; exit 3 }; "
+    "$s.Voice = $v; "
+    "$s.Options.SpeakingRate = [double]::Parse($env:JARVIS_TTS_RATE, [Globalization.CultureInfo]::InvariantCulture); "
+    "$stream = Wait-Op ($s.SynthesizeTextToStreamAsync($env:JARVIS_TTS_TEXT)) "
+    "([Windows.Media.SpeechSynthesis.SpeechSynthesisStream]); "
+    "$size = [uint32]$stream.Size; "
+    "$reader = New-Object Windows.Storage.Streams.DataReader ($stream.GetInputStreamAt(0)); "
+    "[void](Wait-Op ($reader.LoadAsync($size)) ([uint32])); "
+    "$bytes = New-Object byte[] $size; $reader.ReadBytes($bytes); "
+    "[IO.File]::WriteAllBytes($env:JARVIS_TTS_OUT, $bytes)"
+)
+WINDOWS_VOICES_HINT = "Windows: Settings → Time & language → Speech → Add voices"
+
+# (argv, extra_env, timeout) → (exit_code, stdout, stderr)
+Runner = Any
+
+
+async def _run_powershell(script: str, env: dict[str, str], timeout: float) -> tuple[int, str, str]:
+    from jarvis.host.windows import _powershell_exe, powershell_argv
+    from jarvis.security.process import run_process
+
+    exe = await asyncio.to_thread(_powershell_exe)
+    result = await run_process(powershell_argv(script, exe=exe), timeout=timeout, extra_env=env, max_output=400_000)
+    code = result.exit_code if result.exit_code is not None else -1          # None: timed out or cancelled
+    return code, result.stdout or "", result.stderr or ""
+
+
+def pick_onecore_voice(voices: list[dict[str, str]], language: str) -> tuple[str, str] | None:
+    """(id, name) of a Windows voice for `language` ("he" → he-IL, "en" → en-US, then en-GB, then any en)."""
+    order = {"he": ("he-il", "he"), "en": ("en-us", "en-gb", "en")}[language]
+    best: tuple[int, dict[str, str]] | None = None
+    for v in voices:
+        tag = str(v.get("language", "")).lower()
+        if tag.split("-")[0] != language:
+            continue
+        rank = next((i for i, t in enumerate(order) if tag == t), len(order))
+        if best is None or rank < best[0]:
+            best = (rank, v)
+    return (str(best[1]["id"]), str(best[1].get("name") or best[1]["id"])) if best else None
+
+
+class OneCoreTTS(TTSEngine):
+    """Windows' installed voices (Speech_OneCore) through WinRT, run by Windows PowerShell 5.1."""
+
+    name = "onecore"
+
+    def __init__(self, *, rate: str = "+0%", runner: Runner | None = None, timeout_s: float = 60.0) -> None:
+        super().__init__()
+        self.rate_pct = _percent(rate)
+        self.speaking_rate = min(6.0, max(0.5, 1.0 + self.rate_pct / 100.0))
+        self.voices: dict[str, tuple[str, str] | None] = {}
+        self.init_error: str | None = None
+        self.timeout_s = timeout_s
+        self._runner = runner or _run_powershell
+        self._listed = False
+        self._lock = asyncio.Lock()
+        self.reason = "Windows voices (WinRT)"
+
+    @property
+    def available(self) -> bool:
+        return sys.platform == "win32" or self._runner is not _run_powershell
+
+    def voice_for(self, language: str) -> str:
+        chosen = self.voices.get(language)
+        return chosen[1] if chosen else f"default-{language}"
+
+    def cache_id(self, language: str) -> str:
+        chosen = self.voices.get(language)
+        return f"onecore|{chosen[0] if chosen else language}|{self.rate_pct:+d}%"
+
+    async def prepare(self) -> None:
+        try:
+            await self._list_voices()
+        except Exception as exc:
+            log.info("Windows voices unavailable: %s", _short(exc))
+
+    async def _list_voices(self) -> None:
+        async with self._lock:
+            if self._listed:
+                return
+            if not self.available:
+                self.init_error = "Windows voices exist only on Windows"
+                raise TTSUnavailable(self.init_error)
+            code, out, err = await self._runner(ONECORE_VOICES_PS, {}, 30.0)
+            if code != 0:
+                self.init_error = f"could not list the Windows voices: {(err or out).strip()[:200] or f'exit {code}'}"
+                raise TTSUnavailable(self.init_error)
+            import json
+
+            try:
+                data = json.loads(out.strip() or "[]")
+            except ValueError as exc:
+                self.init_error = "could not read the Windows voice list"
+                raise TTSUnavailable(self.init_error) from exc
+            items = [data] if isinstance(data, dict) else list(data or [])
+            self.voices = {lang: pick_onecore_voice(items, lang) for lang in ("he", "en")}
+            names = {k: (v[1] if v else None) for k, v in self.voices.items()}
+            self.reason = f"Windows voices: Hebrew={names['he'] or 'none'}, English={names['en'] or 'none'}"
+            self._listed = True
+
+    async def synthesize(self, text: str, language: str | None = None) -> AudioClip:
+        text = (text or "").strip()
+        if not text:
+            raise TTSError("Nothing to say")
+        lang = resolve_language(text, language)
+        if not self._listed:
+            await self._list_voices()
+        voice = self.voices.get(lang)
+        if voice is None:
+            raise TTSUnavailable(f"No {LANGUAGE_NAMES.get(lang, lang)} Windows voice is installed ({WINDOWS_VOICES_HINT})")
+        fd, tmp = tempfile.mkstemp(prefix="jarvis-tts-", suffix=".wav")
+        os.close(fd)
+        try:
+            env = {"JARVIS_TTS_TEXT": text, "JARVIS_TTS_VOICE": voice[0], "JARVIS_TTS_OUT": tmp,
+                   "JARVIS_TTS_RATE": f"{self.speaking_rate:.2f}"}
+            code, out, err = await self._runner(ONECORE_SPEAK_PS, env, self.timeout_s)
+            if code != 0:
+                raise TTSError(f"Windows speech failed: {(err or out).strip()[:200] or f'exit {code}'}")
+            samples, rate = await asyncio.to_thread(read_wav, tmp)
+        except TTSError:
+            raise
+        except Exception as exc:
+            raise TTSError(f"Windows speech failed: {_short(exc)}") from exc
+        finally:
+            with contextlib.suppress(OSError):
+                os.remove(tmp)
+        if len(samples) == 0:
+            raise TTSError("Windows speech produced no audio")
+        return AudioClip(samples, rate, text=text, language=lang, engine=self.name, voice=voice[1],
+                         source_id=self.cache_id(lang))
 
 
 class FallbackTTS(TTSEngine):
@@ -490,35 +667,44 @@ class FallbackTTS(TTSEngine):
 def create_tts_engine(settings: VoiceSettings) -> tuple[TTSEngine, str]:
     """Pick the TTS engine for `settings.tts_engine` (auto | edge | sapi | none).
 
-    auto/edge: edge-tts with a per-call fall back to offline pyttsx3; sapi: offline only.
+    auto/edge: edge-tts with a per-call fall back to the offline voices; sapi: offline only.
+    Offline on Windows is the installed Windows voices (OneCore, where Settings adds Hebrew) and then
+    SAPI5 through pyttsx3; elsewhere pyttsx3.
     """
     choice = settings.tts_engine
     if choice == "none":
         engine = NullTTS("Speech output is turned off in settings.")
         return engine, engine.reason
     edge_ok, sapi_ok = _have("edge_tts", "miniaudio", "numpy"), _have("pyttsx3", "numpy")
+    onecore_ok = sys.platform == "win32" and _have("numpy")
+
+    offline: list[TTSEngine] = []
+    if onecore_ok:
+        offline.append(OneCoreTTS(rate=settings.tts_rate))
+    if sapi_ok:
+        offline.append(SapiTTS(rate=settings.tts_rate))
+    offline_name = " → ".join({"onecore": "Windows voices", "sapi": "pyttsx3"}[e.name] for e in offline)
 
     def edge() -> EdgeTTS:
         return EdgeTTS(settings.tts_voice_he, settings.tts_voice_en, settings.tts_rate)
 
-    def sapi() -> SapiTTS:
-        return SapiTTS(rate=settings.tts_rate)
+    def chain(engines: list[TTSEngine]) -> TTSEngine:
+        return engines[0] if len(engines) == 1 else FallbackTTS(engines)
 
     if choice in ("auto", "edge"):
-        if edge_ok and sapi_ok:
-            return FallbackTTS([edge(), sapi()]), "edge-tts neural voices (offline pyttsx3 as fallback)"
+        if edge_ok and offline:
+            return FallbackTTS([edge(), *offline]), f"edge-tts neural voices (offline {offline_name} as fallback)"
         if edge_ok:
             return edge(), "edge-tts neural voices (no offline fallback: pyttsx3 not installed)"
-        if sapi_ok:
-            return sapi(), "offline pyttsx3 voices (edge-tts/miniaudio not installed)"
+        if offline:
+            return chain(offline), f"offline {offline_name} voices (edge-tts/miniaudio not installed)"
     else:  # sapi
-        if sapi_ok:
-            return sapi(), "offline pyttsx3 voices"
+        if offline:
+            return chain(offline), f"offline {offline_name} voices"
         if edge_ok:
             return edge(), "edge-tts neural voices (pyttsx3 not installed)"
     engine = NullTTS("No speech output engine is installed (edge-tts or pyttsx3).")
     return engine, engine.reason
-
 
 # ---------------------------------------------------------------------------------------------
 # Phrase cache

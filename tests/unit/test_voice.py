@@ -55,6 +55,7 @@ from jarvis.voice.stt import (
 from jarvis.voice.tts import (
     FallbackTTS,
     NullTTS,
+    OneCoreTTS,
     PhraseCache,
     SapiTTS,
     TTSEngine,
@@ -795,11 +796,14 @@ class TestTTS:
         assert isinstance(engine, NullTTS) and not engine.available
         monkeypatch.setattr(tts_mod, "_have", fake_have(set()))
         engine, reason = tts_mod.create_tts_engine(VoiceSettings(tts_rate="+5%"))
-        assert isinstance(engine, FallbackTTS) and [e.name for e in engine.engines] == ["edge", "sapi"]
+        offline = ["onecore", "sapi"] if sys.platform == "win32" else ["sapi"]
+        assert isinstance(engine, FallbackTTS) and [e.name for e in engine.engines] == ["edge", *offline]
         assert engine.cache_id("he") == "edge|he-IL-AvriNeural|+5%"
         monkeypatch.setattr(tts_mod, "_have", fake_have({"edge_tts"}))
         engine, reason = tts_mod.create_tts_engine(VoiceSettings())
-        assert isinstance(engine, SapiTTS) and "edge-tts" in reason
+        assert "edge-tts" in reason and (isinstance(engine, SapiTTS) if sys.platform != "win32" else
+                                          [e.name for e in engine.engines] == offline)
+        monkeypatch.setattr(tts_mod, "sys", type("FakeSys", (), {"platform": "linux"}))   # no Windows voices
         monkeypatch.setattr(tts_mod, "_have", fake_have({"edge_tts", "pyttsx3"}))
         engine, reason = tts_mod.create_tts_engine(VoiceSettings())
         assert isinstance(engine, NullTTS) and "No speech output engine" in reason
@@ -841,6 +845,63 @@ class TestTTS:
         expected = sum(len(v) for v in ACK_PHRASES.values())
         assert len(sapi.calls) == 1 and stats["synthesized"] == 1 and stats["cached"] == expected - 1
         assert PhraseCache(offline, tmp_path).lookup("listening", "he").engine == "sapi"
+
+    @needs_numpy
+    async def test_windows_voices_through_a_runner(self) -> None:
+        import numpy as np
+
+        calls: list[tuple[str, dict[str, str]]] = []
+
+        async def runner(script: str, env: dict[str, str], timeout: float) -> tuple[int, str, str]:
+            calls.append((script, env))
+            if script == tts_mod.ONECORE_VOICES_PS:        # PowerShell prints one voice as an object, not a list
+                return 0, json.dumps({"id": "TOKEN_ASAF", "name": "Microsoft Asaf", "language": "he-IL"}), ""
+            if env["JARVIS_TTS_TEXT"] == "boom":
+                return 1, "", "SynthesizeTextToStreamAsync failed"
+            tts_mod.write_wav(env["JARVIS_TTS_OUT"], np.full(8000, 500, dtype=np.int16), 16000)
+            return 0, "", ""
+
+        engine = OneCoreTTS(rate="+50%", runner=runner)
+        await engine.prepare()
+        assert engine.voices == {"he": ("TOKEN_ASAF", "Microsoft Asaf"), "en": None}
+        clip = await engine.synthesize("שלום, אני ג'ארוויס", "he")
+        assert (clip.engine, clip.voice, clip.language, round(clip.duration_s, 2)) == ("onecore", "Microsoft Asaf", "he", 0.5)
+        speak = calls[-1][1]
+        assert speak["JARVIS_TTS_VOICE"] == "TOKEN_ASAF" and speak["JARVIS_TTS_RATE"] == "1.50"
+        assert speak["JARVIS_TTS_TEXT"] == "שלום, אני ג'ארוויס" and not os.path.exists(speak["JARVIS_TTS_OUT"])
+        assert engine.cache_id("he") == "onecore|TOKEN_ASAF|+50%"
+        with pytest.raises(tts_mod.TTSUnavailable, match="Add voices"):      # no English Windows voice
+            await engine.synthesize("Hello", "en")
+        with pytest.raises(TTSError, match="SynthesizeTextToStreamAsync"):
+            await engine.synthesize("boom", "he")
+        assert sum(1 for s, _ in calls if s == tts_mod.ONECORE_VOICES_PS) == 1   # listed once
+
+    def test_pick_windows_voice(self) -> None:
+        voices = [{"id": "a", "name": "Hazel", "language": "en-GB"}, {"id": "b", "name": "Zira", "language": "en-US"},
+                  {"id": "c", "name": "Asaf", "language": "he-IL"}]
+        assert tts_mod.pick_onecore_voice(voices, "en") == ("b", "Zira")
+        assert tts_mod.pick_onecore_voice(voices, "he") == ("c", "Asaf")
+        assert tts_mod.pick_onecore_voice(voices[:1], "he") is None
+        assert OneCoreTTS(rate="-80%").speaking_rate == 0.5 and OneCoreTTS(rate="+900%").speaking_rate == 6.0
+
+    @needs_numpy
+    @pytest.mark.skipif(sys.platform != "win32", reason="Windows voices")
+    async def test_windows_voices_speak(self) -> None:
+        engine = OneCoreTTS()
+        await engine.prepare()
+        if engine.init_error:
+            pytest.skip(engine.init_error)
+        spoken = 0
+        for lang, text in (("en", "Hello, this is JARVIS."), ("he", "שלום, אני ג'ארוויס.")):
+            if engine.voices.get(lang) is None:
+                with pytest.raises(tts_mod.TTSUnavailable):
+                    await engine.synthesize(text, lang)
+                continue
+            clip = await engine.synthesize(text, lang)
+            assert clip.duration_s > 0.4 and clip.engine == "onecore" and clip.language == lang
+            spoken += 1
+        if not spoken:
+            pytest.skip("no Windows voice for English or Hebrew is installed")
 
     @needs_numpy
     @pytest.mark.skipif(not _have("pyttsx3") or (sys.platform.startswith("linux") and ESPEAK is None),
