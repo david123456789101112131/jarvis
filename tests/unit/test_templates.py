@@ -98,9 +98,11 @@ def test_js_templates_pass_their_own_tests(kind, tmp_path):
     dest = tmp_path / kind
     render(kind, dest, "he" if kind != "node-api" else "en")
     for js in dest.rglob("*.js"):
-        check = subprocess.run([NODE, "--check", str(js)], capture_output=True, text=True, timeout=60)
+        check = subprocess.run([NODE, "--check", str(js)], capture_output=True, text=True, encoding="utf-8",
+                               errors="replace", timeout=60)
         assert check.returncode == 0, f"{js.name}: {check.stderr}"
-    run = subprocess.run([NODE, "--test"], cwd=dest, capture_output=True, text=True, timeout=180)
+    run = subprocess.run([NODE, "--test", "--test-reporter=tap"], cwd=dest, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                         timeout=180)
     assert run.returncode == 0, run.stdout[-2000:] + run.stderr[-2000:]
     assert "# fail 0" in run.stdout
 
