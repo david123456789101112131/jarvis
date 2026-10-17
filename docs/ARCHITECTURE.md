@@ -204,6 +204,11 @@ status, current task, progress, last action, errors, permissions, activity, cont
 status, voice, orb customization). A compact always-on-top orb window mirrors the reference
 design's minimal states and offers the quick-tools ring.
 
+At sign-in Windows starts JARVIS with `--background`: only the orb is on screen and the wake word
+is live, so JARVIS is used hands-free. `jarvis.host.autostart` keeps the per-user Run entry in step
+with `general.start_with_windows`; only the windowed app writes it. "Show yourself" / "hide
+yourself" (and any voice command that opens a screen) bring the main window up or send it back.
+
 ## 11. Extending
 
 - New tool: subclass `Tool`, declare capability, params model and risk; register it.

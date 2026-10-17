@@ -8,6 +8,9 @@ Closing the main window keeps JARVIS running as the mini orb when "mini orb" is 
 settings (it keeps listening for the wake word); otherwise it quits. Double-clicking the orb
 brings the main window back. When WebView2 is missing, the UI opens as an Edge app window
 (or in the default browser) and JARVIS runs until it is told to quit.
+
+`--background` (how Windows starts JARVIS at sign-in, see `jarvis.host.autostart`) opens only the
+mini orb; "Hey Jarvis", the orb or the shortcut bring the main window up.
 """
 
 from __future__ import annotations
@@ -137,10 +140,11 @@ def app_icon() -> str | None:
 class DesktopShell:
     """The two pywebview windows and what the API's /api/window/{action} does with them."""
 
-    def __init__(self, webview: Any, core: CoreThread) -> None:
+    def __init__(self, webview: Any, core: CoreThread, *, background: bool = False) -> None:
         self.webview = webview
         self.core = core
         self.app = core.app
+        self.background = background
         self.main: Any = None
         self.orb: Any = None
         self._quitting = False
@@ -152,11 +156,12 @@ class DesktopShell:
         name = self.app.settings.general.assistant_name or "JARVIS"
         self.main = self.webview.create_window(
             name, url=self.app.launch_url, width=ui.window_width, height=ui.window_height, min_size=(1100, 700),
-            background_color=BACKGROUND, text_select=True)
+            background_color=BACKGROUND, text_select=True, hidden=self.background)
         x, y = self._orb_position()
         self.orb = self.webview.create_window(
             f"{name} Orb", url=self.app.launch_url + "&view=orb", width=ORB_SIZE, height=ORB_SIZE, x=x, y=y,
-            resizable=False, frameless=True, easy_drag=True, on_top=True, hidden=True, transparent=True,
+            resizable=False, frameless=True, easy_drag=True, on_top=True,
+            hidden=not (self.background and ui.mini_orb), transparent=True,
             shadow=False, focus=False, background_color=BACKGROUND)
         self.main.events.closing += self._on_main_closing
         self.main.events.shown += lambda: self._visible(True)
@@ -164,7 +169,7 @@ class DesktopShell:
         self.main.events.minimized += self._on_minimized
         self.orb.events.closing += self._on_orb_closing
         self.app.window_handler = self.handle
-        self.app.ui_visible = True
+        self.app.ui_visible = not self.background
 
     def _orb_position(self) -> tuple[int | None, int | None]:
         try:
@@ -212,7 +217,7 @@ class DesktopShell:
     # ------------------------------------------------------------------ actions (/api/window/{action})
     def handle(self, action: str) -> bool:
         actions = {"show": self.to_full, "full": self.to_full, "hide": self.to_mini, "mini": self.to_mini,
-                   "toggle": self.toggle, "quit": self.quit}
+                   "toggle": self.toggle, "reveal": self.reveal, "quit": self.quit}
         fn = actions.get(action)
         if fn is None:
             return False
@@ -239,6 +244,11 @@ class DesktopShell:
     def _show_orb(self) -> None:
         with contextlib.suppress(Exception):
             self.orb.show()
+
+    def reveal(self) -> None:
+        """A voice command opened a screen: bring the main window up if only the orb is on screen."""
+        if not self.app.ui_visible:
+            self.to_full()
 
     def toggle(self) -> None:
         if self.app.ui_visible:
@@ -274,7 +284,7 @@ def set_app_user_model_id() -> bool:
         return False
 
 
-def run_desktop(make_app: Callable[[], Any]) -> int:
+def run_desktop(make_app: Callable[[], Any], *, background: bool = False) -> int:
     set_app_user_model_id()
     core = CoreThread(make_app)
     core.start()
@@ -285,31 +295,35 @@ def run_desktop(make_app: Callable[[], Any]) -> int:
         log.error("JARVIS could not start", exc_info=core.error)
         show_error(f"JARVIS לא הצליח לעלות:\n{core.error}\n\nJARVIS could not start. The log file has the details.")
         return 1
+    core.app.manage_autostart = True
+    with contextlib.suppress(Exception):
+        core.submit(core.app.apply_autostart())     # the sign-in entry follows the setting (and this copy)
     try:
         import webview
     except ImportError:
         webview = None  # type: ignore[assignment]
     if webview is not None and webview2_available():
-        shell = DesktopShell(webview, core)
+        shell = DesktopShell(webview, core, background=background)
         try:
             shell.run()
         except Exception:
             log.exception("The desktop window failed; JARVIS keeps running in the browser")
-            return _run_without_window(core)
+            return _run_without_window(core, background=background)
         finally:
             if not shell._quitting:
                 core.stop()
         return 0
     log.warning("pywebview or the WebView2 runtime is missing: opening JARVIS as an Edge app window")
-    return _run_without_window(core)
+    return _run_without_window(core, background=background)
 
 
-def _run_without_window(core: CoreThread) -> int:
+def _run_without_window(core: CoreThread, *, background: bool = False) -> int:
     """No native window: an Edge app window (or the browser); JARVIS runs until told to quit (or Ctrl+C)."""
     app = core.app
     edge = find_edge()
 
     def open_ui() -> bool:
+        app.ui_visible = True              # an Edge or browser window cannot report that it was closed
         if edge:
             profile = app.paths.cache / "edge-app"
             subprocess.Popen([edge, f"--app={app.launch_url}", f"--user-data-dir={profile}", "--no-first-run",
@@ -325,11 +339,14 @@ def _run_without_window(core: CoreThread) -> int:
             return True
         if action in ("show", "full", "toggle"):
             return open_ui()
+        if action == "reveal":             # a voice command opened a screen while nothing was on screen
+            return app.ui_visible or open_ui()
         return False
 
     app.window_handler = handle
-    app.ui_visible = True
-    open_ui()
+    app.ui_visible = not background
+    if not background:
+        open_ui()
     print(f"JARVIS is running: {app.launch_url}\nPress Ctrl+C here to quit.", flush=True)
     try:
         while not core.finished.wait(0.5):

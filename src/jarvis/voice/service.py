@@ -22,6 +22,7 @@ import asyncio
 import contextlib
 import importlib.util
 import logging
+import sys
 import time
 from collections.abc import Coroutine
 from typing import TYPE_CHECKING, Any
@@ -41,6 +42,8 @@ if TYPE_CHECKING:  # pragma: no cover
 log = logging.getLogger(__name__)
 
 INPUT_RECHECK_S = 20.0
+DEFAULT_MIC_RECHECK_S = 3.0    # how often Windows' default microphone is compared with the open one
+FOLLOW_DEFAULT_MIC = sys.platform == "win32"
 _CORE_MODULES = ("numpy",)
 
 
@@ -54,6 +57,19 @@ def _close_loaded_engine(future: asyncio.Future) -> None:
         return
     with contextlib.suppress(Exception):
         future.result()[0].close()
+
+
+def default_microphone_id() -> str | None:
+    """Windows' default microphone (None on other systems, or when it cannot be read)."""
+    if sys.platform != "win32":
+        return None
+    try:
+        from jarvis.host.winapi import default_microphone_id as read
+
+        return read()
+    except Exception:
+        log.debug("Reading the default microphone failed", exc_info=True)
+        return None
 
 
 def _missing_modules(names: tuple[str, ...]) -> list[str]:
@@ -330,26 +346,44 @@ class VoiceService:
 
     async def _watch_input(self, pipeline: VoicePipeline) -> None:
         """Keep `devices.input` and the "No microphone found" state current while the
-        microphone is closed (the pipeline reports problems itself while it captures)."""
+        microphone is closed (the pipeline reports problems itself while it captures).
+
+        With the default microphone selected (no input device in the settings), JARVIS follows
+        Windows: when another microphone becomes the default, it is opened instead, between
+        conversations."""
         from jarvis.voice.audio import probe_input
 
         spec = self.settings.input_device or None
+        follow = spec is None and FOLLOW_DEFAULT_MIC
         refresh = False  # PortAudio scanned the devices when it was imported
+        opened_on: str | None = None  # Windows' default microphone while the open stream started
+        next_probe = 0.0
         while self._started and self.pipeline is pipeline:
             if not pipeline.source.running:
-                ok, message = await asyncio.to_thread(probe_input, spec, refresh=refresh)
-                if self.pipeline is not pipeline:
-                    return
-                if ok:
-                    self._input_name = message
-                    if pipeline.input_problem:
-                        pipeline.set_disabled(None)
-                else:
-                    self._input_name = None
-                    if not pipeline.input_problem or pipeline.disabled_reason != message:
-                        pipeline.set_disabled(message, source=True)
-                refresh = not ok  # re-scan (hot-plug) only while no microphone is found
-            await asyncio.sleep(INPUT_RECHECK_S)
+                opened_on = None
+                if time.monotonic() >= next_probe:
+                    ok, message = await asyncio.to_thread(probe_input, spec, refresh=refresh)
+                    if self.pipeline is not pipeline:
+                        return
+                    if ok:
+                        self._input_name = message
+                        if pipeline.input_problem:
+                            pipeline.set_disabled(None)
+                    else:
+                        self._input_name = None
+                        if not pipeline.input_problem or pipeline.disabled_reason != message:
+                            pipeline.set_disabled(message, source=True)
+                    refresh = not ok  # re-scan (hot-plug) only while no microphone is found
+                    next_probe = time.monotonic() + INPUT_RECHECK_S
+            elif follow:
+                current = await asyncio.to_thread(default_microphone_id)
+                if opened_on is None:
+                    opened_on = current
+                elif current and current != opened_on and not pipeline.busy and self.pipeline is pipeline:
+                    log.info("Windows has a new default microphone: switching to it")
+                    opened_on = None
+                    pipeline.reopen_source()
+            await asyncio.sleep(min(INPUT_RECHECK_S, DEFAULT_MIC_RECHECK_S) if follow else INPUT_RECHECK_S)
 
     # ------------------------------------------------------------------------------------------
     # Controls (safe to call from any thread)

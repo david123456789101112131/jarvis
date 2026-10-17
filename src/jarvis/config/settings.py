@@ -25,6 +25,8 @@ class GeneralSettings(_Section):
     language: Literal["auto", "he", "en"] = "auto"
     default_mode: Mode = Mode.NORMAL
     resume_interrupted_on_start: bool = False
+    # Start in the background (mini orb, listening for the wake word) when the user signs in to Windows.
+    start_with_windows: bool = True
 
 
 class PathsSettings(_Section):

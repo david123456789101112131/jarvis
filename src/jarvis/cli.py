@@ -52,6 +52,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--debug", action="store_true", help="verbose logs and start in DEBUG mode")
     p.add_argument("--quiet", action="store_true", help="no log output on the console")
     p.add_argument("--browser", action="store_true", help="open the UI in the default browser instead of a window")
+    p.add_argument("--background", action="store_true",
+                   help="start with only the mini orb (how Windows starts JARVIS at sign-in)")
     sub = p.add_subparsers(dest="command")
     sub.add_parser("run", help="start JARVIS (default)")
     sub.add_parser("open", help="open the running JARVIS in the browser")
@@ -69,6 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--json", action="store_true", help="print the report as JSON")
     sub.add_parser("voice-test", help="check the voice stack on this PC")
     sub.add_parser("paths", help="show JARVIS's folders")
+    sub.add_parser("autostart", help="show whether JARVIS starts with Windows")
     return p
 
 
@@ -97,6 +100,8 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_OK
     if command == "keys":
         return _keys(paths, args.action, args.name, every=args.all)
+    if command == "autostart":
+        return _autostart(settings)
     if command == "check":
         from jarvis.selfcheck import main as check
 
@@ -197,6 +202,26 @@ def _stop(info: dict[str, Any], timeout: float = 60.0) -> int:
     return EXIT_OK
 
 
+def _autostart(settings: Any) -> int:
+    from jarvis.host import autostart
+
+    st = autostart.status()
+    if not st["supported"]:
+        print("Starting with Windows is only available on Windows.")
+        return EXIT_OK
+    wanted = "on" if settings.general.start_with_windows else "off"
+    print(f"Setting (Settings > General): {wanted}")
+    if not st["registered"]:
+        print("Windows entry: none" + (" (the JARVIS window adds it when it starts)" if wanted == "on" else ""))
+    else:
+        print(f"Windows entry: {st['command']}")
+        if not st["this_jarvis"]:
+            print("  It starts another copy of JARVIS; the JARVIS window updates it when it starts.")
+        if st["disabled_in_task_manager"]:
+            print("  Turned off in Task Manager > Startup apps: Windows does not run it.")
+    return EXIT_OK
+
+
 def _keys(paths: Any, action: str, name: str | None, *, every: bool = False) -> int:
     from jarvis.security.secrets import KNOWN_SECRETS, SecretStore
 
@@ -232,6 +257,8 @@ def _run(settings: Any, paths: Any, args: argparse.Namespace) -> int:
 
     setup_logging(paths.logs, level=logging.DEBUG if args.debug else logging.INFO, console=not args.quiet)
     running = _running(paths)
+    if running is not None and args.background:
+        return EXIT_OK                       # already running (e.g. started by hand before signing in again)
     if running is not None:
         # One JARVIS per user: bring the running one forward instead of starting another.
         try:
@@ -254,7 +281,7 @@ def _run(settings: Any, paths: Any, args: argparse.Namespace) -> int:
         return asyncio.run(_run_headless(make_app, open_browser=args.browser))
     from jarvis.ui.desktop import run_desktop
 
-    return run_desktop(make_app)
+    return run_desktop(make_app, background=args.background)
 
 
 async def _run_headless(make_app: Any, *, open_browser: bool) -> int:

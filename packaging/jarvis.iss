@@ -42,8 +42,6 @@ Name: "hebrew"; MessagesFile: "compiler:Languages\Hebrew.isl"
 Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [CustomMessages]
-hebrew.AutoStart=להפעיל את JARVIS עם הכניסה ל-Windows
-english.AutoStart=Start JARVIS when I sign in to Windows
 hebrew.SelfCheck=בדיקת מערכת של JARVIS
 english.SelfCheck=JARVIS self-check
 hebrew.DeleteData=למחוק גם את הזיכרון, ההגדרות, היומנים ומודלי הדיבור של JARVIS, ואת מפתחות ה-API שנשמרו?
@@ -53,7 +51,6 @@ english.KeepsProjects=Your projects and workspace in %1 are kept either way.
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
-Name: "autostart"; Description: "{cm:AutoStart}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
 Source: "..\dist\JARVIS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -62,9 +59,6 @@ Source: "..\dist\JARVIS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdir
 Name: "{autoprograms}\JARVIS"; Filename: "{app}\{#AppExe}"; AppUserModelID: "JARVIS"
 Name: "{autoprograms}\{cm:SelfCheck}"; Filename: "{cmd}"; Parameters: "/k """"{app}\{#CliExe}"" check --full"""; WorkingDir: "{app}"; IconFilename: "{app}\{#AppExe}"
 Name: "{autodesktop}\JARVIS"; Filename: "{app}\{#AppExe}"; Tasks: desktopicon; AppUserModelID: "JARVIS"
-
-[Registry]
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "JARVIS"; ValueData: """{app}\{#AppExe}"""; Tasks: autostart; Flags: uninsdeletevalue
 
 [Run]
 Filename: "{app}\{#AppExe}"; Description: "{cm:LaunchProgram,JARVIS}"; Flags: nowait postinstall skipifsilent
@@ -82,6 +76,20 @@ begin
     Exec(ExpandConstant('{app}\{#CliExe}'), 'stop', '', SW_HIDE, ewWaitUntilTerminated, Code);
 end;
 
+{ JARVIS writes its own sign-in entry ("Start with Windows" in its settings, on by default); it goes
+  with the program, unless it starts another copy of JARVIS (a code folder, for example). }
+procedure RemoveSignInEntry();
+var
+  Command: String;
+begin
+  if RegQueryStringValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'JARVIS', Command) and
+     (Pos(Lowercase(ExpandConstant('{app}\')), Lowercase(Command)) > 0) then
+  begin
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Run', 'JARVIS');
+    RegDeleteValue(HKEY_CURRENT_USER, 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run', 'JARVIS');
+  end;
+end;
+
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 begin
   StopJarvis();
@@ -96,6 +104,7 @@ begin
   if CurUninstallStep = usUninstall then
   begin
     StopJarvis();
+    RemoveSignInEntry();
     Question := CustomMessage('DeleteData') + #13#10#13#10 +
       FmtMessage(CustomMessage('KeepsProjects'), [ExpandConstant('{%USERPROFILE}\JARVIS')]);
     DeleteData := (not UninstallSilent()) and

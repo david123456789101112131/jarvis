@@ -933,6 +933,9 @@ class AudioSink(ABC):
     def playing(self) -> bool:
         return self._playing
 
+    def devices_changed(self) -> None:  # noqa: B027 - most sinks keep no device to forget
+        """PortAudio re-scanned the devices: forget any device chosen from the old list."""
+
     async def play(self, clip: AudioClip) -> bool:
         """Play `clip` to the end. Returns False when it was stopped/interrupted."""
         if clip is None or len(clip.samples) == 0:
@@ -979,6 +982,9 @@ class SoundDeviceSink(AudioSink):
         self.device = resolve_device(self.device_spec, "output")
         self.device_name = self.device.name
         return self.device
+
+    def devices_changed(self) -> None:
+        self.device = None          # device indexes can move after a re-scan
 
     async def _play(self, clip: AudioClip) -> bool:
         sd = _sounddevice()

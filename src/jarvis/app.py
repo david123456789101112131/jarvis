@@ -166,7 +166,7 @@ class JarvisApp:
         self.orchestrator = TaskOrchestrator(self.manager, mode_provider=self._mode)
         self.core = JarvisCore(settings=s, manager=self.manager, orchestrator=self.orchestrator, memory=self.memory,
                                bus=self.bus, broker=self.broker, kill_switch=self.kill_switch, activity=self.activity,
-                               router=lambda: self.runtime.router)
+                               router=lambda: self.runtime.router, window=self.window_action)
 
         self.voice: VoiceService | None = None
         self.voice_wanted = s.voice.enabled if voice is None else voice
@@ -184,6 +184,8 @@ class JarvisApp:
         self._monitor: Any = None
         self.window_handler: WindowHandler | None = None
         self.ui_visible = False
+        # Only the windowed app keeps the "start with Windows" entry in step with the setting.
+        self.manage_autostart = False
         self.started_at: float | None = None
         self._tasks: set[asyncio.Task[Any]] = set()
         self._started = False
@@ -432,6 +434,8 @@ class JarvisApp:
         if "ai" in patch:
             self.router.refresh()
             await self._providers_changed()
+        if "start_with_windows" in (patch.get("general") or {}):
+            await self.apply_autostart()
         if "security" in patch:
             self.broker.timeout_s = self.settings.security.confirm_timeout_s
         lang = self.lang
@@ -443,6 +447,29 @@ class JarvisApp:
             await self.notify("info", "JARVIS", t(lang, f"חלק מהשינויים ייכנסו לתוקף אחרי הפעלה מחדש של JARVIS: {later}",
                                                   f"Some changes apply after JARVIS restarts: {later}"))
         return restart
+
+    async def apply_autostart(self) -> str | None:
+        """Write or remove the sign-in entry to match `general.start_with_windows` (windowed app only)."""
+        if not self.manage_autostart:
+            return None
+        from jarvis.host import autostart
+
+        enabled = self.settings.general.start_with_windows
+        try:
+            outcome = await asyncio.to_thread(autostart.apply, enabled)
+        except OSError as exc:
+            log.warning("Could not change the start-with-Windows entry: %s", exc)
+            await self.activity.log(t(self.lang, f"לא הצלחתי לשנות את ההפעלה עם Windows: {exc}",
+                                      f"Could not change starting with Windows: {exc}"),
+                                    source="JARVIS", level="warning", kind="settings")
+            return None
+        if outcome in ("added", "removed"):
+            await self.activity.log(
+                t(self.lang, "JARVIS יופעל ברקע עם הכניסה ל-Windows" if enabled else "JARVIS לא יופעל עם Windows",
+                  "JARVIS will start in the background when you sign in" if enabled else
+                  "JARVIS will not start with Windows"),
+                source="JARVIS", kind="settings")
+        return outcome
 
     async def _providers_changed(self) -> None:
         """A key or an AI setting changed: show the new provider status and each agent's model."""

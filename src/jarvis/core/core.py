@@ -183,6 +183,7 @@ class JarvisCore:
         activity: ActivityLog | None = None,
         router: Callable[[], ProviderRouter | None] | None = None,
         detector: IntentDetector | None = None,
+        window: Callable[[str], Awaitable[bool]] | None = None,
     ) -> None:
         self.settings = settings
         self.manager = manager
@@ -194,6 +195,7 @@ class JarvisCore:
         self.activity = activity
         self._router = router or (lambda: manager.runtime.router)
         self.detector = detector or IntentDetector()
+        self._window = window                          # the desktop window: "show", "mini", "reveal"
         self._mode = Mode(settings.general.default_mode)
         self._speaker: Speaker | None = None
         self._question: _Question | None = None
@@ -669,15 +671,30 @@ class JarvisCore:
             await self._log(f"Mode: {old.value} → {mode.value}", kind="mode")
         return self._mode
 
+    async def _navigate(self, data: dict[str, Any]) -> None:
+        """Show a screen; from the background (only the mini orb on screen) the main window comes up too."""
+        await self._publish("ui.navigate", data)
+        if self._window is not None:
+            with contextlib.suppress(Exception):
+                await self._window("reveal")
+
+    async def _window_cmd(self, turn: _Turn) -> CommandResult:
+        action = turn.intent.slots.get("action", "show")
+        done = False
+        if self._window is not None:
+            with contextlib.suppress(Exception):
+                done = await self._window("mini" if action == "hide" else "show")
+        return await self._reply(turn, R.window_reply(action, done, turn.lang), ok=done)
+
     async def _show_agents(self, turn: _Turn) -> CommandResult:
         views = self.manager.views()
-        await self._publish("ui.navigate", {"screen": "agents"})
+        await self._navigate({"screen": "agents"})
         return await self._reply(turn, R.agents_overview(views, turn.lang), speak=R.agents_spoken(views, turn.lang))
 
     async def _show_tasks(self, turn: _Turn) -> CommandResult:
         active = [x.summary_view() for x in self.orchestrator.active_tasks()]
         paused = await self.orchestrator.list_tasks(status="interrupted", limit=5)
-        await self._publish("ui.navigate", {"screen": "tasks"})
+        await self._navigate({"screen": "tasks"})
         text = R.tasks_overview(active, paused, turn.lang)
         return await self._reply(turn, text, speak=text.split("\n", 1)[0])
 
@@ -688,10 +705,10 @@ class JarvisCore:
             if not rows:
                 return await self._reply(turn, t(lang, "עוד לא היו משימות.", "There are no tasks yet."))
             detail = await self.orchestrator.detail(rows[0]["id"]) or {}
-            await self._publish("ui.navigate", {"screen": "tasks", "task_id": rows[0]["id"]})
+            await self._navigate({"screen": "tasks", "task_id": rows[0]["id"]})
             story = R.task_story(detail, lang)
             return await self._reply(turn, story, speak=story.split("\n", 1)[0], task_id=rows[0]["id"])
-        await self._publish("ui.navigate", {"screen": "tasks"})
+        await self._navigate({"screen": "tasks"})
         lines: list[str] = []
         if self.memory is not None:
             with contextlib.suppress(Exception):
@@ -839,7 +856,8 @@ class JarvisCore:
     _instant: dict[str, Callable[[JarvisCore, _Turn], Awaitable[CommandResult]]] = {
         I.TIME: _time, I.DATE: _date, I.HELP: _help, I.GREETING: _greeting, I.THANKS: _thanks,
         I.SET_MODE: _set_mode_cmd, I.SHOW_AGENTS: _show_agents, I.SHOW_TASKS: _show_tasks,
-        I.SHOW_HISTORY: _show_history, I.STOP_TASK: _stop_task, I.KILL_SWITCH: _kill, I.KILL_RELEASE: _release,
+        I.SHOW_HISTORY: _show_history, I.WINDOW: _window_cmd, I.STOP_TASK: _stop_task, I.KILL_SWITCH: _kill,
+        I.KILL_RELEASE: _release,
         I.AGENT_STOP: _agent_command, I.AGENT_ACTIVATE: _agent_command, I.AGENT_RESTART: _agent_command,
         I.STOP_ALL_AGENTS: _stop_all_agents, I.REMEMBER: _remember, I.FORGET: _forget, I.RECALL: _recall,
     }

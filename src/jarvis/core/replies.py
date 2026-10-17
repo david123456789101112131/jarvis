@@ -124,6 +124,16 @@ def help_spoken(lang: str) -> str:
              "The full list is on the screen.")
 
 
+def window_reply(action: str, done: bool, lang: str) -> str:
+    if not done:
+        return t(lang, "אין כאן חלון של JARVIS: הממשק פתוח בדפדפן.",
+                 "There is no JARVIS window here: the interface runs in the browser.")
+    if action == "hide":
+        return t(lang, "אני ממשיך להקשיב ברקע. כשצריך אותי, להגיד \"Hey Jarvis\".",
+                 "I'm still listening in the background. Say \"Hey Jarvis\" when you need me.")
+    return t(lang, "הנה אני.", "Here I am.")
+
+
 def offline_chat(lang: str) -> str:
     return t(lang, "לא בטוח שהבנתי. אפשר לנסח את זה כפקודה, למשל \"פתח את כרום\" או \"תבנה לי אתר לחנות\". "
                    "לשיחה חופשית צריך להגדיר בהגדרות מפתח API של xAI (Grok), Anthropic או OpenAI.",

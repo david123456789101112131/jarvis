@@ -227,6 +227,7 @@ function GeneralSection({ settings, onSaved }: { settings: SettingsObject; onSav
       },
       { kind: 'select', path: 'general.default_mode', label: 'settings.defaultMode', options: MODES.map((m) => ({ value: m, label: t(`mode.${m}` as MessageKey) })) },
       { kind: 'toggle', path: 'general.resume_interrupted_on_start', label: 'settings.resumeOnStart', hint: 'settings.resumeOnStartHint' },
+      { kind: 'toggle', path: 'general.start_with_windows', label: 'settings.startWithWindows', hint: 'settings.startWithWindowsHint' },
     ],
     [t],
   );

@@ -23,7 +23,8 @@ command center.
    הסקריפט מחפש Python 3.11 עד 3.13 (64 ביט) ומציע להתקין Python 3.12 דרך winget אם אין; יוצר סביבה
    בתיקייה `.venv`; מתקין את JARVIS עם כל מה שהוא צריך (AI, קול, חלון, שילוב עם Windows); בודק את המחשב
    (`jarvis check`); ומציע קיצור דרך בשולחן העבודה. אפשר להריץ אותו שוב בכל זמן, הוא משלים רק את מה שחסר.
-2. להפעיל: לחיצה כפולה על `run.bat` או על קיצור הדרך.
+2. להפעיל: לחיצה כפולה על `run.bat` או על קיצור הדרך. מאותו רגע JARVIS עולה לבד ברקע בכל כניסה ל-Windows
+   ומאזין ל-"Hey Jarvis" (כיבוי: **הגדרות ← כללי ← הפעלה עם Windows**).
 3. מפתח AI (רשות): במסך **הגדרות ← מפתחות API**, או בשורת הפקודה מתוך התיקייה:
    `jarvis keys set XAI_API_KEY` (Grok) או `jarvis keys set ANTHROPIC_API_KEY` (Claude). המפתח נשמר במנהל
    האישורים של Windows ואינו מוצג שוב, לא בממשק ולא ביומנים. באיזה ספק כל סוכן עובד בוחרים ב**הגדרות ← ספקי AI**.
@@ -41,13 +42,14 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 לקובץ ההתקנה צריך Inno Setup 6.3 ומעלה: `winget install --id JRSoftware.InnoSetup --exact`.
 
 ההתקנה היא למשתמש הנוכחי ואינה דורשת הרשאות מנהל. היא מוסיפה את JARVIS לתפריט התחל, ואפשר לבחור קיצור
-דרך בשולחן העבודה והפעלה עם הכניסה ל-Windows. התוכנה אינה חתומה דיגיטלית, ולכן SmartScreen עשוי להזהיר
-בהפעלה הראשונה: "מידע נוסף" ואז "הפעל בכל זאת".
+דרך בשולחן העבודה. את ההפעלה עם הכניסה ל-Windows JARVIS מוסיף בעצמו בהפעלה הראשונה, וההסרה מוחקת אותה.
+התוכנה אינה חתומה דיגיטלית, ולכן SmartScreen עשוי להזהיר בהפעלה הראשונה: "מידע נוסף" ואז "הפעל בכל זאת".
 
 ## איך מדברים עם JARVIS
 
-- **בקול:** לומר "Hey Jarvis" ואז את הפקודה, בעברית או באנגלית. אפשר גם להחזיק את כפתור המיקרופון במרכז
-  הפיקוד.
+- **בקול:** לומר "Hey Jarvis" ואז את הפקודה, בעברית או באנגלית. לא צריך ללחוץ על כלום: JARVIS מאזין כל
+  הזמן, גם כשהחלון סגור (נשאר רק העיגול הקטן בפינת המסך) וגם מיד אחרי הכניסה ל-Windows. אפשר גם להחזיק את
+  כפתור המיקרופון במרכז הפיקוד.
 - **בכתב:** בשורת הפקודה במרכז הפיקוד.
 
 | דוגמה | מה קורה |
@@ -60,6 +62,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 | תעצב לי לוגו לבית קפה · תכתוב מייל לדנה שאני חולה מחר | הסוכן היצירתי (מייל נשמר כטיוטה, לא נשלח) |
 | הראה סוכנים פעילים · עצור את המשימה · תמשיך את המשימה | שליטה במשימות ובסוכנים |
 | עצור הכול | עצירת חירום של כל הסוכנים והמשימות |
+| תראה את עצמך · תסתיר את עצמך | מקפיץ את החלון הראשי, או מחזיר את JARVIS לרקע (הוא ממשיך להקשיב) |
 
 מסכים: מרכז פיקוד, סוכנים, משימות, זיכרון, אבטחה והגדרות (Alt+1 עד Alt+6).
 
@@ -118,7 +121,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 ## כשמשהו לא עובד
 
 - **החלון לא נפתח:** בלי רכיב WebView2, JARVIS נפתח כחלון של Edge. `jarvis check` מראה מה חסר.
-- **JARVIS לא שומע:** `jarvis voice-test`, ואז לבחור מיקרופון במסך **הגדרות ← קול**.
+- **JARVIS לא שומע:** `jarvis voice-test`, ואז לבחור מיקרופון במסך **הגדרות ← קול**. כשלא נבחר מיקרופון,
+  JARVIS עובר לבד למיקרופון ש-Windows מגדיר כברירת מחדל (למשל אוזניות שחוברו), בין שיחה לשיחה.
+- **JARVIS לא עולה עם Windows:** `jarvis autostart` מראה אם הוא רשום, ואם כובה במנהל המשימות ← אפליקציות
+  אתחול.
 - **כל השאר:** היומן המלא נמצא ב-`%LOCALAPPDATA%\JARVIS\Logs\jarvis.log`.
 
 </div>
@@ -133,6 +139,7 @@ The installed app has the same commands in `jarvis-cli.exe`.
 | Command | What it does |
 |---|---|
 | `jarvis` | Start JARVIS with its window, or bring the running one forward |
+| `jarvis --background` | Start with only the mini orb, listening for the wake word (how Windows starts it at sign-in) |
 | `jarvis --no-window` | Run the core and the local server only; prints the address of the UI |
 | `jarvis open` | Open the running JARVIS in the default browser |
 | `jarvis say "<command>"` | Send a command to the running JARVIS and print the answer |
@@ -144,6 +151,7 @@ The installed app has the same commands in `jarvis-cli.exe`.
 | `jarvis check [--full] [--voice] [--json]` | Is JARVIS ready on this PC? |
 | `jarvis voice-test` | Microphone, speakers, wake word and speech recognition |
 | `jarvis paths` | Where JARVIS keeps its data, logs, workspace and projects |
+| `jarvis autostart` | Does JARVIS start with Windows? The setting and the sign-in entry |
 
 Options: `--no-voice`, `--port N` (default 8765, the next free port if busy), `--debug`, `--quiet`,
 `--browser` (the UI in the default browser instead of a window).
@@ -151,6 +159,9 @@ Options: `--no-voice`, `--port N` (default 8765, the next free port if busy), `-
 ### Configuration
 
 - Settings are edited in the app (Settings) and saved to `config.toml`.
+- `general.start_with_windows` (on by default): the JARVIS window keeps a sign-in entry under
+  `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` that starts `--background`; no administrator rights.
+  Turning JARVIS off in Task Manager's Startup apps is respected.
 - Any setting can be overridden with an environment variable `JARVIS__<SECTION>__<KEY>`, for example
   `JARVIS__VOICE__ENABLED=false` or `JARVIS__AI__PROVIDER=openai`.
 - `JARVIS_HOME=<folder>` keeps everything (data, logs, cache, workspace) under one folder: portable mode.

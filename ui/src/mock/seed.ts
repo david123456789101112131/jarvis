@@ -484,7 +484,7 @@ export function seedSecrets(): Record<string, SecretStatus> {
 
 export function seedSettings(ui: UISettings, lang: Lang): SettingsObject {
   return {
-    general: { assistant_name: 'JARVIS', user_name: lang === 'he' ? 'דנה' : 'Dana', language: 'auto', default_mode: 'normal', resume_interrupted_on_start: false },
+    general: { assistant_name: 'JARVIS', user_name: lang === 'he' ? 'דנה' : 'Dana', language: 'auto', default_mode: 'normal', resume_interrupted_on_start: false, start_with_windows: true },
     voice: {
       enabled: true,
       wake_word_engine: 'auto',

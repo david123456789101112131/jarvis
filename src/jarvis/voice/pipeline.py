@@ -309,6 +309,7 @@ class VoicePipeline:
         self._wake_failures = 0
         self._last_level_at = 0.0
         self._source_problem: str | None = None
+        self._rescan = False                        # re-scan the devices before the microphone opens again
         self._disabled_by_source = False
         self._tts_warned_at = 0.0
 
@@ -350,6 +351,9 @@ class VoicePipeline:
                     await self._capture_changed.wait()
                     continue
                 if not self.source.running:
+                    if self._rescan:
+                        self._rescan = False
+                        await self._refresh_devices()
                     try:
                         await self.source.start()
                     except Exception as exc:
@@ -357,7 +361,7 @@ class VoicePipeline:
                         await self._pause(backoff)
                         backoff = min(30.0, backoff * 2)
                         if isinstance(exc, AudioError):  # PortAudio caches the device list: re-scan
-                            await asyncio.to_thread(refresh_devices)
+                            await self._refresh_devices()
                         continue
                     backoff = 1.0
                     self._source_ok()
@@ -418,6 +422,22 @@ class VoicePipeline:
 
     def unmute(self) -> None:
         self._call(self._unmute_now)
+
+    def reopen_source(self) -> None:
+        """Open the microphone again on the current default device (Windows switched the default)."""
+
+        def apply() -> None:
+            if self._stopping:
+                return
+            self._rescan = True
+            if self.source.running:
+                self._spawn(self.source.stop())
+
+        self._call(apply)
+
+    async def _refresh_devices(self) -> None:
+        if await asyncio.to_thread(refresh_devices):
+            self.sink.devices_changed()
 
     def set_wake_engine(self, engine: WakeWordEngine) -> None:
         def apply() -> None:

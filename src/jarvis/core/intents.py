@@ -41,6 +41,7 @@ class I:  # noqa: E742 - short namespace for intent names
     SHOW_AGENTS = "show_agents"
     SHOW_TASKS = "show_tasks"
     SHOW_HISTORY = "show_history"
+    WINDOW = "window"
     SYSTEM_STATUS = "system_status"
     TIME = "time"
     DATE = "date"
@@ -618,6 +619,16 @@ def _b_history(m: re.Match[str], text: str) -> dict[str, Any] | None:
     return {"last": any(w in t for w in ("last", "previous", "אחרונה", "קודמת", "האחרונה", "הקודמת"))}
 
 
+def _b_window(m: re.Match[str], text: str) -> dict[str, Any] | None:
+    return {"action": "hide" if m.groupdict().get("hide") else "show"}
+
+
+# "yourself" / "your window" / "the JARVIS window"; a bare "the window" is left to the app rules.
+_HE_NAME = r"(?:jarvis|ג'?א?רוויס|ג'?א?רביס)"            # normalized text: ׳ is already '
+_HE_WINDOW = rf"(?:את\s+)?(?:עצמך|{_HE_NAME}|ה?חלון\s+(?:שלך|הראשי|של\s+{_HE_NAME}))"
+_EN_WINDOW = r"(?:yourself|your window|the (?:jarvis|main) window|jarvis)"
+
+
 def _b_organize(m: re.Match[str], text: str) -> dict[str, Any] | None:
     """A known folder ("the downloads") becomes a location; anything else names a project or a path."""
     target = (m.groupdict().get("x") or "").strip(" .,\"'")
@@ -725,6 +736,14 @@ _RULES: list[Rule] = [
         rf"^{V_SHOW_HE}\s+(?:את\s+)?(?:ה)?משימה\s+(?:ה)?(?:אחרונה|קודמת)$",
         r"^מה\s+עשית(?:\s+היום)?$",
     ), "instant", build=_b_history),
+    Rule(I.WINDOW, _p(
+        rf"^(?P<show>show|open|bring up|bring back)\s+{_EN_WINDOW}$",
+        rf"^(?P<hide>hide|minimi[sz]e|close)\s+{_EN_WINDOW}$",       # closing the window keeps JARVIS listening
+        r"^(?P<hide>go to|run in|stay in) the background$",
+        rf"^(?P<show>{V_SHOW_HE}|תפתח|פתח|תפתחי|פתחי)\s+{_HE_WINDOW}$",
+        rf"^(?P<hide>תסתיר|הסתר|תסתירי|הסתירי|תמזער|מזער|תמזערי|מזערי|תסגור|סגור|תסגרי|סגרי)\s+{_HE_WINDOW}$",
+        r"^(?P<hide>(?:תעבור|עבור|תעברי|עברי)\s+(?:ל|אל\s+ה)רקע)$",
+    ), "instant", build=_b_window),
     Rule(I.POWER, _p(
         r"^(?:shut\s?down|turn off|power off|restart|reboot|hibernate|put to sleep|sleep|log off|log out|sign out of)\s+(?:the\s+|my\s+)?(?:computer|pc|system|machine|windows|laptop)$",
         r"^(?:תכבה|כבה|תכבי|כבי)\s+(?:את\s+)?(?:ה)?מחשב$",

@@ -128,7 +128,8 @@ interface StateSnapshot {
   confirmations: ConfirmationRequest[];// pending
   kill_switch: { global: boolean; agents: Record<string, string> };
   system: SystemStats | null;
-  providers: { active: string | null; anthropic: boolean; openai: boolean; local: boolean; fallbacks: boolean };
+  providers: { active: string | null; anthropic: boolean; xai: boolean; openai: boolean; local: boolean;
+               fallbacks: boolean; agents: Record<AgentId, string | null> };
   files: { workspace: string; projects: string };
 }
 ```
@@ -180,7 +181,7 @@ interface StateSnapshot {
 | POST `/api/voice/{action}` | action ∈ `start, stop, mute, unmute, ptt_start, ptt_stop, cancel` | `VoiceInfo` |
 | POST `/api/voice/speak` | `{text}` | `{ok}` |
 | GET `/api/quick-tools?lang=he\|en` | – | `{id, label, label_he, icon, command}[]` (the radial menu entries) |
-| POST `/api/window/{action}` | action ∈ `show, hide, toggle, mini, full, quit` | `{ok}` (409 when there is no desktop window) |
+| POST `/api/window/{action}` | action ∈ `show, hide, toggle, mini, full, reveal, quit` (`reveal`: show the main window only if it is hidden) | `{ok}` (409 when there is no desktop window) |
 
 ## WebSocket `/ws`
 

@@ -68,6 +68,7 @@ RPC_E_CHANGED_MODE = 0x80010106 - (1 << 32)       # as the signed value a c_long
 COINIT_MULTITHREADED = 0x0
 CLSCTX_ALL = 0x1 | 0x2 | 0x4 | 0x10
 E_RENDER = 0                                        # EDataFlow.eRender
+E_CAPTURE = 1                                       # EDataFlow.eCapture
 E_CONSOLE = 0                                       # ERole.eConsole
 
 CLSID_MMDEVICE_ENUMERATOR = "{BCDE0395-E52F-467C-8E3D-C4579291692E}"
@@ -78,6 +79,7 @@ IID_IAUDIO_ENDPOINT_VOLUME = "{5CDF2C82-841E-4546-9722-0CF74078229A}"
 _VT_RELEASE = 2
 _VT_ENUM_GET_DEFAULT_AUDIO_ENDPOINT = 4             # IMMDeviceEnumerator
 _VT_DEVICE_ACTIVATE = 3                             # IMMDevice
+_VT_DEVICE_GET_ID = 5
 _VT_SET_MASTER_VOLUME_SCALAR = 7                    # IAudioEndpointVolume
 _VT_GET_MASTER_VOLUME_SCALAR = 9
 _VT_SET_MUTE = 14
@@ -637,12 +639,13 @@ def _com_release(obj: ctypes.c_void_p) -> None:
 
 
 @contextlib.contextmanager
-def _endpoint_volume(api: _Win32) -> Iterator[ctypes.c_void_p]:
+def _default_device(api: _Win32, flow: int) -> Iterator[ctypes.c_void_p | None]:
+    """The default IMMDevice for output (E_RENDER) or microphones (E_CAPTURE); None when there is none."""
     hr = api.ole32.CoInitializeEx(None, COINIT_MULTITHREADED)
     initialized = hr in (S_OK, S_FALSE)
     if not initialized and hr != RPC_E_CHANGED_MODE:      # CHANGED_MODE: COM already set up (STA) — fine
         _check_hr(hr, "CoInitializeEx")
-    enumerator, device, endpoint = ctypes.c_void_p(), ctypes.c_void_p(), ctypes.c_void_p()
+    enumerator, device = ctypes.c_void_p(), ctypes.c_void_p()
     try:
         clsid = GUID.from_string(CLSID_MMDEVICE_ENUMERATOR)
         iid_enumerator = GUID.from_string(IID_IMMDEVICE_ENUMERATOR)
@@ -650,19 +653,50 @@ def _endpoint_volume(api: _Win32) -> Iterator[ctypes.c_void_p]:
                                              ctypes.byref(enumerator)), "CoCreateInstance(MMDeviceEnumerator)")
         get_default = _com_method(enumerator, _VT_ENUM_GET_DEFAULT_AUDIO_ENDPOINT, ctypes.c_long,
                                   ctypes.c_int, ctypes.c_int, ctypes.POINTER(ctypes.c_void_p))
-        _check_hr(get_default(enumerator, E_RENDER, E_CONSOLE, ctypes.byref(device)), "GetDefaultAudioEndpoint")
-        iid_volume = GUID.from_string(IID_IAUDIO_ENDPOINT_VOLUME)
-        activate = _com_method(device, _VT_DEVICE_ACTIVATE, ctypes.c_long, ctypes.POINTER(GUID), ctypes.c_uint32,
-                               ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
-        _check_hr(activate(device, ctypes.byref(iid_volume), CLSCTX_ALL, None, ctypes.byref(endpoint)),
-                  "IMMDevice::Activate(IAudioEndpointVolume)")
-        yield endpoint
+        hr = get_default(enumerator, flow, E_CONSOLE, ctypes.byref(device))
+        if flow == E_CAPTURE and hr != S_OK:              # E_NOTFOUND: no microphone at all
+            yield None
+            return
+        _check_hr(hr, "GetDefaultAudioEndpoint")
+        yield device
     finally:
-        for obj in (endpoint, device, enumerator):
+        for obj in (device, enumerator):
             with contextlib.suppress(Exception):
                 _com_release(obj)
         if initialized:
             api.ole32.CoUninitialize()
+
+
+@contextlib.contextmanager
+def _endpoint_volume(api: _Win32) -> Iterator[ctypes.c_void_p]:
+    endpoint = ctypes.c_void_p()
+    with _default_device(api, E_RENDER) as device:
+        assert device is not None
+        try:
+            iid_volume = GUID.from_string(IID_IAUDIO_ENDPOINT_VOLUME)
+            activate = _com_method(device, _VT_DEVICE_ACTIVATE, ctypes.c_long, ctypes.POINTER(GUID), ctypes.c_uint32,
+                                   ctypes.c_void_p, ctypes.POINTER(ctypes.c_void_p))
+            _check_hr(activate(device, ctypes.byref(iid_volume), CLSCTX_ALL, None, ctypes.byref(endpoint)),
+                      "IMMDevice::Activate(IAudioEndpointVolume)")
+            yield endpoint
+        finally:
+            with contextlib.suppress(Exception):
+                _com_release(endpoint)
+
+
+def default_microphone_id() -> str | None:
+    """Windows' id of the default microphone (it changes when another one becomes the default); None: none."""
+    api = _api("Reading the default microphone")
+    with _default_device(api, E_CAPTURE) as device:
+        if device is None:
+            return None
+        text = ctypes.c_void_p()
+        get_id = _com_method(device, _VT_DEVICE_GET_ID, ctypes.c_long, ctypes.POINTER(ctypes.c_void_p))
+        _check_hr(get_id(device, ctypes.byref(text)), "IMMDevice::GetId")
+        try:
+            return ctypes.wstring_at(text.value) if text.value else None
+        finally:
+            api.ole32.CoTaskMemFree(text)
 
 
 def _read_scalar(endpoint: ctypes.c_void_p) -> int:
