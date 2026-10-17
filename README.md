@@ -60,6 +60,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 | מה מזג האוויר בחיפה מחר | תחזית |
 | תכין לי תוכנית אימונים לשבוע | סוכן התכנון בונה תוכנית ושומר אותה כקובץ |
 | תעצב לי לוגו לבית קפה · תכתוב מייל לדנה שאני חולה מחר | הסוכן היצירתי (מייל נשמר כטיוטה, לא נשלח) |
+| תשלוט במחשב ותסדר לי את החלונות | סוכן המערכת מפעיל את העכבר והמקלדת בעצמו (ראו "שליטה במחשב" למטה) |
 | הראה סוכנים פעילים · עצור את המשימה · תמשיך את המשימה | שליטה במשימות ובסוכנים |
 | עצור הכול | עצירת חירום של כל הסוכנים והמשימות |
 | תראה את עצמך · תסתיר את עצמך | מקפיץ את החלון הראשי, או מחזיר את JARVIS לרקע (הוא ממשיך להקשיב) |
@@ -77,6 +78,21 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 | DEBUG | כמו NORMAL, עם פירוט הניתוב, התוכניות והכלים |
 
 מעבר בין מצבים: "עבור למצב משימה", "switch to task mode", או בבורר המצבים בממשק.
+
+## שליטה במחשב (עכבר ומקלדת)
+
+למשימות שאפשר לעשות רק דרך חלון של תוכנה, כשאין כלי ישיר שמתאים, JARVIS יכול להסתכל על המסך ולהפעיל את
+העכבר והמקלדת בעצמו. מודל ראייה פתוח — **Holo3.1‑9B של H Company** (רישיון Apache‑2.0) — רץ מקומית על
+כרטיס המסך דרך llama.cpp; הוא רק מציע את הפעולה הבאה, וצילומי המסך לא יוצאים מהמחשב.
+
+- **מתקינים פעם אחת:** `jarvis computer install` מוריד את llama.cpp ואת המודל, מאמת כל קובץ מול ה‑SHA‑256
+  של המפרסם, וממיר ל‑GGUF. תיקייה שכבר הורדה: `jarvis computer install --adopt <נתיב>`. מצב: `jarvis computer status`.
+- **כל פעולה עוברת דרך מנגנון ההרשאות של JARVIS:** JARVIS בודק בעצמו מה נמצא מתחת לסמן או בחלון הפעיל (לא
+  לפי מה שהמודל אומר), ומבקש אישור לפני לחיצה ששולחת הודעה, הרצת פקודה, לחצן תשלום וכדומה. שדות סיסמה, חלונות
+  מערכת ו‑Ctrl+Alt+Del חסומים לחלוטין.
+- **עצירה מיד:** Esc פעמיים, או פשוט לגעת בעכבר/מקלדת — JARVIS מחזיר לכם את השליטה. בזמן העבודה JARVIS מסתיר
+  את החלונות שלו כדי לא להפריע למסך, ומראה אותם רק כדי להציג אישור.
+- צריך כרטיס מסך עם זיכרון סביר (נבדק על RTX 5060 Ti‏ 16GB; המודל תופס כ‑12GB).
 
 ## בטיחות
 
@@ -150,6 +166,8 @@ The installed app has the same commands in `jarvis-cli.exe`.
 | `jarvis keys delete NAME` | Remove a stored key (`--all`: every stored key) |
 | `jarvis check [--full] [--voice] [--json]` | Is JARVIS ready on this PC? |
 | `jarvis voice-test` | Microphone, speakers, wake word and speech recognition |
+| `jarvis computer install [--dir D] [--adopt D] [--no-convert]` | Download/convert the local computer-control model (Holo3.1-9B), or adopt a folder already downloaded |
+| `jarvis computer status` | Is the computer-control model installed, and where |
 | `jarvis paths` | Where JARVIS keeps its data, logs, workspace and projects |
 | `jarvis autostart` | Does JARVIS start with Windows? The setting and the sign-in entry |
 
@@ -182,6 +200,8 @@ Options: `--no-voice`, `--port N` (default 8765, the next free port if busy), `-
   against the built-in simulator.
 - Build the app and the installer: `scripts\build.ps1` (`-SkipTests`, `-SkipInstaller`).
 - The icon is drawn by `python scripts/make_icon.py`.
+- Computer control lives in `src/jarvis/computer/` (the model server, the look→think→act session, and the
+  safety policy judged from what Windows reports); the agent-facing tools are `use_computer` / `computer_act`.
 - [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): components, agents, orchestration, security model.
   [docs/API.md](docs/API.md): the local HTTP and WebSocket API the interface uses.
 

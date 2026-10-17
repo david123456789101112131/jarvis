@@ -379,6 +379,7 @@ ACTION_CARDS: dict[str, tuple[str, str, str]] = {
     I.LOCK_SCREEN: ("נועל את המחשב…", "Locking the computer…", "lock"),
     I.POWER: ("מכין את פעולת ההפעלה…", "Preparing the power action…", "power"),
     I.SCREENSHOT: ("מצלם את המסך…", "Taking a screenshot…", "camera"),
+    I.COMPUTER_TASK: ("שולט במחשב: {target}…", "Using the computer: {target}…", "monitor"),
     I.WEATHER: ("בודק את מזג האוויר…", "Checking the weather…", "cloud"),
     I.RUN_PROJECT: ("מפעיל את הפרויקט…", "Starting the project…", "play"),
     I.TEST_PROJECT: ("בודק את הפרויקט {target}…", "Checking the project {target}…", "code"),
@@ -390,7 +391,9 @@ ACTION_CARDS: dict[str, tuple[str, str, str]] = {
 def action_title(intent: str, slots: dict[str, Any], lang: str) -> tuple[str, str]:
     he, en, icon = ACTION_CARDS.get(intent, ("מבצע…", "Working…", "bolt"))
     target = (slots.get("app_name") or slots.get("site") or slots.get("query") or slots.get("name")
-              or slots.get("location") or slots.get("project") or "")
+              or slots.get("location") or slots.get("project") or slots.get("goal") or "")
+    if intent == I.COMPUTER_TASK and len(target) > 40:
+        target = target[:40].rstrip() + "…"
     title = (he if lang == "he" else en).format(target=target).replace("  ", " ").replace(" …", "…")
     return title, icon
 

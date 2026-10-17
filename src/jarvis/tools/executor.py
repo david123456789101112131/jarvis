@@ -119,6 +119,12 @@ class ToolExecutor:
 
         ctx = ToolContext(agent_id=agent, task_id=task_id, subtask_id=subtask_id, mode=mode, cancel=cancel,
                           services=self.services, cwd=cwd, progress_fn=progress, lang=lang)
+
+        async def subcall(name: str, sub_params: dict[str, Any]) -> ToolResult:
+            return await self.execute(name, sub_params, agent_id=agent, task_id=task_id, subtask_id=subtask_id,
+                                      cancel=cancel, cwd=cwd, progress=progress, mode=mode, lang=lang)
+
+        ctx.subcall = subcall
         try:
             plan = await tool.plan(parsed, ctx)
         except JarvisError as exc:

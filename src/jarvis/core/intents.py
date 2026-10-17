@@ -54,6 +54,7 @@ class I:  # noqa: E742 - short namespace for intent names
     LOCK_SCREEN = "lock_screen"
     POWER = "power"
     SCREENSHOT = "screenshot"
+    COMPUTER_TASK = "computer_task"
     CREATE_FOLDER = "create_folder"
     DELETE_PATH = "delete_path"
     OPEN_FOLDER = "open_folder"
@@ -629,6 +630,11 @@ _HE_WINDOW = rf"(?:את\s+)?(?:עצמך|{_HE_NAME}|ה?חלון\s+(?:שלך|הר�
 _EN_WINDOW = r"(?:yourself|your window|the (?:jarvis|main) window|jarvis)"
 
 
+def _b_computer(m: re.Match[str], text: str) -> dict[str, Any] | None:
+    goal = (m.groupdict().get("goal") or "").strip(" :,.-–—\"'")
+    return {"goal": goal} if goal else {}
+
+
 def _b_organize(m: re.Match[str], text: str) -> dict[str, Any] | None:
     """A known folder ("the downloads") becomes a location; anything else names a project or a path."""
     target = (m.groupdict().get("x") or "").strip(" .,\"'")
@@ -830,6 +836,12 @@ _RULES: list[Rule] = [
         r"^(?:תעשה|עשה|תעשי)\s+צילום\s+מסך$",
         r"^צילום\s+מסך$",
     ), "simple", (AgentId.SYSTEM,)),
+    Rule(I.COMPUTER_TASK, _p(
+        r"^(?:take\s+control\s+of|take\s+over|control|operate|drive|use)\s+(?:the\s+|my\s+)?(?:computer|screen|mouse|desktop|keyboard)(?:\s+(?:and|to)\s+(?P<goal>.+))?$",
+        r"^(?:use\s+)?(?:the\s+)?(?:mouse\s+and\s+keyboard|mouse|screen)\s+to\s+(?P<goal>.+)$",
+        rf"^{_alt('תשלוט', 'שלוט', 'תשלטי', 'שלטי', 'תשתלט', 'השתלט', 'תשתלטי')}\s+(?:לי\s+)?(?:על\s+)?(?:ב|ל|ה)?(?:מחשב|מסך|עכבר)(?:\s+(?:ו|כדי\s+ל)?(?P<goal>.+))?$",
+        rf"^{_alt('קח', 'תיקח', 'קחי')}\s+שליטה\s+(?:על\s+)?(?:ב|ל|ה)?(?:מחשב|מסך)(?:\s+(?:ו|כדי\s+ל)?(?P<goal>.+))?$",
+    ), "simple", (AgentId.SYSTEM,), _b_computer),
     Rule(I.CREATE_FOLDER, _p(
         r"^(?:create|make|add|new)\s+(?:a\s+)?(?:new\s+)?(?:folder|directory|dir)(?:\s+(?:named|called)?\s*(?P<name>\"[^\"]+\"|[^\s].*?))?(?:\s+(?P<loc>(?:on|in|at|inside|into)\s+.+))?$",
         rf"^{V_CREATE_HE}\s+{LI}(?:ה)?(?:תיקייה|תיקיה|תיקיית)(?:\s+חדשה)?(?:\s+(?:בשם|שנקראת)?\s*(?P<name>\"[^\"]+\"|[^\s].*?))?(?:\s+(?P<loc>(?:על\s+|בתוך\s+|לתוך\s+|ב)\S.*))?$",
@@ -977,7 +989,7 @@ _INTENT_DEFAULTS: dict[str, tuple[Complexity, tuple[AgentId, ...]]] = {
 
 # Intents that change something on the machine (used by CHAT mode to refuse actions).
 ACTION_INTENTS = frozenset({
-    I.VOLUME, I.BRIGHTNESS, I.MEDIA, I.LOCK_SCREEN, I.POWER, I.SCREENSHOT, I.CREATE_FOLDER, I.DELETE_PATH, I.OPEN_FOLDER,
+    I.VOLUME, I.BRIGHTNESS, I.MEDIA, I.LOCK_SCREEN, I.POWER, I.SCREENSHOT, I.COMPUTER_TASK, I.CREATE_FOLDER, I.DELETE_PATH, I.OPEN_FOLDER,
     I.RUN_PROJECT, I.TEST_PROJECT, I.RUN_TESTS, I.DESIGN, I.WRITE_TEXT, I.BUILD_APP, I.WRITE_CODE, I.ORGANIZE_PROJECT,
     I.PLAN, I.RESEARCH, I.WEB_SEARCH, I.OPEN_WEBSITE, I.OPEN_APP, I.CLOSE_APP, I.AGENT_ASSIGN, I.RESUME_TASK, I.FIND_FILES, I.WEATHER, I.SYSTEM_STATUS,
 })

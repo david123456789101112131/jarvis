@@ -38,6 +38,8 @@ AGENT_PROFILES: dict[AgentId, dict[Capability, list[str]]] = {
         C.FS_DELETE: ["{workspace}", "{projects}", "{user}"],
         C.NOTIFY: [],
         C.CLIPBOARD: [],
+        C.SCREEN_READ: [],
+        C.INPUT_CONTROL: [],
         C.MEMORY_READ: [],
         C.MEMORY_WRITE: [],
         C.AI_GENERATE: [],
@@ -101,4 +103,6 @@ CAPABILITY_RISK: dict[Capability, RiskLevel] = {
     C.AI_GENERATE: RiskLevel.LOW,
     C.NOTIFY: RiskLevel.SAFE,
     C.CLIPBOARD: RiskLevel.LOW,
+    C.SCREEN_READ: RiskLevel.LOW,
+    C.INPUT_CONTROL: RiskLevel.LOW,     # each click and keystroke is assessed on its own (jarvis.computer.policy)
 }

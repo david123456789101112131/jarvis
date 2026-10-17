@@ -70,6 +70,11 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--voice", action="store_true", help="also run the voice self-test (plays two sentences)")
     check.add_argument("--json", action="store_true", help="print the report as JSON")
     sub.add_parser("voice-test", help="check the voice stack on this PC")
+    comp = sub.add_parser("computer", help="the local model that lets JARVIS control the computer")
+    comp.add_argument("action", nargs="?", choices=["install", "status"], default="status")
+    comp.add_argument("--dir", help="where to install (default: JARVIS's models folder)")
+    comp.add_argument("--adopt", help="use a model folder that is already downloaded, without downloading")
+    comp.add_argument("--no-convert", action="store_true", help="download only, skip the GGUF conversion")
     sub.add_parser("paths", help="show JARVIS's folders")
     sub.add_parser("autostart", help="show whether JARVIS starts with Windows")
     return p
@@ -106,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
         from jarvis.selfcheck import main as check
 
         return check(settings, paths, full=args.full, voice=args.voice, as_json=args.json)
+    if command == "computer":
+        return _computer(settings, paths, args)
     if command in ("open", "say", "status", "stop"):
         running = _running(paths)
         if running is None:
@@ -220,6 +227,39 @@ def _autostart(settings: Any) -> int:
         if st["disabled_in_task_manager"]:
             print("  Turned off in Task Manager > Startup apps: Windows does not run it.")
     return EXIT_OK
+
+
+def _computer(settings: Any, paths: Any, args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from jarvis.computer import install as inst
+    from jarvis.computer.server import ModelFiles
+    from jarvis.config.loader import save_settings, update_settings
+
+    default_root = Path(settings.computer.models_dir) if settings.computer.models_dir else paths.models / "computer"
+    if args.action == "status":
+        problem = ModelFiles(default_root).problem()
+        print(f"Model folder: {default_root}")
+        print("Status: ready to control the computer." if problem is None else f"Not installed yet: {problem}")
+        print("Install with:  jarvis computer install" if problem else "")
+        return EXIT_OK
+
+    adopt = Path(args.adopt).expanduser() if args.adopt else None
+    root = Path(args.dir).expanduser() if args.dir else default_root
+    try:
+        result = inst.install(root, adopt=adopt, do_convert=not args.no_convert, progress=lambda m: print(m, flush=True))
+    except (OSError, RuntimeError) as exc:
+        print(f"Install failed: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    final = result.root
+    if str(final) != str(paths.models / "computer"):      # remember where the model lives, for every launch
+        save_settings(update_settings(settings, {"computer": {"models_dir": str(final)}}))
+        print(f"JARVIS will use the model in {final}.")
+    if result.ok:
+        print("Done. JARVIS can now control the computer (it asks before each action; Esc twice stops it).")
+        return EXIT_OK
+    print("The model folder is still incomplete; see the messages above.", file=sys.stderr)
+    return EXIT_ERROR
 
 
 def _keys(paths: Any, action: str, name: str | None, *, every: bool = False) -> int:

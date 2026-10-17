@@ -200,3 +200,5 @@ class Capability(StrEnum):
     AI_GENERATE = "ai.generate"
     NOTIFY = "notify"
     CLIPBOARD = "clipboard"
+    SCREEN_READ = "screen.read"        # look at the screen (screenshots for the computer-control model)
+    INPUT_CONTROL = "input.control"    # move the mouse, click and type like a person

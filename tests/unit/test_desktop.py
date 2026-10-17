@@ -152,6 +152,22 @@ def test_closing_the_window_keeps_jarvis_as_the_mini_orb(tmp_path: Path) -> None
     core.stop()
 
 
+def test_computer_mode_hides_jarvis_and_restores_it(tmp_path: Path) -> None:
+    _shell, web, core, app = make_shell(tmp_path)
+    main, orb = web.windows
+    eventually(lambda: main.visible)
+    assert app.window_handler("computer_on") is True          # a session starts: JARVIS gets out of the way
+    eventually(lambda: not main.visible and not orb.visible)
+    assert app.ui_visible is False
+    assert app.window_handler("computer_show") is True        # an approval needs to be shown
+    eventually(lambda: main.visible)
+    assert app.window_handler("computer_hide") is True        # then JARVIS hides again to act
+    eventually(lambda: not main.visible)
+    assert app.window_handler("computer_off") is True         # the session ends: JARVIS comes back as it was
+    eventually(lambda: main.visible)
+    core.stop()
+
+
 def test_quit_shuts_jarvis_down_and_closes_the_windows(tmp_path: Path) -> None:
     _shell, web, core, app = make_shell(tmp_path)
     main, orb = web.windows

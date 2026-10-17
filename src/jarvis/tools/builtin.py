@@ -18,8 +18,10 @@ from jarvis.tools.web import WEB_TOOLS
 
 
 def builtin_tool_classes() -> list[type[Tool]]:
+    from jarvis.tools.computer import COMPUTER_TOOLS
+
     classes: list[type[Tool]] = [*FS_TOOLS, *APP_TOOLS, *SHELL_TOOLS, *SYSTEM_TOOLS, *WEB_TOOLS, *DEV_TOOLS,
-                                 *MEMORY_TOOLS, *ORGANIZE_TOOLS, *PROJECT_TOOLS]
+                                 *MEMORY_TOOLS, *ORGANIZE_TOOLS, *PROJECT_TOOLS, *COMPUTER_TOOLS]
     try:
         from jarvis.tools.creative_tools import CREATIVE_TOOLS
 

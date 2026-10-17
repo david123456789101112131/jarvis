@@ -278,6 +278,39 @@ class WebSettings(_Section):
     )
 
 
+class ComputerSettings(_Section):
+    """Computer control: a local vision model (Holo3.1 by H Company) looks at the screen and works the mouse and
+    keyboard for the System Agent. Every task asks first; every click and keystroke passes the permission gate."""
+
+    enabled: bool = True
+    # Where the model and its llama.cpp server live ("" = <cache>/models/computer; `jarvis computer install`).
+    models_dir: str = ""
+    # An OpenAI-compatible server that already runs a Holo model ("" = JARVIS starts its own on this computer).
+    # A server on another machine receives screenshots of your screen, so every task then says so first.
+    server_url: str = ""
+    port: int = 8091                      # for JARVIS's own server (0 = any free port)
+    gpu_layers: int = 999                 # model layers on the graphics card (999 = all of them)
+    context: int = 32768
+    idle_minutes: float = 10.0            # the server stops after this long without a task (frees the graphics card)
+    max_steps: int = 40                   # actions per task
+    max_minutes: float = 15.0             # time per task
+    settle_s: float = 0.8                 # wait after each action before looking at the screen again
+
+    @field_validator("max_steps")
+    @classmethod
+    def _check_steps(cls, value: int) -> int:
+        if not 1 <= value <= 200:
+            raise ValueError("computer.max_steps must be between 1 and 200")
+        return value
+
+    @field_validator("max_minutes", "idle_minutes")
+    @classmethod
+    def _check_minutes(cls, value: float) -> float:
+        if not 0.5 <= value <= 240:
+            raise ValueError("must be between 0.5 and 240 minutes")
+        return value
+
+
 class Settings(_Section):
     general: GeneralSettings = Field(default_factory=GeneralSettings)
     paths: PathsSettings = Field(default_factory=PathsSettings)
@@ -290,3 +323,4 @@ class Settings(_Section):
     voice: VoiceSettings = Field(default_factory=VoiceSettings)
     ui: UISettings = Field(default_factory=UISettings)
     web: WebSettings = Field(default_factory=WebSettings)
+    computer: ComputerSettings = Field(default_factory=ComputerSettings)

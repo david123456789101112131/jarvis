@@ -274,6 +274,7 @@ class Reporter(Protocol):
     async def phase(self, assignment_id: str, status: AgentStatus) -> None: ...
     async def progress(self, assignment_id: str, fraction: float, message: str = "") -> None: ...
     async def action(self, assignment_id: str, text: str) -> None: ...
+    async def extend_deadline(self, assignment_id: str, seconds: float) -> None: ...
 
 
 class NullReporter:
@@ -284,6 +285,9 @@ class NullReporter:
         return None
 
     async def action(self, assignment_id: str, text: str) -> None:
+        return None
+
+    async def extend_deadline(self, assignment_id: str, seconds: float) -> None:
         return None
 
 
@@ -346,6 +350,12 @@ class RunContext:
         self.check_cancelled()
         await self.reporter.phase(self.assignment_id, AgentStatus.WORKING)
         await self.reporter.action(self.assignment_id, _describe_call(name, params))
+        registry = self.runtime.registry
+        if registry.has(name):
+            # A tool that may take longer than the agent's usual time (computer control) moves the deadline out.
+            need = registry.get(name).max_runtime_s(self.runtime.executor.services)
+            if need:
+                await self.reporter.extend_deadline(self.assignment_id, need)
         result = await self.runtime.executor.execute(
             name, params, agent_id=self.agent.id.value, task_id=self.task.task_id, subtask_id=self.task.id,
             cancel=self.cancel, cwd=self.cwd, progress=self._tool_progress, mode=self.task.mode, lang=self.lang,

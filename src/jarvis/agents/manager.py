@@ -77,6 +77,9 @@ class _Assignment:
     timed_out: bool = False
     confirmations: set[str] = field(default_factory=set)
     last_progress_emit: float = 0.0
+    timeout_s: float = 0.0                  # the working time it has (a long tool call can extend it)
+    deadline: float = 0.0                   # loop time when it runs out
+    timer: asyncio.TimerHandle | None = None
 
     @property
     def id(self) -> str:
@@ -309,13 +312,8 @@ class AgentManager:
                         st, task.task_id, kind="agent")
         await self._publish_progress(a, 0.0, "started", force=True)
 
-        timeout = task.timeout_s or float(self.runtime.settings.agents.timeouts_s.get(st.id.value, 300.0))
-
-        def on_timeout() -> None:
-            a.timed_out = True
-            a.token.cancel(f"timeout after {timeout:.0f}s")
-
-        timer = asyncio.get_running_loop().call_later(timeout, on_timeout)
+        a.timeout_s = task.timeout_s or float(self.runtime.settings.agents.timeouts_s.get(st.id.value, 300.0))
+        self._arm_timer(a, a.timeout_s)
         run = RunContext(agent, task, a.token, reporter=self, assignment_id=a.id)
         with agent_scope(st.id.value):           # every model call of this assignment uses the agent's provider
             handle = asyncio.ensure_future(agent.handle(task, run))
@@ -350,9 +348,11 @@ class AgentManager:
                                 summary=t(lang, f"תקלה פנימית ב{agent.name_he}: {exc}", f"{agent.name} hit an internal error: {exc}"),
                                 errors=[f"{type(exc).__name__}: {exc}"], data={"code": "internal_error"})
         finally:
-            timer.cancel()
+            if a.timer is not None:
+                a.timer.cancel()
 
         if a.timed_out:
+            timeout = a.timeout_s
             note = t(lang, f"{agent.name_he} חרג מזמן העבודה ({timeout:.0f} שניות).",
                      f"{agent.name} ran out of time ({timeout:.0f}s).")
             result.status = ResultStatus.FAILED
@@ -377,6 +377,18 @@ class AgentManager:
                         "warning" if result.status in (ResultStatus.PARTIAL, ResultStatus.CANCELLED) else "error",
                         kind="result")
         await self._after_run(st, result)
+
+    def _arm_timer(self, a: _Assignment, seconds: float) -> None:
+        loop = asyncio.get_running_loop()
+        if a.timer is not None:
+            a.timer.cancel()
+        a.deadline = loop.time() + seconds
+
+        def on_timeout() -> None:
+            a.timed_out = True
+            a.token.cancel(f"timeout after {a.timeout_s:.0f}s")
+
+        a.timer = loop.call_later(seconds, on_timeout)
 
     async def _await_handle(self, handle: asyncio.Future[AgentResult], a: _Assignment) -> AgentResult:
         waiter: asyncio.Future[Any] = asyncio.ensure_future(a.token.wait())
@@ -505,6 +517,17 @@ class AgentManager:
         st = self._states[a.task.agent]
         st.last_action, st.last_action_at = text[:200], utcnow()
         await self._emit(st)
+
+    async def extend_deadline(self, assignment_id: str, seconds: float) -> None:
+        """A tool call that may run long (computer control) gets its time: the deadline never moves in."""
+        a = self._assignments.get(assignment_id)
+        if a is None or a.state != "running" or a.timed_out or a.token.cancelled:
+            return
+        remaining = a.deadline - asyncio.get_running_loop().time()
+        if seconds <= remaining:
+            return
+        a.timeout_s += seconds - remaining
+        self._arm_timer(a, seconds)
 
     async def _publish_progress(self, a: _Assignment, fraction: float, message: str, *, force: bool = False) -> None:
         now = time.monotonic()

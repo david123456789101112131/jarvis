@@ -75,7 +75,7 @@ UI_KEYS = ("theme_color", "orb_size", "orb_opacity", "follow_mouse", "always_act
 RESTART_SECTIONS = ("paths", "server", "memory")
 SECTION_NAMES_HE = {"general": "כללי", "paths": "תיקיות", "server": "שרת", "ai": "AI", "agents": "סוכנים",
                     "orchestrator": "משימות", "memory": "זיכרון", "security": "אבטחה", "voice": "קול", "ui": "ממשק",
-                    "web": "אינטרנט"}
+                    "web": "אינטרנט", "computer": "שליטה במחשב"}
 
 QUICK_TOOLS = (
     ("chrome", "Chrome", "כרום", "chrome", "open Chrome", "פתח את כרום"),
@@ -156,6 +156,10 @@ class JarvisApp:
                                     recall_limit=s.memory.recall_limit, redactor=self.redactor)
         self.services = ToolServices(settings=s, paths=self.paths, guard=self.guard, redactor=self.redactor,
                                      secrets=self.secrets, host=host, memory=self.memory, ai=self.router, bus=self.bus)
+        from jarvis.computer.service import ComputerService
+
+        self.computer = ComputerService(s.computer, self.paths, self.services.processes, self.window_action)
+        self.services.extras["computer"] = self.computer
         self.executor = ToolExecutor(self.registry, self.services, self.permissions, self.broker, self.kill_switch,
                                      audit=self.audit, activity=self.activity, mode_provider=self._mode)
         self.runtime = AgentRuntime(settings=s, executor=self.executor, registry=self.registry,
@@ -225,6 +229,8 @@ class JarvisApp:
         self.audit.add_sink(self._audit_to_bus)
         self.kill_switch.add_listener(self._kill_to_bus)
         self.broker.add_listener(self._on_confirm_request)
+        self.broker.add_listener(self.computer.on_confirm)
+        self.computer.start()
         self.orchestrator.add_listener(self._on_task_event)
 
         await self.memory.start()
@@ -248,6 +254,8 @@ class JarvisApp:
         if self.voice is not None:
             with contextlib.suppress(Exception):
                 await self.voice.stop()
+        with contextlib.suppress(Exception):
+            await self.computer.aclose()
         with contextlib.suppress(Exception):
             await self.core.shutdown()
         with contextlib.suppress(Exception):

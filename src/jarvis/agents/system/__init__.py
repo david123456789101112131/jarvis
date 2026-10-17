@@ -125,14 +125,16 @@ class SystemAgent(BaseAgent):
         "programs, manage processes, run PowerShell commands, change settings (volume, brightness), automate "
         "repetitive actions and check system health. Prefer the dedicated tools over shell commands; use "
         "run_command only when no tool fits, and keep commands read-only unless the task requires a change. "
+        "Use use_computer only for a task that can be done solely through a program's window (clicking and "
+        "typing on screen) when no direct tool or command fits; prefer the direct tools whenever one does. "
         "Never delete, move or overwrite more than the task needs. Report exactly what changed on the computer."
     )
     llm_tools = (
         "list_dir", "read_file", "write_file", "create_folder", "copy_path", "move_path", "delete_path", "find_files",
         "file_info", "open_path", "organize_folder", "open_app", "open_url", "close_app", "running_apps",
         "list_processes", "kill_process", "run_command", "start_process", "system_info", "health_check", "volume",
-        "brightness", "media", "lock_screen", "power", "cancel_shutdown", "screenshot", "notify", "clipboard",
-        "recall", "remember", "project_info",
+        "brightness", "media", "lock_screen", "power", "cancel_shutdown", "screenshot", "use_computer", "notify",
+        "clipboard", "recall", "remember", "project_info",
     )
 
     # ------------------------------------------------------------------ apps and sites
@@ -422,6 +424,27 @@ class SystemAgent(BaseAgent):
         saved = (res.data or {}).get("path", "")
         return run.result(summary=t(run.lang, f"צילמתי את המסך ושמרתי: {saved}", f"Screenshot saved: {saved}"),
                           data=res.data)
+
+    @skill(description="Control the computer by looking at the screen (mouse and keyboard), for a GUI-only task",
+           intents=(I.COMPUTER_TASK,))
+    async def use_computer(self, task: AgentTask, run: RunContext, goal: str = "") -> AgentResult:
+        goal = (goal or task.instruction or "").strip()
+        service = run.runtime.executor.services.extras.get("computer")
+        problem = service.problem() if service is not None else "computer control is not available"
+        if problem:
+            return run.result(
+                status=ResultStatus.FAILED, progress=0.0,
+                summary=t(run.lang, "שליטה במחשב עדיין לא מותקנת. אפשר להתקין עם: jarvis computer install",
+                          "Computer control is not installed yet. Install it with: jarvis computer install"),
+                errors=[problem], data={"code": "computer_unavailable", "next_step": "jarvis computer install"})
+        res = await run.tool("use_computer", goal=goal)
+        if res.ok:
+            return run.result(summary=res.summary or t(run.lang, "סיימתי את המשימה על המסך.",
+                                                       "Finished the on-screen task."), data=res.data)
+        if res.denied == "stopped":
+            return run.result(status=ResultStatus.FAILED, progress=0.0, summary=res.summary,
+                              data={"code": "user_stopped"})
+        return fail(run, res, "לא הצלחתי לבצע את המשימה על המסך", "Could not do the on-screen task")
 
     @skill(description="Run a PowerShell/shell command and report its output")
     async def run_command(self, task: AgentTask, run: RunContext, command: str = "", shell: str = "auto",

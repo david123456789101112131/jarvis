@@ -83,6 +83,7 @@ Rules:
 | `orchestration/` | `TaskPlan`/`SubTask`, rule-based and LLM planning, scheduler, retry/loop guard, cancellation, verification, synthesis. |
 | `core/` | `JarvisCore`: modes, intent detection (bilingual), command router, responses, session context. |
 | `voice/` | Audio I/O, wake word engines, VAD/endpointing, STT engines, TTS engines with phrase cache, `VoicePipeline`, `VoiceService`. |
+| `computer/` | Computer control: a local vision model (Holo3.1, via llama.cpp) proposes actions; the backend (Win32 screen/input), the safety policy (judged from what Windows reports under the pointer), the look→think→act session, the model server, and `jarvis computer install`. Behind `use_computer`/`computer_act` in the tool layer. |
 | `server/` | FastAPI app, WebSocket hub, REST routes, static UI hosting. |
 | `ui/` | Desktop shell (pywebview windows) + built static web UI. |
 | `app.py` | Composition root: builds and wires every service; start/stop lifecycle. |
@@ -151,7 +152,8 @@ Plans are persisted after every state change, which is what makes resume possibl
 - **Capabilities** (`fs.read`, `fs.write`, `fs.delete`, `process.list`, `process.launch`,
   `process.kill`, `shell.execute`, `system.info`, `system.settings`, `system.power`,
   `net.search`, `net.fetch`, `net.api`, `code.execute`, `code.install`, `git`,
-  `memory.read`, `memory.write`, `ai.generate`, `notify`, `clipboard`).
+  `memory.read`, `memory.write`, `ai.generate`, `notify`, `clipboard`, `screen.read`,
+  `input.control`).
 - **Grants** per agent with optional scope: folder roots, task id, expiry, max uses.
   JARVIS (or the user) can grant, revoke, and narrow grants at runtime.
 - **Path guard**: writes allowed only under configured roots (workspace and projects by
@@ -163,6 +165,11 @@ Plans are persisted after every state change, which is what makes resume possibl
   the UI (or by voice). No answer before the timeout means **deny**.
 - **Kill switches**: per agent and global (UI button, voice "עצור הכול", API). Engaging
   cancels running work, kills child processes, and blocks the tool layer until released.
+- **Computer control**: the local vision model only *proposes* an action; each one is a
+  `computer_act` call through the whole gate above, and its risk is judged from what Windows
+  itself reports under the pointer (UI Automation + window), never from the model's words.
+  Own windows, password fields, system/credential windows and `Ctrl+Alt+Del` are refused;
+  a session also stops the instant the user presses Esc twice or touches the mouse/keyboard.
 - **Secrets**: OS keyring (Windows Credential Manager) or environment; never sent to the UI,
   never logged (redaction filter on every log record, bus payload and UI event); child
   processes get an environment with secret variables stripped; outgoing HTTP payloads are

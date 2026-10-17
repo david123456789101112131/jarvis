@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from jarvis.tools.services import ToolServices
 
 ProgressFn = Callable[[float, str], Awaitable[None] | None]
+SubcallFn = Callable[[str, dict[str, Any]], Awaitable["ToolResult"]]
 
 
 class ToolResult(BaseModel):
@@ -104,9 +105,17 @@ class ToolContext:
     progress_fn: ProgressFn | None = None
     extra: dict[str, Any] = field(default_factory=dict)
     lang: str = "en"                     # language of the request: summaries and messages use it
+    # Set by the executor: runs another tool as the same agent, for the same task, through the whole gate.
+    subcall: SubcallFn | None = None
 
     def check_cancelled(self) -> None:
         self.cancel.raise_if_cancelled()
+
+    async def call(self, tool: str, /, **params: Any) -> ToolResult:
+        """Run another tool from inside this one; it is checked, approved and audited like any call."""
+        if self.subcall is None:
+            raise ToolError(f"{tool} can only run through the tool executor")
+        return await self.subcall(tool, params)
 
     def t(self, he: str, en: str) -> str:
         """The Hebrew or English variant of a user-facing sentence, in the request's language."""
@@ -164,6 +173,11 @@ class Tool(ABC):
 
     async def plan(self, params: Any, ctx: ToolContext) -> ActionPlan:
         return ActionPlan(summary=f"{self.name}")
+
+    def max_runtime_s(self, services: ToolServices) -> float | None:
+        """How long one call may need, approval included, when that can be longer than an agent's usual
+        working time (the agent's deadline then moves out for it). None: the usual time is enough."""
+        return None
 
     @abstractmethod
     async def run(self, params: Any, ctx: ToolContext) -> ToolResult: ...

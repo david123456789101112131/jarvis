@@ -149,6 +149,8 @@ class DesktopShell:
         self.orb: Any = None
         self._quitting = False
         self._lock = threading.Lock()
+        self._computer_mode = False       # JARVIS's windows are hidden while it controls the computer
+        self._resume_full = False          # whether the main window was up before the session
 
     # ------------------------------------------------------------------ windows
     def create(self) -> None:
@@ -217,7 +219,9 @@ class DesktopShell:
     # ------------------------------------------------------------------ actions (/api/window/{action})
     def handle(self, action: str) -> bool:
         actions = {"show": self.to_full, "full": self.to_full, "hide": self.to_mini, "mini": self.to_mini,
-                   "toggle": self.toggle, "reveal": self.reveal, "quit": self.quit}
+                   "toggle": self.toggle, "reveal": self.reveal, "quit": self.quit,
+                   "computer_on": self.computer_on, "computer_off": self.computer_off,
+                   "computer_hide": self._hide_all, "computer_show": self.to_full}
         fn = actions.get(action)
         if fn is None:
             return False
@@ -244,6 +248,31 @@ class DesktopShell:
     def _show_orb(self) -> None:
         with contextlib.suppress(Exception):
             self.orb.show()
+
+    def _hide_all(self) -> None:
+        """Hide both windows (the orb too), so JARVIS is not on screen while it controls the computer."""
+        with self._lock:
+            for window in (self.main, self.orb):
+                with contextlib.suppress(Exception):
+                    window.hide()
+            self._visible(False)
+
+    def computer_on(self) -> None:
+        """Enter computer-control: remember whether the main window was up, then hide everything."""
+        if not self._computer_mode:
+            self._computer_mode = True
+            self._resume_full = self.app.ui_visible
+        self._hide_all()
+
+    def computer_off(self) -> None:
+        """Leave computer-control: put JARVIS back the way it was."""
+        if not self._computer_mode:
+            return
+        self._computer_mode = False
+        if self._resume_full:
+            self.to_full()
+        else:
+            self.to_mini()
 
     def reveal(self) -> None:
         """A voice command opened a screen: bring the main window up if only the orb is on screen."""
