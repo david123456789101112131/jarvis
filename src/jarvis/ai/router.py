@@ -2,8 +2,12 @@
 
 Roles (`chat`, `intent`, `planner`, `agent`, `verifier`, `synthesis`) carry their own effort
 and token limits from `AISettings.roles`. With `provider = "auto"` the order is
-Anthropic → OpenAI → local model; a provider that is unreachable or overloaded is skipped
-for that call. A refusal is not routed to another vendor: it is reported as it is.
+Anthropic → xAI (Grok) → OpenAI → local model; a provider that is unreachable or overloaded is
+skipped for that call. A refusal is not routed to another vendor: it is reported as it is.
+
+While one of the five agents works (`jarvis.ai.context.agent_scope`), the provider chosen for it
+in `ai.agent_providers` goes first and JARVIS's usual order follows as its fallback: when the
+agent's provider fails for any reason but a refusal, the call moves on down that order.
 """
 
 from __future__ import annotations
@@ -18,15 +22,22 @@ from pydantic import BaseModel, ValidationError
 
 from jarvis.ai.anthropic_provider import AnthropicProvider
 from jarvis.ai.base import AIProvider
-from jarvis.ai.openai_provider import LocalModelProvider, OpenAIProvider
+from jarvis.ai.context import current_agent
+from jarvis.ai.openai_provider import LocalModelProvider, OpenAIProvider, XaiProvider
 from jarvis.ai.types import AIMessage, AIResponse, CompletionRequest, Effort, ToolSpec
-from jarvis.common.errors import ProviderError, ProviderUnavailable
+from jarvis.common.enums import AgentId
+from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable
 from jarvis.config.settings import AISettings
 
 log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
-AUTO_ORDER = ("anthropic", "openai", "local")
+AUTO_ORDER = ("anthropic", "xai", "openai", "local")
+# Who makes a model, for a role whose model name is set while its provider is "auto".
+_MODEL_FAMILIES = (("claude", "anthropic"), ("grok", "xai"), ("gpt", "openai"), ("chatgpt", "openai"),
+                   ("o1", "openai"), ("o3", "openai"), ("o4", "openai"))
+NO_PROVIDER = ("No AI provider is configured. Add an Anthropic, xAI (Grok) or OpenAI API key in Settings, "
+               "or enable a local model.")
 
 
 class _KeyCache:
@@ -66,13 +77,15 @@ class ProviderRouter:
         def reader(name: str) -> _KeyCache:
             return _KeyCache(lambda: secrets.get(name) if secrets is not None else None)
 
-        anthropic_key, openai_key = reader("ANTHROPIC_API_KEY"), reader("OPENAI_API_KEY")
+        anthropic_key, xai_key = reader("ANTHROPIC_API_KEY"), reader("XAI_API_KEY")
+        openai_key = reader("OPENAI_API_KEY")
         router = cls(settings, [
             AnthropicProvider(settings.anthropic, anthropic_key),
+            XaiProvider(settings.xai, xai_key),
             OpenAIProvider(settings.openai, openai_key),
             LocalModelProvider(settings.local),
         ])
-        router._key_caches = [anthropic_key, openai_key]
+        router._key_caches = [anthropic_key, xai_key, openai_key]
         return router
 
     # -- status ------------------------------------------------------------------------------
@@ -86,31 +99,63 @@ class ProviderRouter:
         return bool(self.chain())
 
     def chain(self, role: str = "agent") -> list[AIProvider]:
-        """Available providers for a role, in the order they are tried."""
+        """Available providers for a role, in the order they are tried.
+
+        Inside an agent's work (`agent_scope`) that agent's provider comes first."""
+        return self.chain_for(role, current_agent())
+
+    def chain_for(self, role: str, agent: str | None) -> list[AIProvider]:
+        """The order for a role as `agent` would get it (None: JARVIS's own calls)."""
         if self.settings.provider == "none":
             return []
+        order = list(AUTO_ORDER)
+        for preferred in (self._role_preference(role), self.agent_preference(agent)):
+            if preferred in order:
+                order.remove(preferred)
+                order.insert(0, preferred)
+        return [self.providers[n] for n in order if n in self.providers and self.providers[n].available()]
+
+    def _role_preference(self, role: str) -> str | None:
         preferred = self.settings.role(role).provider
         if preferred in ("", "auto"):
             preferred = self.settings.provider
-        order = list(AUTO_ORDER)
-        if preferred in self.providers:
-            order.remove(preferred)
-            order.insert(0, preferred)
-        return [self.providers[n] for n in order if n in self.providers and self.providers[n].available()]
+        return preferred if preferred in self.providers else None
+
+    def agent_preference(self, agent: str | None) -> str | None:
+        """The provider chosen for an agent in `ai.agent_providers`; None = JARVIS's usual order."""
+        preferred = self.settings.agent_providers.get(agent, "auto") if agent else "auto"
+        return preferred if preferred in self.providers else None
 
     def active_name(self) -> str | None:
-        chain = self.chain("agent")
+        chain = self.chain_for("agent", None)
         return chain[0].name if chain else None
 
+    def agent_info(self, agent: str) -> dict[str, Any]:
+        """Which provider and model an agent works with right now (for its card in the UI)."""
+        chain = self.chain_for("agent", agent)
+        first = chain[0] if chain else None
+        model = self.settings.role("agent").model
+        if first is not None and not (model and self._model_owner("agent", model) == first.name):
+            model = first.model
+        return {"preferred": self.settings.agent_providers.get(agent, "auto"),
+                "provider": first.name if first else None,
+                "model": model if first else None}
+
     def status(self) -> dict[str, Any]:
+        def on(name: str) -> bool:
+            provider = self.providers.get(name)
+            return bool(provider and provider.available())
+
         anthropic = self.providers.get("anthropic")
         return {
             "active": self.active_name(),
-            "anthropic": bool(anthropic and anthropic.available()),
-            "openai": bool(self.providers.get("openai") and self.providers["openai"].available()),
-            "local": bool(self.providers.get("local") and self.providers["local"].available()),
+            "anthropic": on("anthropic"),
+            "xai": on("xai"),
+            "openai": on("openai"),
+            "local": on("local"),
             "fallbacks": bool(isinstance(anthropic, AnthropicProvider) and anthropic.available()
                               and anthropic.fallbacks_enabled),
+            "agents": {a.value: self.agent_info(a.value)["provider"] for a in AgentId},
         }
 
     def describe(self) -> list[dict[str, Any]]:
@@ -145,23 +190,24 @@ class ProviderRouter:
         )
 
     async def complete(self, request: CompletionRequest, *, provider: str | None = None) -> AIResponse:
-        chain = self.chain(request.role)
+        agent = current_agent()
+        chain = self.chain_for(request.role, agent)
         if provider is not None:
             chain = [p for p in chain if p.name == provider] or chain
         if not chain:
-            raise ProviderUnavailable(
-                "No AI provider is configured. Add an Anthropic or OpenAI API key in Settings, "
-                "or enable a local model."
-            )
+            raise ProviderUnavailable(NO_PROVIDER)
+        agents_choice = self.agent_preference(agent)
+        owner = self._model_owner(request.role, request.model) if request.model else None
         last: ProviderError | None = None
         for index, p in enumerate(chain):
             req = request
-            if request.model and index > 0:
-                req = request.model_copy(update={"model": None})  # a role's model name belongs to its first provider
+            if request.model and p.name != owner:
+                req = request.model_copy(update={"model": None})  # a role's model name belongs to one provider
             try:
                 response = await p.complete(req)
             except ProviderError as exc:
-                retry_elsewhere = isinstance(exc, ProviderUnavailable) or exc.retryable
+                retry_elsewhere = (isinstance(exc, ProviderUnavailable) or exc.retryable
+                                   or (p.name == agents_choice and not isinstance(exc, ProviderRefusal)))
                 if not retry_elsewhere or index == len(chain) - 1:
                     raise
                 last = exc
@@ -171,6 +217,19 @@ class ProviderRouter:
             self.last_provider = p.name
             return response
         raise last or ProviderUnavailable("No AI provider answered.")  # pragma: no cover
+
+    def _model_owner(self, role: str, model: str) -> str | None:
+        """The provider a role's model name was chosen for: the role's provider, else the maker of that
+        model, else the first provider in the role's own order."""
+        preferred = self._role_preference(role)
+        if preferred is not None:
+            return preferred
+        name = model.lower()
+        for prefix, maker in _MODEL_FAMILIES:
+            if name.startswith(prefix):
+                return maker
+        chain = self.chain_for(role, None)
+        return chain[0].name if chain else None
 
     async def ask(self, role: str, prompt: str, *, system: str = "", effort: Effort | None = None,
                   max_tokens: int | None = None) -> str:

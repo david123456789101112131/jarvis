@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { MODES, THEMES, type DeepPartialSettings, type SecretStatus, type SettingsObject, type Theme, type UISettings } from '../api/types';
+import { AGENT_IDS, MODES, THEMES, type DeepPartialSettings, type SecretStatus, type SettingsObject, type Theme, type UISettings } from '../api/types';
 import { useI18n, type MessageKey } from '../i18n';
 import { useApi, useAppState, useDispatch, useResource, useRunner, useToast } from '../state/context';
 import { Icon } from '../components/Icon';
@@ -332,10 +332,27 @@ function ProvidersSection({ settings, onSaved }: { settings: SettingsObject; onS
         options: [
           { value: 'auto', label: t('settings.auto') },
           { value: 'anthropic', label: 'Anthropic (Claude)' },
+          { value: 'xai', label: 'xAI (Grok)' },
           { value: 'openai', label: 'OpenAI' },
           { value: 'local', label: t('settings.local') },
         ],
       },
+      ...AGENT_IDS.map(
+        (id, i): FieldDef => ({
+          kind: 'select',
+          path: `ai.agent_providers.${id}`,
+          label: `settings.agentAI.${id}` as MessageKey,
+          hint: i === 0 ? 'settings.agentAIHint' : undefined,
+          options: [
+            { value: 'xai', label: 'xAI (Grok)' },
+            { value: 'anthropic', label: 'Anthropic (Claude)' },
+            { value: 'openai', label: 'OpenAI' },
+            { value: 'local', label: t('settings.local') },
+            { value: 'auto', label: t('settings.agentAIAuto') },
+          ],
+        }),
+      ),
+      { kind: 'text', path: 'ai.xai.model', label: 'settings.xaiModel', ltr: true },
       { kind: 'text', path: 'ai.anthropic.model', label: 'settings.anthropicModel', ltr: true },
       { kind: 'toggle', path: 'ai.anthropic.fallbacks', label: 'settings.fallbacks', hint: 'settings.fallbacksHint' },
       { kind: 'toggle', path: 'ai.anthropic.use_server_web_search', label: 'settings.webSearch', hint: 'settings.webSearchHint' },
@@ -348,6 +365,7 @@ function ProvidersSection({ settings, onSaved }: { settings: SettingsObject; onS
   );
   const status: { key: string; label: string; on: boolean }[] = [
     { key: 'anthropic', label: 'Anthropic', on: providers.anthropic },
+    { key: 'xai', label: 'xAI (Grok)', on: providers.xai },
     { key: 'openai', label: 'OpenAI', on: providers.openai },
     { key: 'local', label: t('settings.local'), on: providers.local },
   ];

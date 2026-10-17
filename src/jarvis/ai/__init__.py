@@ -1,8 +1,13 @@
-"""AI provider layer: provider-neutral conversations, Anthropic / OpenAI / local backends, routing."""
+"""AI provider layer: provider-neutral conversations, Anthropic / xAI / OpenAI / local backends, routing."""
 
 from jarvis.ai.anthropic_provider import AnthropicProvider
 from jarvis.ai.base import AIProvider
-from jarvis.ai.openai_provider import LocalModelProvider, OpenAICompatibleProvider, OpenAIProvider
+from jarvis.ai.openai_provider import (
+    LocalModelProvider,
+    OpenAICompatibleProvider,
+    OpenAIProvider,
+    XaiProvider,
+)
 from jarvis.ai.router import ProviderRouter
 from jarvis.ai.types import (
     AIMessage,
@@ -35,5 +40,6 @@ __all__ = [
     "ToolOutput",
     "ToolSpec",
     "Usage",
+    "XaiProvider",
     "strict_schema",
 ]

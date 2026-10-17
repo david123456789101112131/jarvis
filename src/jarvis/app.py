@@ -431,6 +431,7 @@ class JarvisApp:
             self.spawn(self.voice.restart(self.settings.voice), "voice-restart")
         if "ai" in patch:
             self.router.refresh()
+            await self._providers_changed()
         if "security" in patch:
             self.broker.timeout_s = self.settings.security.confirm_timeout_s
         lang = self.lang
@@ -442,6 +443,11 @@ class JarvisApp:
             await self.notify("info", "JARVIS", t(lang, f"חלק מהשינויים ייכנסו לתוקף אחרי הפעלה מחדש של JARVIS: {later}",
                                                   f"Some changes apply after JARVIS restarts: {later}"))
         return restart
+
+    async def _providers_changed(self) -> None:
+        """A key or an AI setting changed: show the new provider status and each agent's model."""
+        await self.bus.publish(event("providers", self.router.status(), sender="settings"))
+        await self.manager.publish_views()
 
     @property
     def lang(self) -> str:
@@ -457,6 +463,7 @@ class JarvisApp:
             raise KeyError(name)
         source = await asyncio.to_thread(self.secrets.set, name, value)
         self.router.refresh()
+        await self._providers_changed()
         await self.activity.log(t(self.lang, f"המפתח {name} נשמר ({source})", f"{KNOWN_SECRETS[name]} saved ({source})"),
                                 source=t(self.lang, "הגדרות", "Settings"), kind="settings")
         return source
@@ -464,6 +471,7 @@ class JarvisApp:
     async def delete_secret(self, name: str) -> None:
         await asyncio.to_thread(self.secrets.delete, name)
         self.router.refresh()
+        await self._providers_changed()
         await self.activity.log(t(self.lang, f"המפתח {name} נמחק", f"{KNOWN_SECRETS.get(name, name)} removed"),
                                 source=t(self.lang, "הגדרות", "Settings"), kind="settings")
 

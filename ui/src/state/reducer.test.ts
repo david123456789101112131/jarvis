@@ -60,6 +60,14 @@ describe('reducer', () => {
     expect(s.confirmations).toEqual([]);
   });
 
+  it('shows a new key at once: the provider status and each agent\'s provider', () => {
+    const data = { active: 'xai', anthropic: false, xai: true, openai: false, local: false, fallbacks: false, agents: { research: 'xai' } };
+    const s = event(createInitialState(), { type: 'providers', data });
+    expect(s.providers.xai).toBe(true);
+    expect(s.providers.active).toBe('xai');
+    expect(s.providers.agents?.research).toBe('xai');
+  });
+
   it('keeps the orb size and opacity within range', () => {
     const s = event(createInitialState(), { type: 'settings', data: { ui: { orb_size: 9, orb_opacity: -1 } } });
     expect(s.ui.orb_size).toBe(2);

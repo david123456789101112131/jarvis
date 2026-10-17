@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { AGENT_IDS, PRIORITIES, type ActivityEntry, type AgentId, type AgentView, type Priority } from '../api/types';
+import { AGENT_IDS, PRIORITIES, type ActivityEntry, type AgentId, type AgentView, type Priority, type ProviderName } from '../api/types';
 import { useI18n, type MessageKey } from '../i18n';
 import { formatDuration, formatRelative, formatTimeOf, textDir } from '../lib/format';
 import type { ScreenId } from '../lib/router';
@@ -21,6 +21,37 @@ function isAgentId(value: string | null): value is AgentId {
 
 function isBusy(agent: AgentView): boolean {
   return agent.status === 'working' || agent.status === 'thinking';
+}
+
+const PROVIDER_LABELS: Record<ProviderName, string> = {
+  anthropic: 'Anthropic (Claude)',
+  xai: 'xAI (Grok)',
+  openai: 'OpenAI',
+  local: '',
+};
+
+function AgentModel({ agent }: { agent: AgentView }) {
+  const { t } = useI18n();
+  const ai = agent.ai;
+  const label = (p: ProviderName) => PROVIDER_LABELS[p] || t('settings.local');
+  return (
+    <section className="agent-section" data-testid="agent-ai">
+      <p className="section-label">{t('agents.model')}</p>
+      {ai?.provider ? (
+        <p className="agent-last">
+          <Chip tone="info" dot>
+            {label(ai.provider)}
+          </Chip>
+          {ai.model ? <span className="ltr faint"> {ai.model}</span> : null}
+        </p>
+      ) : (
+        <p className="hint">{t('agents.noModel')}</p>
+      )}
+      {ai && ai.preferred !== 'auto' && ai.provider !== ai.preferred ? (
+        <p className="hint" data-testid="agent-ai-fallback">{t('agents.modelFallback', { provider: label(ai.preferred) })}</p>
+      ) : null}
+    </section>
+  );
 }
 
 function AgentListItem({ agent, active, onSelect }: { agent: AgentView; active: boolean; onSelect: () => void }) {
@@ -257,6 +288,8 @@ function AgentDetail({ agent, onNavigate }: { agent: AgentView; onNavigate: Navi
             <p className="hint">—</p>
           )}
         </section>
+
+        <AgentModel agent={agent} />
 
         <section className="agent-section">
           <p className="section-label">{t('agents.assign')}</p>

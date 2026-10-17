@@ -10,8 +10,9 @@ command center.
 ## התחלה מהירה
 
 **מה צריך:** Windows 10 או 11 (64 ביט), אינטרנט בזמן ההתקנה, ובערך 3GB פנויים בדיסק (כולל מודלי הדיבור).
-מפתח API של Claude אינו חובה: בלעדיו פקודות, פרויקטים ותוכניות עובדים, ואיתו JARVIS מבין שיחה חופשית וכותב
-קוד מותאם.
+מפתח AI אינו חובה: בלעדיו פקודות, פרויקטים ותוכניות עובדים, ואיתו JARVIS מבין שיחה חופשית וכותב קוד
+מותאם. חמשת הסוכנים עובדים עם Grok של xAI כשיש מפתח שלו, ו-JARVIS עצמו עם Claude; כל אחד מהם ממשיך עם
+הספק השני כשהראשון לא זמין.
 
 ### התקנה מתיקיית הקוד
 
@@ -24,8 +25,8 @@ command center.
    (`jarvis check`); ומציע קיצור דרך בשולחן העבודה. אפשר להריץ אותו שוב בכל זמן, הוא משלים רק את מה שחסר.
 2. להפעיל: לחיצה כפולה על `run.bat` או על קיצור הדרך.
 3. מפתח AI (רשות): במסך **הגדרות ← מפתחות API**, או בשורת הפקודה מתוך התיקייה:
-   `jarvis keys set ANTHROPIC_API_KEY`. המפתח נשמר במנהל האישורים של Windows ואינו מוצג שוב, לא בממשק
-   ולא ביומנים.
+   `jarvis keys set XAI_API_KEY` (Grok) או `jarvis keys set ANTHROPIC_API_KEY` (Claude). המפתח נשמר במנהל
+   האישורים של Windows ואינו מוצג שוב, לא בממשק ולא ביומנים. באיזה ספק כל סוכן עובד בוחרים ב**הגדרות ← ספקי AI**.
 
 ### התקנה כתוכנה רגילה
 
@@ -154,7 +155,9 @@ Options: `--no-voice`, `--port N` (default 8765, the next free port if busy), `-
   `JARVIS__VOICE__ENABLED=false` or `JARVIS__AI__PROVIDER=openai`.
 - `JARVIS_HOME=<folder>` keeps everything (data, logs, cache, workspace) under one folder: portable mode.
 - AI providers: Anthropic Claude (default model `claude-opus-5-5`, with Anthropic's server-side fallbacks on),
-  OpenAI, or a local OpenAI-compatible server such as Ollama. API keys: `ANTHROPIC_API_KEY`,
+  xAI Grok (`grok-4.7`), OpenAI, or a local OpenAI-compatible server such as Ollama. The five agents ask the
+  provider set for them in `ai.agent_providers` first (Grok by default) and fall back to JARVIS's order,
+  Anthropic → xAI → OpenAI → local, which JARVIS's own calls use. API keys: `ANTHROPIC_API_KEY`, `XAI_API_KEY`,
   `OPENAI_API_KEY`; optional `BRAVE_API_KEY` or `TAVILY_API_KEY` (web search), `PICOVOICE_ACCESS_KEY`
   (Porcupine wake word), `GITHUB_TOKEN` (Development agent).
 
@@ -181,7 +184,7 @@ src/jarvis/
   security/       path and network guards, secret store, redaction, code checks
   memory/         short-term, long-term and project memory (SQLite)
   voice/          wake word, speech recognition, speech synthesis
-  ai/             Anthropic, OpenAI and local providers
+  ai/             Anthropic, xAI, OpenAI and local providers
   server/         FastAPI on 127.0.0.1 with a per-run token
   ui/             the desktop window; the built interface
   host/           Windows (and POSIX) integration

@@ -612,8 +612,8 @@ class BaseAgent:
             t(task.language,
               f"{self.name_he} צריך מודל AI כדי לבצע את זה ואין כרגע ספק AI מוגדר.",
               f"{self.name} needs an AI model for this and no AI provider is configured."),
-            next_step=t(task.language, "להוסיף מפתח API של Anthropic או OpenAI בהגדרות, או להפעיל מודל מקומי.",
-                        "Add an Anthropic or OpenAI API key in Settings, or enable a local model."),
+            next_step=t(task.language, "להוסיף בהגדרות מפתח API של xAI (Grok), Anthropic או OpenAI, או להפעיל מודל מקומי.",
+                        "Add an xAI (Grok), Anthropic or OpenAI API key in Settings, or enable a local model."),
             data={"code": "ai_required"},
         )
 

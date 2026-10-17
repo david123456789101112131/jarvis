@@ -84,7 +84,7 @@ export function createInitialState(): AppState {
     killSwitch: { global: false, agents: {} },
     system: null,
     systemHistory: [],
-    providers: { active: null, anthropic: false, openai: false, local: false, fallbacks: false },
+    providers: { active: null, anthropic: false, xai: false, openai: false, local: false, fallbacks: false },
     files: { workspace: '', projects: '' },
     overlay: emptyOverlay(),
     toasts: [],
@@ -408,6 +408,8 @@ export function applyEvent(state: AppState, event: ServerEvent, at: number): App
       return { ...state, mode: event.data.mode };
     case 'killswitch':
       return { ...state, killSwitch: { global: !!event.data.global, agents: event.data.agents ?? {} } };
+    case 'providers':
+      return { ...state, providers: { ...state.providers, ...event.data } };
     case 'notification':
       return {
         ...state,

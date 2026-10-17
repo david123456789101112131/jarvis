@@ -210,6 +210,7 @@ Every server message: `{ "type": string, "data": any, "ts": string }`.
 | `killswitch` | `{global, agents}` | engaged / released |
 | `notification` | `{id, level, title, message}` | toast |
 | `settings` | `{ui: UISettings}` | UI settings changed |
+| `providers` | `{active, anthropic, xai, openai, local, fallbacks, agents: {AgentId: provider\|null}}` | an API key or an AI setting changed (each agent's card is sent again too) |
 | `ui.navigate` | `{screen: "agents"\|"tasks", task_id?}` | a voice/text command asked to show a screen ("show the agents") |
 | `pong` | `{}` | answer to `{type: "ping"}` |
 

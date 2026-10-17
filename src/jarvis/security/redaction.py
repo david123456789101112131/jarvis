@@ -17,6 +17,7 @@ REDACTED = "[REDACTED]"
 _PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("anthropic_key", re.compile(r"sk-ant-[A-Za-z0-9_\-]{16,}")),
     ("openai_key", re.compile(r"\bsk-(?:proj-|svcacct-|admin-)?[A-Za-z0-9_\-]{20,}")),
+    ("xai_key", re.compile(r"\bxai-[A-Za-z0-9]{20,}")),
     ("github_token", re.compile(r"\b(?:gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})")),
     ("aws_access_key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("google_api_key", re.compile(r"\bAIza[0-9A-Za-z\-_]{35}\b")),

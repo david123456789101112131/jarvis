@@ -411,7 +411,7 @@ class SapiTTS(TTSEngine):
         # pyttsx3's SAPI5 driver writes the file synchronously, but its runAndWait() loop only ends on an
         # EndStream event that (pyttsx3 2.99) never arrives after the first file: the second call hangs forever.
         # So on SAPI5 call the driver directly and just drain the COM events it queued.
-        driver = getattr(getattr(engine, "proxy", None), "_driver", None)
+        driver: Any = getattr(getattr(engine, "proxy", None), "_driver", None)
         if sys.platform == "win32" and type(driver).__name__ == "SAPI5Driver" and hasattr(driver, "save_to_file"):
             driver.save_to_file(text, path)
             with contextlib.suppress(Exception):

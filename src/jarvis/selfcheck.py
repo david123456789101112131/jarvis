@@ -257,12 +257,15 @@ async def _ai(report: CheckReport, settings: Settings, secrets: SecretStore) -> 
     finally:
         await router.aclose()
     if st["active"]:
-        detail = f"answers with: {st['active']}" + ("; Anthropic server-side fallbacks on" if st.get("fallbacks") else "")
+        agents = sorted(set(st["agents"].values()) - {None})
+        detail = (f"answers with: {st['active']}; agents work with: {', '.join(agents)}"
+                  + ("; Anthropic server-side fallbacks on" if st.get("fallbacks") else ""))
         report.add("ai", "ok", detail, **st)
     else:
         report.add("ai", "warn", "no AI provider: commands, projects and plans work; open conversation and "
-                   "AI-written code do not", hints=["Add an Anthropic (or OpenAI) API key: `jarvis keys set "
-                                                    "ANTHROPIC_API_KEY`, or in JARVIS: Settings > API keys."], **st)
+                   "AI-written code do not",
+                   hints=["Add an xAI (Grok) or Anthropic API key: `jarvis keys set XAI_API_KEY` or "
+                          "`jarvis keys set ANTHROPIC_API_KEY`, or in JARVIS: Settings > API keys."], **st)
 
 
 async def _tools(report: CheckReport) -> None:

@@ -18,13 +18,21 @@ from jarvis.ai import (
     ProviderRouter,
     ToolOutput,
     ToolSpec,
+    XaiProvider,
     strict_schema,
 )
 from jarvis.ai.anthropic_provider import FALLBACK_BETA, UPDATES_BETA, sanitize_after_fallback
+from jarvis.ai.context import agent_scope, current_agent
 from jarvis.ai.loop import CUT_OFF_NOTE, STEP_LIMIT_NOTE, run_tool_loop
 from jarvis.common.cancel import CancelToken
 from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable, TaskCancelled
-from jarvis.config.settings import AISettings, AnthropicSettings, LocalModelSettings, OpenAISettings
+from jarvis.config.settings import (
+    AISettings,
+    AnthropicSettings,
+    LocalModelSettings,
+    OpenAISettings,
+    XaiSettings,
+)
 
 SPEC = ToolSpec(name="list_files", description="List files.",
                 input_schema={"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]})
@@ -195,11 +203,14 @@ class _FakeOpenAICompletions:
         from openai.types.chat import ChatCompletion
 
         self.owner.calls.append(kwargs)
-        return ChatCompletion.model_validate(self.owner.queue.pop(0))
+        item = self.owner.queue.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return ChatCompletion.model_validate(item)
 
 
 class _FakeOpenAI:
-    def __init__(self, *payloads: dict) -> None:
+    def __init__(self, *payloads: dict | Exception) -> None:
         self.queue = list(payloads)
         self.calls: list[dict] = []
         self.chat = type("Chat", (), {})()
@@ -250,9 +261,61 @@ class TestOpenAICompatible:
         assert not LocalModelProvider(LocalModelSettings(enabled=False)).available()
 
 
+def openai_error(cls_name: str, status: int, message: str) -> Exception:
+    import httpx2
+    import openai
+
+    response = httpx2.Response(status, request=httpx2.Request("POST", "https://api.x.ai/v1/chat/completions"))
+    return getattr(openai, cls_name)(message, response=response, body={"error": message})
+
+
+def grok(*payloads: dict | Exception, **settings: Any) -> tuple[XaiProvider, _FakeOpenAI]:
+    fake = _FakeOpenAI(*payloads)
+    return XaiProvider(XaiSettings(**settings), lambda: "xai-test-key", client_factory=lambda k: fake), fake
+
+
+class TestXai:
+    async def test_request_shape(self) -> None:
+        p, fake = grok(completion("hi"), completion('{"a": 1}'))
+        assert p.name == "xai" and p.model == "grok-4.7" and p._base_url == "https://api.x.ai/v1"
+        await p.complete(req(system="sys", tools=[SPEC], effort="max"))
+        sent = fake.calls[0]
+        assert sent["model"] == "grok-4.7" and sent["reasoning_effort"] == "xhigh"
+        assert sent["max_completion_tokens"] == 16000 and sent["tools"][0]["function"]["name"] == "list_files"
+        assert [m["role"] for m in sent["messages"]] == ["system", "user"]
+        await p.complete(req(json_schema={"type": "object", "properties": {"a": {"type": "integer"}}}, effort="low"))
+        assert fake.calls[1]["reasoning_effort"] == "low"
+        assert fake.calls[1]["response_format"]["type"] == "json_schema"
+
+    async def test_a_parameter_the_model_rejects_is_dropped_and_remembered(self) -> None:
+        effort = openai_error("BadRequestError", 400, "Error code: 400 - {'code': 'Client specified an invalid "
+                              "argument', 'error': 'Model grok-4-0709 does not support parameter reasoningEffort.'}")
+        schema = openai_error("BadRequestError", 400, "Error code: 400 - response_format json_schema is not "
+                              "supported for this model")
+        p, fake = grok(effort, completion("one"), schema, completion('{"a": 2}'), completion("three"),
+                       model="grok-4-0709")
+        assert (await p.complete(req())).text == "one"
+        assert "reasoning_effort" in fake.calls[0] and "reasoning_effort" not in fake.calls[1]
+        res = await p.complete(req(json_schema={"type": "object", "properties": {"a": {"type": "integer"}}}))
+        assert res.parse_json() == {"a": 2} and fake.calls[3]["response_format"] == {"type": "json_object"}
+        assert "JSON schema" in fake.calls[3]["messages"][0]["content"]
+        await p.complete(req())
+        assert "reasoning_effort" not in fake.calls[4] and p.errors == 0 and p.last_error is None
+
+    async def test_other_errors_are_not_repeated(self) -> None:
+        p, fake = grok(openai_error("BadRequestError", 400, "Error code: 400 - prompt too long"))
+        with pytest.raises(ProviderError) as info:
+            await p.complete(req())
+        assert info.value.details["status"] == 400 and len(fake.calls) == 1
+        p, fake = grok(openai_error("AuthenticationError", 401, "bad key"))
+        with pytest.raises(ProviderUnavailable):
+            await p.complete(req())
+        assert not XaiProvider(XaiSettings(), lambda: None).available()
+
+
 def router_with(*providers: ScriptedProvider, **settings: Any) -> ProviderRouter:
     for p in providers:
-        assert p.name in ("anthropic", "openai", "local")
+        assert p.name in ("anthropic", "xai", "openai", "local")
     return ProviderRouter(AISettings(**settings), list(providers))
 
 
@@ -296,8 +359,102 @@ class TestRouter:
 
     def test_status_reports_fallbacks(self) -> None:
         router = ProviderRouter.from_settings(AISettings(), None)
-        assert router.status() == {"active": None, "anthropic": False, "openai": False, "local": False,
-                                   "fallbacks": False}
+        assert [p.name for p in router.providers.values()] == ["anthropic", "xai", "openai", "local"]
+        assert router.status() == {"active": None, "anthropic": False, "xai": False, "openai": False, "local": False,
+                                   "fallbacks": False, "agents": dict.fromkeys(
+                                       ("research", "system", "development", "creative", "planner"))}
+
+
+class TestAgentProviders:
+    """The five agents work with Grok when there is an xAI key; JARVIS's own calls keep Claude first."""
+
+    def providers(self) -> tuple[ScriptedProvider, ScriptedProvider]:
+        return (ScriptedProvider([], name="anthropic", default=lambda r: reply("claude")),
+                ScriptedProvider([], name="xai", default=lambda r: reply("grok")))
+
+    async def test_agents_prefer_their_provider_and_jarvis_keeps_its_order(self) -> None:
+        claude, xai = self.providers()
+        router = router_with(claude, xai)
+        assert [p.name for p in router.chain("agent")] == ["anthropic", "xai"]
+        assert (await router.ask("chat", "hi")) == "claude"
+        with agent_scope("research"):
+            assert current_agent() == "research"
+            assert [p.name for p in router.chain("agent")] == ["xai", "anthropic"]
+            assert (await router.ask("agent", "hi")) == "grok"
+            assert (await router.ask("planner", "hi")) == "grok"     # every call made while the agent works
+        assert current_agent() is None
+        router.settings.agent_providers["research"] = "auto"
+        with agent_scope("research"):
+            assert (await router.ask("agent", "hi")) == "claude"
+        assert router.agent_info("system") == {"preferred": "xai", "provider": "xai", "model": "scripted-model"}
+        assert router.agent_info("research")["provider"] == "anthropic"
+        assert router.status()["agents"]["system"] == "xai" and router.status()["active"] == "anthropic"
+
+    async def test_without_an_xai_key_agents_use_the_usual_order(self) -> None:
+        claude, xai = self.providers()
+        xai.is_available = False
+        router = router_with(claude, xai)
+        with agent_scope("creative"):
+            assert (await router.ask("agent", "hi")) == "claude"
+        assert router.agent_info("creative") == {"preferred": "xai", "provider": "anthropic",
+                                                 "model": "scripted-model"}
+
+    async def test_the_agents_provider_falls_back_on_any_failure_but_a_refusal(self) -> None:
+        claude, xai = self.providers()
+        xai.push(ProviderError("xai rejected the request (400): bad tool schema", details={"status": 400}))
+        router = router_with(claude, xai)
+        with agent_scope("development"):
+            assert (await router.ask("agent", "hi")) == "claude"
+            assert router.failovers == 1 and router.last_provider == "anthropic"
+            xai.push(ProviderRefusal("declined"))
+            with pytest.raises(ProviderRefusal):
+                await router.ask("agent", "hi")
+        # JARVIS's own choice keeps the rule: only an unreachable or overloaded provider is skipped
+        router.settings.provider = "xai"
+        xai.push(ProviderError("bad request"))
+        with pytest.raises(ProviderError):
+            await router.ask("chat", "hi")
+
+    async def test_tasks_started_inside_the_scope_keep_the_agent(self) -> None:
+        claude, xai = self.providers()
+        router = router_with(claude, xai)
+        with agent_scope("planner"):
+            child = asyncio.ensure_future(router.ask("agent", "hi"))
+        assert current_agent() is None and (await child) == "grok"
+
+    def test_a_role_model_goes_to_the_provider_it_belongs_to(self) -> None:
+        claude, xai = self.providers()
+        router = router_with(claude, xai)
+        router.settings.roles["agent"].model = "claude-opus-5-5"
+        assert router._model_owner("agent", "claude-opus-5-5") == "anthropic"
+        assert router._model_owner("agent", "grok-4.20-0309-reasoning") == "xai"
+        assert router._model_owner("agent", "my-local-model") == "anthropic"     # first in the role's own order
+        assert router.agent_info("system")["model"] == "scripted-model"         # Grok gets its own model
+        router.settings.agent_providers["system"] = "auto"
+        assert router.agent_info("system")["model"] == "claude-opus-5-5"
+
+    async def test_a_role_model_is_not_sent_to_another_vendor(self) -> None:
+        claude, xai = self.providers()
+        router = router_with(claude, xai)
+        router.settings.roles["agent"].model = "claude-opus-5-5"
+        with agent_scope("research"):
+            await router.ask("agent", "hi")
+        assert xai.requests[0].model is None
+        await router.ask("agent", "hi")
+        assert claude.requests[0].model == "claude-opus-5-5"
+
+    def test_settings_check_agent_providers(self) -> None:
+        from pydantic import ValidationError
+
+        assert AISettings().agent_providers == dict.fromkeys(
+            ("research", "system", "development", "creative", "planner"), "xai")
+        assert AISettings(agent_providers={"research": "auto", "system": "anthropic"}).agent_providers["system"] == \
+            "anthropic"
+        with pytest.raises(ValidationError):
+            AISettings(agent_providers={"jarvis": "xai"})
+        with pytest.raises(ValidationError):
+            AISettings(agent_providers={"research": "grok"})
+        assert AISettings(provider="xai").provider == "xai"
 
 
 class TestStrictSchema:

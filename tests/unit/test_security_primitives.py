@@ -34,9 +34,11 @@ class TestRedaction:
             "keys: sk-ant-api03-abcdefghijklmnopqrstuv and custom-secret-value-42; "
             "password=hunter2hunter; Authorization: Bearer abcdefghijklmnop1234; "
             "url https://bob:pa55word@example.com/x ghp_" + "a" * 36
+            + " grok key xai-" + "Q7" * 40
         )
         out = r.redact_text(text)
         assert "abcdefghijklmnopqrstuv" not in out
+        assert "Q7Q7Q7" not in out and "xai-org" in r.redact_text("github.com/xai-org")
         assert "custom-secret-value-42" not in out and "[REDACTED:OPENAI_API_KEY]" in out
         assert "hunter2hunter" not in out
         assert "pa55word" not in out

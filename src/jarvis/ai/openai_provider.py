@@ -1,6 +1,6 @@
-"""OpenAI provider and OpenAI-compatible local models (Ollama, LM Studio, llama.cpp server).
+"""OpenAI, xAI (Grok) and OpenAI-compatible local models (Ollama, LM Studio, llama.cpp server).
 
-Both use the Chat Completions API, which every OpenAI-compatible local server implements.
+All of them use the Chat Completions API, which xAI and every OpenAI-compatible local server implement.
 """
 
 from __future__ import annotations
@@ -14,12 +14,13 @@ from typing import Any
 from jarvis.ai.base import AIProvider
 from jarvis.ai.types import AIMessage, AIResponse, CompletionRequest, Refusal, ToolCall, Usage, strict_schema
 from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable
-from jarvis.config.settings import LocalModelSettings, OpenAISettings
+from jarvis.config.settings import LocalModelSettings, OpenAISettings, XaiSettings
 
 log = logging.getLogger(__name__)
 
 _REASONING_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 _EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "max": "high"}
+_XAI_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "xhigh"}
 _FINISH = {"stop": "end", "tool_calls": "tool_use", "function_call": "tool_use", "length": "max_tokens",
            "content_filter": "refusal"}
 
@@ -75,9 +76,15 @@ class OpenAICompatibleProvider(AIProvider):
                 log.debug("closing client failed", exc_info=True)
 
     # -- request building ----------------------------------------------------------------------
+    def json_mode_for(self, model: str) -> str:
+        return self.json_mode
+
+    def max_tokens_param_for(self, model: str) -> str:
+        return self.max_tokens_param
+
     def build_messages(self, req: CompletionRequest) -> list[dict[str, Any]]:
         system = req.system
-        if req.json_schema is not None and self.json_mode == "json_object":
+        if req.json_schema is not None and self.json_mode_for(req.model or self.model) == "json_object":
             system = (system + "\n\n" if system else "") + (
                 "Reply with one JSON object only (no prose, no code fences) that follows this JSON schema:\n"
                 + json.dumps(strict_schema(req.json_schema), ensure_ascii=False)
@@ -107,7 +114,7 @@ class OpenAICompatibleProvider(AIProvider):
     def build_request(self, req: CompletionRequest) -> dict[str, Any]:
         model = req.model or self.model
         kwargs: dict[str, Any] = {"model": model, "messages": self.build_messages(req)}
-        kwargs[self.max_tokens_param] = req.max_tokens
+        kwargs[self.max_tokens_param_for(model)] = req.max_tokens
         if req.tools:
             kwargs["tools"] = [
                 {"type": "function",
@@ -115,7 +122,7 @@ class OpenAICompatibleProvider(AIProvider):
                 for t in req.tools
             ]
         if req.json_schema is not None:
-            if self.json_mode == "strict":
+            if self.json_mode_for(model) == "strict":
                 kwargs["response_format"] = {
                     "type": "json_schema",
                     "json_schema": {"name": req.schema_name or "result", "schema": strict_schema(req.json_schema),
@@ -221,6 +228,69 @@ class OpenAIProvider(OpenAICompatibleProvider):
         super().__init__(model=settings.model, base_url=settings.base_url or None, api_key=api_key,
                          timeout_s=settings.timeout_s, max_retries=settings.max_retries,
                          client_factory=client_factory)
+
+
+class XaiProvider(OpenAICompatibleProvider):
+    """xAI's Grok models (https://api.x.ai/v1, XAI_API_KEY).
+
+    Grok models always reason; `reasoning_effort` follows the request's effort. A model that does
+    not take a parameter JARVIS sends (an older Grok without effort levels, a model without strict
+    JSON schemas) answers 400 naming it: the request is repeated without it, and the provider
+    remembers that for the rest of the session.
+    """
+
+    name = "xai"
+
+    def __init__(self, settings: XaiSettings, api_key: Callable[[], str | None], *,
+                 client_factory: Callable[[str], Any] | None = None) -> None:
+        super().__init__(model=settings.model, base_url=settings.base_url or "https://api.x.ai/v1", api_key=api_key,
+                         timeout_s=settings.timeout_s, max_retries=settings.max_retries,
+                         client_factory=client_factory)
+        self._no_effort: set[str] = set()
+        self._json_object: set[str] = set()
+        self._max_tokens: dict[str, str] = {}
+
+    def json_mode_for(self, model: str) -> str:
+        return "json_object" if model in self._json_object else self.json_mode
+
+    def max_tokens_param_for(self, model: str) -> str:
+        return self._max_tokens.get(model, self.max_tokens_param)
+
+    def build_request(self, req: CompletionRequest) -> dict[str, Any]:
+        kwargs = super().build_request(req)
+        kwargs.pop("reasoning_effort", None)
+        if kwargs["model"] not in self._no_effort:
+            kwargs["reasoning_effort"] = _XAI_EFFORT.get(req.effort, "medium")
+        return kwargs
+
+    async def complete(self, request: CompletionRequest) -> AIResponse:
+        model = request.model or self.model
+        while True:
+            try:
+                return await super().complete(request)
+            except ProviderError as exc:
+                if not self._adapt(model, exc):
+                    raise
+                self.errors -= 1  # not a failure: the request is repeated in the form this model takes
+                log.info("xAI %s: %s; repeating the request without it", model, exc.message[:200])
+
+    def _adapt(self, model: str, exc: ProviderError) -> bool:
+        """Learn from a 400 that names a parameter this model does not take. True = try again.
+
+        Each parameter is dropped at most once per model, so this ends after a few attempts."""
+        if exc.details.get("status") != 400:
+            return False
+        text = exc.message.lower()
+        if "reasoning" in text and model not in self._no_effort:
+            self._no_effort.add(model)
+            return True
+        if "max_completion_tokens" in text and model not in self._max_tokens:
+            self._max_tokens[model] = "max_tokens"
+            return True
+        if ("response_format" in text or "json_schema" in text) and model not in self._json_object:
+            self._json_object.add(model)
+            return True
+        return False
 
 
 class LocalModelProvider(OpenAICompatibleProvider):

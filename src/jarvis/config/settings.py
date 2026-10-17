@@ -86,6 +86,15 @@ class OpenAISettings(_Section):
     base_url: str = ""
 
 
+class XaiSettings(_Section):
+    """xAI's Grok models through their OpenAI-compatible API (key: XAI_API_KEY)."""
+
+    model: str = "grok-4.7"
+    timeout_s: float = 600.0      # Grok always reasons; long answers take a while
+    max_retries: int = 2
+    base_url: str = "https://api.x.ai/v1"
+
+
 class LocalModelSettings(_Section):
     enabled: bool = False
     base_url: str = "http://127.0.0.1:11434/v1"
@@ -93,15 +102,38 @@ class LocalModelSettings(_Section):
     timeout_s: float = 300.0
 
 
+PROVIDER_NAMES = ("anthropic", "xai", "openai", "local")
+
+
+def _default_agent_providers() -> dict[str, str]:
+    # The five agents work with Grok when an xAI key is set; without one (or when Grok fails) they
+    # fall back to the usual order, Claude first.
+    return {a.value: "xai" for a in AgentId}
+
+
 class AISettings(_Section):
-    provider: Literal["auto", "anthropic", "openai", "local", "none"] = "auto"
+    provider: Literal["auto", "anthropic", "xai", "openai", "local", "none"] = "auto"
     roles: dict[str, AIRoleSettings] = Field(default_factory=_default_roles)
+    # Preferred provider for everything an agent asks a model while it works ("auto" = the role's order).
+    agent_providers: dict[str, str] = Field(default_factory=_default_agent_providers)
     anthropic: AnthropicSettings = Field(default_factory=AnthropicSettings)
+    xai: XaiSettings = Field(default_factory=XaiSettings)
     openai: OpenAISettings = Field(default_factory=OpenAISettings)
     local: LocalModelSettings = Field(default_factory=LocalModelSettings)
 
     def role(self, name: str) -> AIRoleSettings:
         return self.roles.get(name) or self.roles.get("agent") or AIRoleSettings()
+
+    @field_validator("agent_providers")
+    @classmethod
+    def _check_agent_providers(cls, value: dict[str, str]) -> dict[str, str]:
+        agents = {a.value for a in AgentId}
+        for key, provider in value.items():
+            if key not in agents:
+                raise ValueError(f"unknown agent in agent_providers: {key}")
+            if provider not in ("auto", *PROVIDER_NAMES):
+                raise ValueError(f"agent_providers.{key} must be auto or one of {', '.join(PROVIDER_NAMES)}")
+        return value
 
 
 def _default_agent_timeouts() -> dict[str, float]:

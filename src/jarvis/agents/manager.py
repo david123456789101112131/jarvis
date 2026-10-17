@@ -36,6 +36,7 @@ from jarvis.agents.base import (
     agent_address,
     t,
 )
+from jarvis.ai.context import agent_scope
 from jarvis.bus.message import Message, event
 from jarvis.common.cancel import CancelToken
 from jarvis.common.clock import iso, utcnow
@@ -316,7 +317,8 @@ class AgentManager:
 
         timer = asyncio.get_running_loop().call_later(timeout, on_timeout)
         run = RunContext(agent, task, a.token, reporter=self, assignment_id=a.id)
-        handle = asyncio.ensure_future(agent.handle(task, run))
+        with agent_scope(st.id.value):           # every model call of this assignment uses the agent's provider
+            handle = asyncio.ensure_future(agent.handle(task, run))
         try:
             result = await self._await_handle(handle, a)
         except asyncio.CancelledError:
@@ -704,10 +706,16 @@ class AgentManager:
             "running": len(st.running),
             "stats": {"completed": st.completed, "failed": st.failed, "avg_duration_s": avg},
             "skills": sorted(st.agent.skills),
+            "ai": self.runtime.router.agent_info(st.id.value) if self.runtime.router is not None else None,
         }
 
     def views(self) -> list[dict[str, Any]]:
         return [self.view(a) for a in sorted(self._states, key=lambda a: self._states[a].agent.number)]
+
+    async def publish_views(self) -> None:
+        """Send every agent's card again (e.g. after the AI provider they work with changed)."""
+        for st in self._states.values():
+            await self._emit(st, force=True)
 
     def status(self, agent: AgentId | str) -> AgentStatus:
         return self._status(self._states[AgentId.parse(agent)])

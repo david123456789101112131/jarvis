@@ -27,6 +27,7 @@ KEYRING_ENV = "JARVIS_KEYRING"
 
 KNOWN_SECRETS: dict[str, str] = {
     "ANTHROPIC_API_KEY": "Anthropic (Claude) API key",
+    "XAI_API_KEY": "xAI (Grok) API key",
     "OPENAI_API_KEY": "OpenAI API key",
     "LOCAL_MODEL_API_KEY": "Local model server API key (optional)",
     "BRAVE_API_KEY": "Brave Search API key (optional)",

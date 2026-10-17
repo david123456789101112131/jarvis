@@ -70,6 +70,16 @@ export interface AgentView {
   running?: number;
   stats: { completed: number; failed: number; avg_duration_s: number | null };
   skills: string[];
+  /** The AI the agent works with now: its chosen provider, and the one (with model) that answers. */
+  ai?: AgentAI | null;
+}
+
+export type ProviderName = 'anthropic' | 'xai' | 'openai' | 'local';
+
+export interface AgentAI {
+  preferred: ProviderName | 'auto';
+  provider: ProviderName | null;
+  model: string | null;
 }
 
 export interface AgentDetail extends AgentView {
@@ -212,9 +222,12 @@ export interface KillSwitchState {
 export interface ProvidersInfo {
   active: string | null;
   anthropic: boolean;
+  xai: boolean;
   openai: boolean;
   local: boolean;
   fallbacks: boolean;
+  /** The provider each agent works with now (null = none available). */
+  agents?: Partial<Record<AgentId, ProviderName | null>>;
 }
 
 export interface StateSnapshot {
@@ -494,6 +507,7 @@ export type ServerEvent =
   | { type: 'killswitch'; data: KillSwitchState; ts?: string }
   | { type: 'notification'; data: NotificationEvent; ts?: string }
   | { type: 'settings'; data: { ui: UISettings }; ts?: string }
+  | { type: 'providers'; data: ProvidersInfo; ts?: string }
   | { type: 'ui.navigate'; data: NavigateEvent; ts?: string }
   | { type: 'pong'; data?: unknown; ts?: string };
 
@@ -528,6 +542,7 @@ export const SERVER_EVENT_TYPES: readonly ServerEventType[] = [
   'killswitch',
   'notification',
   'settings',
+  'providers',
   'ui.navigate',
   'pong',
 ];

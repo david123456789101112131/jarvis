@@ -28,7 +28,8 @@ log = logging.getLogger(__name__)
 FORWARDED_TOPICS = (
     "chat.message", "agent.status", "task.updated", "task.subtask", "task.timeline", "activity", "audit",
     "system.stats", "voice.state", "voice.transcript", "voice.pipeline", "action", "speech",
-    "confirm.request", "confirm.response", "mode", "killswitch", "notification", "settings", "ui.navigate",
+    "confirm.request", "confirm.response", "mode", "killswitch", "notification", "settings", "providers",
+    "ui.navigate",
 )
 QUEUE_SIZE = 2000
 SLOW_CLIENT_CODE = 4408

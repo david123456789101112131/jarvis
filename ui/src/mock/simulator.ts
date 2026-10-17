@@ -4,6 +4,7 @@ import type {
   ActionEvent,
   ActivityEntry,
   AgentAction,
+  AgentAI,
   AgentId,
   AgentView,
   AuditEntry,
@@ -22,6 +23,8 @@ import type {
   Mode,
   PipelineEvent,
   Priority,
+  ProviderName,
+  ProvidersInfo,
   RecentFile,
   SecretStatus,
   ServerEvent,
@@ -311,7 +314,7 @@ export class Simulator {
       confirmations: [...this.confirms.values()].map((c) => c.req),
       kill_switch: this.killSwitch,
       system: this.systemStats(),
-      providers: { active: 'anthropic', anthropic: true, openai: this.secrets.OPENAI_API_KEY?.configured ?? false, local: false, fallbacks: true },
+      providers: this.providers(),
       files: { workspace: PATHS.workspace, projects: PATHS.projects },
     });
   }
@@ -355,6 +358,41 @@ export class Simulator {
     if (this.chat.length > 200) this.chat.splice(0, this.chat.length - 200);
     this.emit('chat.message', message);
     return message;
+  }
+
+  /** Which providers have a key, and the one each agent works with (the real router's order). */
+  private providers(): ProvidersInfo {
+    const ai = (this.settings.ai ?? {}) as Record<string, unknown>;
+    const on: Record<ProviderName, boolean> = {
+      anthropic: this.secrets.ANTHROPIC_API_KEY?.configured ?? false,
+      xai: this.secrets.XAI_API_KEY?.configured ?? false,
+      openai: this.secrets.OPENAI_API_KEY?.configured ?? false,
+      local: Boolean((ai.local as { enabled?: boolean } | undefined)?.enabled),
+    };
+    const order: ProviderName[] = ['anthropic', 'xai', 'openai', 'local'];
+    const first = (preferred: unknown): ProviderName | null =>
+      typeof preferred === 'string' && preferred in on && on[preferred as ProviderName]
+        ? (preferred as ProviderName)
+        : order.find((p) => on[p]) ?? null;
+    const prefs = (ai.agent_providers ?? {}) as Record<string, string>;
+    const agents: ProvidersInfo['agents'] = {};
+    for (const id of this.agents.keys()) agents[id] = first(prefs[id] ?? 'xai');
+    return { active: first(ai.provider), ...on, fallbacks: on.anthropic, agents };
+  }
+
+  private agentAI(id: AgentId, info: ProvidersInfo): AgentAI {
+    const ai = (this.settings.ai ?? {}) as Record<string, { model?: string } | string | undefined>;
+    const prefs = (ai.agent_providers ?? {}) as unknown as Record<string, AgentAI['preferred']>;
+    const provider = info.agents?.[id] ?? null;
+    const section = provider ? ai[provider] : undefined;
+    return { preferred: prefs[id] ?? 'xai', provider, model: typeof section === 'object' ? section.model ?? null : null };
+  }
+
+  /** A key or an AI setting changed: tell the UI, as the core does. */
+  private refreshProviders() {
+    const info = this.providers();
+    this.emit('providers', info);
+    for (const id of this.agents.keys()) this.setAgent(id, { ai: this.agentAI(id, info) });
   }
 
   private setAgent(id: AgentId, patch: Partial<AgentView>) {
@@ -1501,6 +1539,7 @@ export class Simulator {
       this.emit('settings', { ui: this.ui });
     }
     if (patch.voice && typeof patch.voice.enabled === 'boolean' && patch.voice.enabled !== this.voice.enabled) this.voiceAction(patch.voice.enabled ? 'start' : 'stop');
+    if (patch.ai) this.refreshProviders();
     return clone(this.settings);
   }
 
@@ -1510,6 +1549,7 @@ export class Simulator {
     const known = this.secrets[name];
     this.secrets[name] = { label: known?.label ?? name, configured: true, source: 'keyring' };
     this.log(L(`המפתח ${name} נשמר`, `Secret ${name} saved`), 'success', { kind: 'secrets' });
+    this.refreshProviders();
     return { configured: true, source: 'keyring' };
   }
 
@@ -1517,6 +1557,7 @@ export class Simulator {
     const known = this.secrets[name];
     if (known) this.secrets[name] = { ...known, configured: false, source: null };
     this.log(L(`המפתח ${name} הוסר`, `Secret ${name} removed`), 'warning', { kind: 'secrets' });
+    this.refreshProviders();
     return { configured: false };
   }
 

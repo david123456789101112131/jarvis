@@ -68,6 +68,7 @@ export function seedAgents(lang: Lang, now: number): AgentView[] {
     queue: 0,
     stats: stats[p.id],
     skills: p.skills,
+    ai: { preferred: 'xai', provider: 'xai', model: 'grok-4.7' },
   }));
 }
 
@@ -471,6 +472,7 @@ export function seedGrants(now: number): Grant[] {
 export function seedSecrets(): Record<string, SecretStatus> {
   return {
     ANTHROPIC_API_KEY: { label: 'Anthropic (Claude) API key', configured: true, source: 'keyring' },
+    XAI_API_KEY: { label: 'xAI (Grok) API key', configured: true, source: 'keyring' },
     OPENAI_API_KEY: { label: 'OpenAI API key', configured: false, source: null },
     LOCAL_MODEL_API_KEY: { label: 'Local model server API key (optional)', configured: false, source: null },
     BRAVE_API_KEY: { label: 'Brave Search API key (optional)', configured: false, source: null },
@@ -499,7 +501,14 @@ export function seedSettings(ui: UISettings, lang: Lang): SettingsObject {
       output_device: '',
     },
     ui: { ...ui, window_width: 1480, window_height: 920 },
-    ai: { provider: 'auto', anthropic: { model: 'claude-opus-5-5', fallbacks: true }, openai: { model: 'gpt-5' }, local: { enabled: false, base_url: 'http://127.0.0.1:11434/v1', model: 'llama3.1' } },
+    ai: {
+      provider: 'auto',
+      agent_providers: { research: 'xai', system: 'xai', development: 'xai', creative: 'xai', planner: 'xai' },
+      anthropic: { model: 'claude-opus-5-5', fallbacks: true },
+      xai: { model: 'grok-4.7' },
+      openai: { model: 'gpt-5' },
+      local: { enabled: false, base_url: 'http://127.0.0.1:11434/v1', model: 'llama3.1' },
+    },
     security: { confirm_timeout_s: 120, network_enabled: true, shell_enabled: true },
   };
 }

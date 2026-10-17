@@ -16,7 +16,7 @@ import httpx
 import pytest
 
 from agent_env import Env, make_runtime, until
-from fakes import reply, tool
+from fakes import ScriptedProvider, reply, tool
 from jarvis.agents import (
     AgentManager,
     AgentTask,
@@ -28,9 +28,11 @@ from jarvis.agents.base import parse_report
 from jarvis.agents.creative import DESIGN_ROUTES, parse_email, route
 from jarvis.agents.planner import documents
 from jarvis.agents.planner.planning import rule_plan
+from jarvis.ai.router import ProviderRouter
 from jarvis.common.cancel import CancelToken
 from jarvis.common.enums import AgentId, AgentStatus, Priority, ResultStatus
 from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable, TaskCancelled
+from jarvis.config.settings import AISettings
 from jarvis.memory.models import TaskRecord
 from jarvis.orchestration import TaskPlan
 from jarvis.tools.builtin import create_registry
@@ -126,6 +128,19 @@ class TestManager:
         system = [s for a, s in seen if a == "system"]
         assert creative.index("thinking") < creative.index("completed")
         assert system.index("working") < system.index("error") < len(system) - 1 and system[-1] == "idle"
+
+    async def test_each_agent_works_with_its_own_provider(self, env: Env) -> None:
+        claude = ScriptedProvider([], name="anthropic", default=lambda r: reply("Claude: A, B, C.\n\nSTATUS: success"))
+        grok = ScriptedProvider([], name="xai", default=lambda r: reply("Grok: A, B, C.\n\nSTATUS: success"))
+        settings = AISettings()
+        settings.agent_providers["planner"] = "auto"           # the Planner follows JARVIS's order (Claude first)
+        env.runtime.router = ProviderRouter(settings, [claude, grok])
+        result = await env.run("creative", "תן לי שלושה שמות לבית קפה")
+        assert result.used_llm and "Grok" in result.summary and grok.requests and not claude.requests
+        await env.run("planner", skill="decompose", params={"goal": "תשווה ניידים ותכין מצגת"})
+        assert claude.requests and all(r.role == "planner" for r in claude.requests)
+        assert env.manager.view("creative")["ai"] == {"preferred": "xai", "provider": "xai", "model": "scripted-model"}
+        assert env.manager.view("planner")["ai"]["provider"] == "anthropic"
 
     async def test_status_events_follow_the_work(self, env: Env) -> None:
         seen: list[tuple[str, str]] = []
