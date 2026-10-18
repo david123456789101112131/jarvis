@@ -67,8 +67,13 @@ class ComputerBackend(Protocol):
     def working_window(self) -> int:
         """The window the user is working in: the frontmost app window that is not JARVIS's own (0: none)."""
 
-    def bring_to_front(self, hwnd: int) -> bool:
-        """Put that window in front again, as Alt+Tab would. False when it is gone, minimized, or Windows refused."""
+    def find_window(self, title: str) -> int:
+        """The frontmost app window (not JARVIS's) whose title or program name contains `title`, ignoring case;
+        a minimized one only when none is on screen (0: none)."""
+
+    def bring_to_front(self, hwnd: int, *, restore: bool = False) -> bool:
+        """Put that window in front, as Alt+Tab would; with `restore`, a minimized one is restored first. False
+        when it is gone, minimized (without `restore`), or Windows refused."""
 
     def move(self, x: int, y: int) -> None: ...
     def click(self, x: int, y: int, *, button: str = "left", count: int = 1) -> None: ...
@@ -180,7 +185,10 @@ class UnsupportedBackend:
     def working_window(self) -> int:
         return 0
 
-    def bring_to_front(self, hwnd: int) -> bool:
+    def find_window(self, title: str) -> int:
+        return 0
+
+    def bring_to_front(self, hwnd: int, *, restore: bool = False) -> bool:
         return False
 
 

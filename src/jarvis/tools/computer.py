@@ -37,6 +37,9 @@ def _service(ctx: ToolContext) -> Any:
 # ============================================================================ use_computer (a session)
 class UseComputerParams(BaseModel):
     goal: str = Field(min_length=3, max_length=2000, description="What to do on the computer, in plain words.")
+    window: str = Field(default="", max_length=200, description=(
+        "When the task is in a window that is already open: part of its title or its program, e.g. 'YouTube', "
+        "'Chrome', 'Calculator'. JARVIS brings it to the front (restoring it if minimized) before starting."))
     max_steps: int | None = Field(default=None, ge=1, le=100, description="Most actions to take (optional).")
 
 
@@ -45,8 +48,10 @@ class UseComputerTool(Tool):
     description = (
         "Control the computer by looking at the screen and using the mouse and keyboard, for a task that can "
         "only be done through a program's window (no command or dedicated tool fits). Give the goal in words. "
-        "The user approves before it starts and can stop it at any time by pressing Esc twice. Do not use it "
-        "for things a direct tool already does (opening apps, files, settings, the web)."
+        "The user approves before it starts and can stop it at any time by pressing Esc twice. For a window that "
+        "is already open, name it in `window`: JARVIS puts it in front itself, so the goal needs no steps (and "
+        "no commands) to find or switch to it. Do not use it for things a direct tool already does (opening "
+        "apps, files, settings, the web)."
     )
     capabilities = (C.SCREEN_READ, C.INPUT_CONTROL)
     Params = UseComputerParams
@@ -66,14 +71,16 @@ class UseComputerTool(Tool):
             raise ToolError(ctx.t(f"שליטה במחשב לא זמינה: {problem}", f"Computer control is unavailable: {problem}"))
         if service.busy():
             raise ToolError(ctx.t("כבר רצה משימת שליטה במחשב אחת", "a computer-control session is already running"))
-        await service.note_working_window()          # before the approval comes up in front of it
+        window = params.window.strip()
+        await service.note_working_window(window)    # before the approval comes up in front of it
         service.warm_up(ctx.services.settings.security.confirm_timeout_s + 60.0)   # load the model meanwhile
         goal = params.goal.strip()
         summary = ctx.t(f"שליטה במחשב: {goal}", f"Use the computer: {goal}")
         plan = ActionPlan(summary=summary[:160], risk=RiskLevel.HIGH, always_confirm=True,
                           capabilities=[C.SCREEN_READ, C.INPUT_CONTROL],
                           risk_reasons=[ctx.t("JARVIS יזיז את העכבר ויקליד; אפשר לעצור ב-Esc פעמיים",
-                                              "JARVIS will move the mouse and type; press Esc twice to stop")])
+                                              "JARVIS will move the mouse and type; press Esc twice to stop")],
+                          details={"window": window} if window else {})
         remote = (ctx.services.settings.computer.server_url or "").strip()
         if remote:
             plan.sends_data = True

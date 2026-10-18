@@ -65,6 +65,7 @@ GWL_EXSTYLE = -20
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_NOACTIVATE = 0x08000000
 DWMWA_CLOAKED = 14
+SW_RESTORE = 9
 SHELL_CLASSES = frozenset({"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
                            "Windows.UI.Core.CoreWindow"})        # the desktop, the taskbars, Start and search
 SM_CXSCREEN, SM_CYSCREEN = 0, 1
@@ -141,6 +142,7 @@ class _Api:
         _proto(u.GetWindowLongW, w.LONG, w.HWND, ctypes.c_int)
         _proto(u.SetForegroundWindow, w.BOOL, w.HWND)
         _proto(u.BringWindowToTop, w.BOOL, w.HWND)
+        _proto(u.ShowWindow, w.BOOL, w.HWND, ctypes.c_int)
         _proto(u.AttachThreadInput, w.BOOL, w.DWORD, w.DWORD, w.BOOL)
         _proto(k.GetCurrentThreadId, w.DWORD)
         try:
@@ -230,14 +232,19 @@ def _cloaked(api: _Api, hwnd: int) -> bool:
     return get(hwnd, DWMWA_CLOAKED, ctypes.byref(value), ctypes.sizeof(value)) == S_OK and value.value != 0
 
 
-def _switchable(api: _Api, hwnd: int) -> bool:
-    """A window Alt+Tab would offer: on screen, not minimized, with a title; no tool palette or shell surface."""
+def _app_window(api: _Api, hwnd: int) -> bool:
+    """A window Alt+Tab would offer, minimized or not: shown, with a title; no tool palette or shell surface."""
     u = api.user32
-    if not u.IsWindowVisible(hwnd) or u.IsIconic(hwnd) or u.GetWindowTextLengthW(hwnd) <= 0:
+    if not u.IsWindowVisible(hwnd) or u.GetWindowTextLengthW(hwnd) <= 0:
         return False
     if u.GetWindowLongW(hwnd, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE):
         return False
     return _class(api, hwnd) not in SHELL_CLASSES and not _cloaked(api, hwnd)
+
+
+def _switchable(api: _Api, hwnd: int) -> bool:
+    """An app window that is on screen (not minimized)."""
+    return not api.user32.IsIconic(hwnd) and _app_window(api, hwnd)
 
 
 def _process_name(pid: int) -> str:
@@ -443,11 +450,42 @@ class WindowsBackend:
         api.user32.EnumWindows(api.WNDENUMPROC(visit), 0)
         return found[0]
 
-    def bring_to_front(self, hwnd: int) -> bool:
+    def find_window(self, title: str) -> int:
+        want = plain(title).strip().casefold()
+        if not want:
+            return 0
+        api = _api()
+        me = os.getpid()
+        found = {"shown": 0, "minimized": 0}
+
+        def visit(hwnd: int | None, _lparam: int) -> bool:   # top-level windows, front to back
+            try:
+                if hwnd and _app_window(api, hwnd) and (pid := _pid(api, hwnd)) != me:
+                    text = _text(api, hwnd)
+                    # By its title, or by its program ("chrome"; "calculator" for a Calculator titled in Hebrew).
+                    pids = (pid, _app_pid(api, hwnd, pid))
+                    programs = {_process_name(p).removesuffix(".exe") for p in pids}
+                    named = want in text.casefold() or any(want in name for name in programs if name)
+                    if named and not is_jarvis_title(text):
+                        slot = "minimized" if api.user32.IsIconic(hwnd) else "shown"
+                        found[slot] = found[slot] or int(hwnd)
+                        return not found["shown"]
+            except Exception:                # never let an exception cross the C callback
+                pass
+            return True
+
+        api.user32.EnumWindows(api.WNDENUMPROC(visit), 0)
+        return found["shown"] or found["minimized"]
+
+    def bring_to_front(self, hwnd: int, *, restore: bool = False) -> bool:
         api = _api()
         u = api.user32
-        if not hwnd or not u.IsWindow(hwnd) or not u.IsWindowVisible(hwnd) or u.IsIconic(hwnd):
-            return False                     # closed or minimized since: leave it be
+        if not hwnd or not u.IsWindow(hwnd) or not u.IsWindowVisible(hwnd):
+            return False                     # closed since
+        if u.IsIconic(hwnd):
+            if not restore:
+                return False                 # minimized since: leave it be
+            u.ShowWindow(hwnd, SW_RESTORE)
         if not u.SetForegroundWindow(hwnd):
             # Windows lets only the program used last move the focus. Sharing the input state of the window
             # in front for a moment lifts that, the way task switchers do it.

@@ -47,7 +47,8 @@ class ComputerService:
         self._warm_until = 0.0
         self._warm_runs = 0
         self._runs = 0                     # tasks started so far: a model loaded for none of them is stopped
-        self._working = 0                  # the user's window when the last task was asked for (0: none)
+        self._working = 0                  # the window the last task was asked for in (0: none)
+        self._named = False                # …found by the name the agent gave, so it may be restored
 
     def root(self) -> Path:
         return Path(self.settings.models_dir) if self.settings.models_dir else self.paths.models / "computer"
@@ -122,25 +123,35 @@ class ComputerService:
                     await client.aclose()
                 self.server.touch()
 
-    # ------------------------------------------------------------------ the user's window
-    async def note_working_window(self) -> None:
-        """Before the approval: remember the window the user is working in.
+    # ------------------------------------------------------------------ the task's window
+    async def note_working_window(self, window: str = "") -> bool:
+        """Before the approval: remember the window the task is for. That is the open window named `window`
+        (part of its title or program) when there is one, else the one the user is working in. True when
+        the named one was found.
 
         It has to be now: by the time the session starts, the approval, and whatever the user opened while
         the model loaded (a chat, say), may be in front of it."""
-        self._working = 0
+        self._working, self._named = 0, False
         with contextlib.suppress(Exception):
-            self._working = int(await asyncio.to_thread(self.backend.working_window) or 0)
+            if window.strip():
+                self._working = int(await asyncio.to_thread(self.backend.find_window, window) or 0)
+                self._named = bool(self._working)
+            if not self._working:
+                self._working = int(await asyncio.to_thread(self.backend.working_window) or 0)
+        return self._named
 
     async def _bring_back_working_window(self) -> None:
-        """JARVIS is out of the way: put that window in front for the model's first look (once per task)."""
-        hwnd, self._working = self._working, 0
+        """JARVIS is out of the way: put that window in front for the model's first look (once per task).
+
+        A window the task named is restored if it is minimized; the user's own window is left alone then."""
+        hwnd, restore = self._working, self._named
+        self._working, self._named = 0, False
         if not hwnd:
             return
         await self.ensure_covered()
         brought = False
         with contextlib.suppress(Exception):
-            brought = bool(await asyncio.to_thread(self.backend.bring_to_front, hwnd))
+            brought = bool(await asyncio.to_thread(self.backend.bring_to_front, hwnd, restore=restore))
         if brought:
             await asyncio.sleep(self.settings.settle_s)        # let it draw before the screenshot
         else:

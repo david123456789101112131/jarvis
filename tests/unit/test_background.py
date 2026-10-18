@@ -202,6 +202,10 @@ def test_autostart_status_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Pat
     ("תסתיר את עצמך", "hide"), ("תמזער את החלון שלך", "hide"), ("תעבור לרקע", "hide"),
     ("close jarvis", "hide"), ("תסגור את עצמך", "hide"), ("סגור את ג'רוויס", "hide"),     # it keeps listening
     ("פתח את גרביס", "show"), ("תראה את החלון של ג׳רוויס", "show"),
+    # 2026-10-18 by voice: "תחבא את עצמך" was not one of these, so JARVIS asked an AI and got a PowerShell command
+    ("תחבא את עצמך", "hide"), ("תחביא את החלון שלך", "hide"), ("ג'רוויס, תתחבא", "hide"),
+    ("תסתתר", "hide"), ("תיעלם מהמסך", "hide"), ("תעלים את עצמך", "hide"),
+    ("disappear", "hide"), ("get out of the way", "hide"),
 ])
 def test_window_commands(text: str, action: str) -> None:
     intent = detect_intent(text)

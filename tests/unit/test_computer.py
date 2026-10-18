@@ -254,6 +254,7 @@ class FakeBackend:
         self.target = target or _target()
         self.keys_reach = keys_reach         # False: the focus moved away while typing
         self.front = 0                       # what working_window() reports
+        self.named: dict[str, int] = {}      # what find_window() finds, by the name asked for
         self.brings = True                   # what bring_to_front() answers
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.watch: FakeWatch | None = None
@@ -283,10 +284,14 @@ class FakeBackend:
         return False
 
     def working_window(self) -> int:
+        self.calls.append(("working", ()))
         return self.front
 
-    def bring_to_front(self, hwnd: int) -> bool:
-        self.calls.append(("front", (hwnd,)))
+    def find_window(self, title: str) -> int:
+        return self.named.get(title, 0)
+
+    def bring_to_front(self, hwnd: int, *, restore: bool = False) -> bool:
+        self.calls.append(("front", (hwnd, restore)))
         return self.brings
 
     def move(self, x: int, y: int) -> None: ...
@@ -525,6 +530,7 @@ class _ZOrderUser32:
         self.foreground = foreground
         self.locked = locked
         self.attached: list[tuple[int, int, bool]] = []
+        self.shown: list[tuple[int, int]] = []
 
     def EnumWindows(self, callback: Any, _lparam: int) -> bool:
         for hwnd in self.by_id:
@@ -572,6 +578,15 @@ class _ZOrderUser32:
 
     def BringWindowToTop(self, hwnd: int) -> bool:
         return True
+
+    def ShowWindow(self, hwnd: int, command: int) -> bool:
+        self.shown.append((hwnd, command))
+        if command == 9:                     # SW_RESTORE
+            self.by_id[hwnd].iconic = False
+        return True
+
+    def EnumChildWindows(self, hwnd: int, callback: Any, _lparam: int) -> bool:
+        return True                          # no child windows from other programs
 
     def AttachThreadInput(self, mine: int, theirs: int, attach: bool) -> bool:
         self.attached.append((mine, theirs, attach))
@@ -625,7 +640,7 @@ class TestWorkingWindow:
             await service.aclose()
         assert out.reason == "answer" and out.content == "84"
         assert shell[0] == "computer_on"
-        assert backend.calls[:2] == [("front", (4242,)), ("capture", ())]
+        assert [c for c in backend.calls if c[0] != "working"][:2] == [("front", (4242, False)), ("capture", ())]
 
     async def test_once_per_task(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
         backend = FakeBackend()
@@ -637,7 +652,34 @@ class TestWorkingWindow:
             await service.run("two", FakeCtx(), max_steps=5)     # not planned again: nothing to bring back
         finally:
             await service.aclose()
-        assert [c for c in backend.calls if c[0] == "front"] == [("front", (4242,))]
+        assert [c for c in backend.calls if c[0] == "front"] == [("front", (4242, False))]
+
+    async def test_a_window_named_for_the_task_comes_to_the_front(
+            self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        # This morning's task (2026-10-18): play a video in the open Chrome window. The model spent six steps
+        # on the taskbar and Alt+Tab looking for it; the agent knew which window it was.
+        backend = FakeBackend()
+        backend.front, backend.named = 77, {"YouTube": 5150}      # Task Manager in front; Chrome behind it
+        service, _ = self._service(backend, tmp_path, monkeypatch, [_answer("playing")])
+        try:
+            assert await service.note_working_window("YouTube") is True
+            out = await service.run("play the video", FakeCtx(), max_steps=5)
+        finally:
+            await service.aclose()
+        assert out.reason == "answer"
+        assert backend.calls[:2] == [("front", (5150, True)), ("capture", ())]    # restored if minimized
+
+    async def test_a_named_window_that_is_not_open_falls_back_to_the_users(
+            self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FakeBackend()
+        backend.front = 4242
+        service, _ = self._service(backend, tmp_path, monkeypatch, [_answer("done")])
+        try:
+            assert await service.note_working_window("Word") is False
+            await service.run("goal", FakeCtx(), max_steps=5)
+        finally:
+            await service.aclose()
+        assert [c for c in backend.calls if c[0] == "front"] == [("front", (4242, False))]
 
     async def test_a_window_that_cannot_come_back_does_not_stop_the_task(
             self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -656,6 +698,7 @@ class TestWorkingWindow:
 
         backend = UnsupportedBackend()
         assert backend.working_window() == 0 and backend.bring_to_front(5) is False
+        assert backend.find_window("YouTube") == 0
 
     # -- the Win32 side, over a scripted window list (no real window is touched)
     def test_picks_the_frontmost_app_window_that_is_not_jarvis(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -683,6 +726,41 @@ class TestWorkingWindow:
         user32 = _ZOrderUser32([_Win(7, "Taskbar", cls="Shell_TrayWnd"), _Win(6, "Notepad", iconic=True)])
         monkeypatch.setattr(win, "_api", lambda: _zorder_api(user32))
         assert win.WindowsBackend().working_window() == 0
+
+    def test_finds_a_window_by_its_title_or_program(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+
+        from jarvis.computer import windows as win
+
+        user32 = _ZOrderUser32([
+            _Win(1, "JARVIS — YouTube", pid=os.getpid()),                        # JARVIS's own window
+            _Win(2, "Taskbar", cls="Shell_TrayWnd"),
+            _Win(3, "Task Manager", pid=600),
+            _Win(4, "‫(3) YouTube - Google Chrome‬", pid=700, cls="Chrome_WidgetWin_1"),
+            _Win(5, "‫מחשבון‬", pid=800, cls="ApplicationFrameWindow"),
+            _Win(6, "Document1 - Word", pid=900, iconic=True),
+        ])
+        programs = {600: "taskmgr.exe", 700: "chrome.exe", 800: "calculatorapp.exe", 900: "winword.exe"}
+        monkeypatch.setattr(win, "_api", lambda: _zorder_api(user32))
+        monkeypatch.setattr(win, "_process_name", lambda pid: programs.get(pid, ""))
+        backend = win.WindowsBackend()
+        assert backend.find_window("youtube") == 4                # by its title, ignoring case and bidi marks
+        assert backend.find_window("Chrome") == 4
+        assert backend.find_window("calculator") == 5             # a Hebrew title, found by its program
+        assert backend.find_window("מחשבון") == 5
+        assert backend.find_window("Word") == 6                   # minimized, but the only one
+        assert backend.find_window("Excel") == 0
+        assert backend.find_window("  ") == 0
+
+    def test_restores_a_minimized_window_only_when_asked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jarvis.computer import windows as win
+
+        user32 = _ZOrderUser32([_Win(9, "Claude"), _Win(6, "Document1 - Word", iconic=True)], foreground=9)
+        monkeypatch.setattr(win, "_api", lambda: _zorder_api(user32))
+        backend = win.WindowsBackend()
+        assert backend.bring_to_front(6) is False and user32.shown == []
+        assert backend.bring_to_front(6, restore=True) is True
+        assert user32.shown == [(6, win.SW_RESTORE)] and user32.foreground == 6
 
     def test_brings_the_window_back_when_windows_allows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         from jarvis.computer import windows as win
@@ -884,8 +962,10 @@ class _SvcForGate:
     def start(self) -> None: ...
     async def ensure_covered(self) -> None: ...
 
-    async def note_working_window(self) -> None:
+    async def note_working_window(self, window: str = "") -> bool:
         self.noted += 1
+        self.window = window
+        return bool(window)
 
     def warm_up(self, unused_after_s: float) -> None:
         self.warmed = unused_after_s
@@ -967,6 +1047,29 @@ class TestToolsThroughGate:
         assert ("click", (960, 540, "left", 1)) in backend.calls     # the approved click ran
         assert svc.noted == 1                  # the user's window was noted when the task was planned
         assert svc.warmed > 60                 # and the model started loading, for longer than an approval waits
+
+    async def test_the_window_named_by_the_agent_is_used_and_shown(self, kit: Any) -> None:
+        backend = FakeBackend()
+        svc = _SvcForGate(backend, [_answer("playing")])
+        self._wire(kit, svc)
+        shown: list[Any] = []
+
+        async def approve(kit: Any) -> None:
+            for _ in range(200):
+                for req in kit.broker.pending():
+                    shown.append(req)
+                    kit.broker.respond(req.id, True)
+                await asyncio.sleep(0.01)
+
+        approver = asyncio.ensure_future(approve(kit))
+        try:
+            res = await kit.executor.execute("use_computer", {"goal": "play the video", "window": " YouTube "},
+                                             agent_id="system", task_id="task_1")
+        finally:
+            approver.cancel()
+        assert res.ok, res.error
+        assert svc.window == "YouTube"
+        assert "YouTube" in str(shown[0].details)
 
     async def test_computer_act_refused_without_a_session(self, kit: Any) -> None:
         svc = _SvcForGate(FakeBackend(), [])

@@ -212,6 +212,7 @@ FOLDER_LOCATIONS = {
 
 FILLER_PREFIXES = (
     "please ", "can you ", "could you ", "would you ", "will you ", "i want you to ", "i need you to ", "i'd like you to ",
+    "i want you ",                                       # speech recognition drops the "to": "I want you open YouTube"
     "go ahead and ", "now ", "quickly ", "kindly ", "hey ", "ok ", "okay ",
     "בבקשה ", "תוכל ל", "תוכלי ל", "אתה יכול ל", "את יכולה ל", "אפשר ל", "אני רוצה ש", "אני צריך ש", "אני צריכה ש",
     "תעשה לי טובה ו", "בוא ", "בואי ", "יאללה ", "עכשיו ", "מהר ",
@@ -748,7 +749,11 @@ _RULES: list[Rule] = [
         r"^(?P<hide>go to|run in|stay in) the background$",
         rf"^(?P<show>{V_SHOW_HE}|תפתח|פתח|תפתחי|פתחי)\s+{_HE_WINDOW}$",
         rf"^(?P<hide>תסתיר|הסתר|תסתירי|הסתירי|תמזער|מזער|תמזערי|מזערי|תסגור|סגור|תסגרי|סגרי)\s+{_HE_WINDOW}$",
+        rf"^(?P<hide>תחביא|תחבא|החבא|תחביאי|החביאי|תעלים|העלם|תעלימי|העלימי)\s+{_HE_WINDOW}$",
+        r"^(?P<hide>תתחבא|התחבא|תתחבאי|התחבאי|תסתתר|הסתתר|תסתתרי|הסתתרי|תיעלם|היעלם|תיעלמי|היעלמי)"
+        r"(?:\s+מ(?:ה)?מסך)?$",
         r"^(?P<hide>(?:תעבור|עבור|תעברי|עברי)\s+(?:ל|אל\s+ה)רקע)$",
+        r"^(?P<hide>disappear|get out of the way)$",
     ), "instant", build=_b_window),
     Rule(I.POWER, _p(
         r"^(?:shut\s?down|turn off|power off|restart|reboot|hibernate|put to sleep|sleep|log off|log out|sign out of)\s+(?:the\s+|my\s+)?(?:computer|pc|system|machine|windows|laptop)$",

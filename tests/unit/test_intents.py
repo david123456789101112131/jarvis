@@ -157,6 +157,7 @@ CASES: list[tuple[str, str, dict]] = [
     ("תמצא את הקובץ חשבונית במסמכים", I.FIND_FILES, {"query": "חשבונית", "location": "documents"}),
     # Websites & search
     ("open youtube", I.OPEN_WEBSITE, {"url": "https://www.youtube.com"}),
+    ("I want you open YouTube.", I.OPEN_WEBSITE, {"url": "https://www.youtube.com"}),   # as speech came out
     ("תפתח יוטיוב", I.OPEN_WEBSITE, {"url": "https://www.youtube.com"}),
     ("פתח את האתר של ynet", I.OPEN_WEBSITE, {"url": "https://www.ynet.co.il"}),
     ("open github.com/anthropics", I.OPEN_WEBSITE, {"url": "https://github.com/anthropics"}),
