@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING, Any, ClassVar, Protocol, TypeVar
 from pydantic import BaseModel, ConfigDict, Field
 
 from jarvis.ai.loop import LoopResult, run_tool_loop
+from jarvis.ai.router import CLOUD_NAMES, CLOUD_SAY_HE
 from jarvis.ai.types import AIMessage, ToolCall, ToolOutput, ToolSpec
 from jarvis.bus.message import Message
 from jarvis.common.cancel import CancelToken
@@ -120,6 +121,7 @@ class AgentTask(BaseModel):
     expected_files: list[str] = Field(default_factory=list)
     attempt: int = 1
     allow_llm: bool = True
+    allowed_ai: str = ""          # the cloud AI the user allowed for this work ("" = free models only)
 
     @property
     def display_title(self) -> str:
@@ -306,6 +308,7 @@ class RunContext:
         self.actions: list[str] = []
         self.errors: list[str] = []
         self.denied: list[str] = []
+        self.declined = False                  # the user said no to an action: stop, do not look for another way
         self.tool_results: list[ToolResult] = []
         self.progress_value = 0.0
         self.started = time.monotonic()
@@ -378,6 +381,8 @@ class RunContext:
             message = result.error or result.summary or f"{result.tool} failed"
             if result.denied:
                 self.denied.append(message)
+            if result.denied == "confirmation":
+                self.declined = True
             self.errors.append(message)
 
     def _read_only(self, tool: str) -> bool:
@@ -413,6 +418,8 @@ class RunContext:
             merged = list(getattr(res, attr))
             _extend_unique(merged, mine)
             setattr(res, attr, merged)
+        if self.declined:   # the orchestrator neither retries nor re-checks a step the user said no to
+            res.data.setdefault("code", "confirmation_denied")
         if res.status == ResultStatus.SUCCESS and not res.progress:
             res.progress = 1.0
         return res
@@ -618,6 +625,16 @@ class BaseAgent:
             name, params = picked
             if not self.skills[name].needs_llm:
                 return await self.run_skill(name, task, run, **params)
+        router = self.runtime.router
+        told = router.asks_first("agent", self.id.value) if router is not None else None
+        if told is not None:                     # there is a key, but the user did not ask for that AI
+            name, say = CLOUD_NAMES[told], CLOUD_SAY_HE[told]
+            return AgentResult.failed(
+                t(task.language, f"{self.name_he} צריך את {name} בשביל זה, ו-{name} עובד רק כשמבקשים.",
+                  f"{self.name} needs {name} for this, and {name} works only when you ask for it."),
+                next_step=t(task.language, f"לבקש שוב ולהוסיף \"תשתמש {say}\".", f"Ask again and add \"use {name}\"."),
+                data={"code": "ai_needs_ok", "provider": told},
+            )
         return AgentResult.failed(
             t(task.language,
               f"{self.name_he} צריך מודל AI כדי לבצע את זה ואין כרגע ספק AI מוגדר.",
@@ -727,7 +744,7 @@ class BaseAgent:
             calls_done = len(run.tool_results)
             await run.progress(min(0.9, 1 - 0.85 ** calls_done))
             return ToolOutput(tool_call_id=call.id, name=call.name, content=result.for_model(),
-                              is_error=not result.ok)
+                              is_error=not result.ok, halt=result.denied == "confirmation")
 
         async def on_event(kind: str, data: dict[str, Any]) -> None:
             if kind == "tool_result":
@@ -761,6 +778,7 @@ class BaseAgent:
                 "max_steps": t(lang, "הגעתי למגבלת הצעדים", "reached the step limit"),
                 "loop_guard": t(lang, "עצרתי ניסיונות חוזרים שנכשלו", "stopped repeated failing attempts"),
                 "max_tokens": t(lang, "התשובה נקטעה באורך המרבי", "the answer hit the length limit"),
+                "declined": t(lang, "עצרתי כי הפעולה לא אושרה", "stopped because the action was not approved"),
             }.get(loop.stop_reason, loop.stop_reason)
             run.errors.append(reason)
             produced = bool(run.files_created or run.actions)

@@ -40,6 +40,7 @@ from jarvis.memory.models import TaskRecord
 from jarvis.orchestration import JarvisTask, SubTask, TaskOrchestrator, TaskPlan
 from jarvis.orchestration.recovery import backoff, decide, dispatch_budget, fingerprint
 from jarvis.orchestration.task import compact, short_title
+from jarvis.tools.base import ToolResult
 
 S = TaskStatus
 
@@ -76,6 +77,14 @@ class Probe:
             message = f"{error} {'abcdefghijklmnop'[n]}" if vary else error
             return AgentResult.failed(message, data={"code": code} if code else {})
         return run.result(summary=f"worked on attempt {n}")
+
+    @skill(description="test: one action is declined by the user; report the rest as partly done")
+    async def declined(self, task: AgentTask, run: RunContext) -> AgentResult:
+        counts = self.runtime.extras.setdefault("declined", {})
+        counts[task.id] = counts.get(task.id, 0) + 1
+        run.record(ToolResult.fail("The user did not approve: delete old.txt (denied)", denied="confirmation",
+                                   tool="delete_path"))
+        return run.result(status=ResultStatus.PARTIAL, summary="cleaned up, but old.txt is still there")
 
     @skill(description="test: crash (raise) on the first `crashes` attempts of this step")
     async def crashy(self, task: AgentTask, run: RunContext, crashes: int = 1) -> AgentResult:
@@ -453,6 +462,15 @@ class TestRecovery:
         plan = plan_of(step("a", "system", "flaky", params={"failures": 5, "code": "confirmation_denied"}))
         task = await o.run(plan=plan)
         assert task.status == S.FAILED and o.sub(task, "a").attempts == 1
+
+    async def test_a_step_the_user_said_no_to_ends_there(self, o: Orch) -> None:
+        o.cfg.max_retries = 3
+        plan = plan_of(step("a", "system", "declined"), step("b", "creative", after=("a",)))
+        task = await o.run(plan=plan)
+        a, b = o.sub(task, "a"), o.sub(task, "b")
+        assert a.status == S.FAILED and a.attempts == 1 and o.extras["declined"] == {a.id: 1}   # not again
+        assert "did not approve: delete old.txt" in (a.error or "")
+        assert b.status == S.SKIPPED
 
     async def test_an_optional_step_may_fail(self, o: Orch) -> None:
         plan = plan_of(step("a", "research", "flaky", params={"failures": 99}, optional=True),

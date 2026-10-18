@@ -114,7 +114,10 @@ class ComputerService:
             try:
                 await self.window("computer_on")
                 await self._bring_back_working_window()
-                return await session.run()
+                outcome = await session.run()
+                log.info("Computer session ended (%s) after %d steps%s", outcome.reason, outcome.steps,
+                         f": {outcome.error}" if outcome.error else "")
+                return outcome
             finally:
                 self._active = None
                 with contextlib.suppress(Exception):

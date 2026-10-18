@@ -18,14 +18,17 @@ import pytest
 
 import jarvis.orchestration.orchestrator as orchestrator_module
 from agent_env import Env, until
-from fakes import reply
+from fakes import ScriptedProvider, reply
+from jarvis.ai.router import ProviderRouter
 from jarvis.ai.types import AIResponse, CompletionRequest
 from jarvis.common.enums import AgentId, AgentStatus, Mode, Priority, TaskStatus
 from jarvis.common.errors import ProviderError
+from jarvis.config.settings import AISettings
 from jarvis.core.core import JarvisCore
 from jarvis.core.intents import I
 from jarvis.memory.models import TaskRecord
 from jarvis.orchestration import SubTask, TaskOrchestrator, TaskPlan
+from jarvis.orchestration.task import JarvisTask
 
 S = TaskStatus
 
@@ -103,11 +106,14 @@ def weather_handler(request: httpx.Request) -> httpx.Response:
     })
 
 
-def chat_turn(text: str, run_task: bool = False, task: str = "") -> Any:
+def chat_turn(text: str, run_task: bool = False, task: str = "", agent: str | None = None) -> Any:
     def respond(request: CompletionRequest) -> AIResponse:
         assert request.role == "chat"
         if request.json_schema:
-            return reply(json.dumps({"reply": text, "run_task": run_task, "task": task}, ensure_ascii=False))
+            answer = {"reply": text, "run_task": run_task, "task": task}
+            if agent is not None:
+                answer["agent"] = agent
+            return reply(json.dumps(answer, ensure_ascii=False))
         return reply(text)
 
     return respond
@@ -433,6 +439,17 @@ class TestConversation:
         assert task.goal == "השווה מחירים של מחשבים ניידים"
         await c.orch.cancel(res.task_id)
 
+    async def test_a_task_for_one_agent_starts_without_planning(self, c: C) -> None:
+        provider = c.env.use_ai(chat_turn("מסתיר את החלון.", run_task=True, task="הסתר את החלון של JARVIS",
+                                          agent="system"),
+                                default=lambda r: (_ for _ in ()).throw(ProviderError("offline in this test")))
+        res = await c.say("תעלים את עצמך מהמסך לגמרי בבקשה", source="voice")
+        task = await c.orch.get(res.task_id)
+        assert task.plan is not None and task.plan.source == "direct"
+        assert [s.agent.value for s in task.plan.subtasks] == ["system"]
+        await c.orch.cancel(res.task_id)
+        assert [r.role for r in provider.requests][:1] == ["chat"] and "planner" not in [r.role for r in provider.requests]
+
     async def test_chat_mode_talks_without_acting(self, c: C) -> None:
         provider = c.env.use_ai(default=chat_turn("במצב רגיל הייתי מעביר את זה לסוכנים."))
         await c.say("chat mode")
@@ -440,10 +457,104 @@ class TestConversation:
         assert res.task_id is None and res.reply["text"].startswith("במצב רגיל")
         assert provider.requests[-1].json_schema is None and "chat mode" in provider.requests[-1].system
 
+    async def test_it_listens_again_only_after_a_question(self, c: C) -> None:
+        provider = c.env.use_ai(default=chat_turn("אני יכול לחקור באינטרנט ולנהל קבצים. תגיד לי מה אתה צריך."))
+        res = await c.say("מה אתה יודע לעשות?", source="voice")
+        assert res.speech["follow_up"] is False             # not a question: the room's next "OK" is not a command
+        provider.default = chat_turn("באיזו עיר?")
+        res = await c.say("תמליץ לי על מסעדה", source="voice")
+        assert res.speech["follow_up"] is True
+        res = await c.say("open notepad", source="voice")
+        assert res.speech["follow_up"] is False and res.reply["kind"] == "result"
+        res = await c.say("שלום", source="voice")            # "...How can I help?"
+        assert res.speech["follow_up"] is True
+        assert "End with a question only when" in provider.requests[-1].system
+
     async def test_a_model_failure_is_reported(self, c: C) -> None:
         c.env.use_ai(ProviderError("overloaded", retryable=True))
         res = await c.say("ספר לי בדיחה")
         assert res.reply["kind"] == "error" and "overloaded" in res.reply["text"]
+
+
+# ================================================================================== Grok only when told
+ASK_GROK = "בשביל זה צריך את Grok. להשתמש בו?"
+
+
+def grok(c: C, default: Any) -> ScriptedProvider:
+    """Grok with a key, under the default rule: it answers only when the user says so."""
+    provider = ScriptedProvider([], name="xai", default=default)
+    c.env.runtime.router = ProviderRouter(AISettings(), [provider])
+    return provider
+
+
+class TestCloudAIWhenTold:
+    async def test_it_asks_before_using_grok_and_goes_on_after_a_yes(self, c: C) -> None:
+        provider = grok(c, chat_turn("פריז."))
+        res = await c.say("מה הבירה של צרפת?", source="voice")
+        assert res.reply["text"] == ASK_GROK and res.speech["follow_up"] is True and not provider.requests
+        res = await c.say("כן", source="voice")
+        assert res.reply["text"] == "פריז." and len(provider.requests) == 1
+        [message] = provider.requests[0].messages          # the question itself, without the "use Grok?" exchange
+        assert message.text == "מה הבירה של צרפת?"
+
+    async def test_naming_grok_in_the_request_needs_no_question_for_that_conversation(self, c: C) -> None:
+        provider = grok(c, chat_turn("למה המחשב הלך לרופא? כי היה לו וירוס."))
+        res = await c.say("תשתמש בגרוק ותגיד לי בדיחה", source="voice")
+        assert res.reply["text"].startswith("למה המחשב") and provider.requests[-1].messages[-1].text == "תגיד לי בדיחה"
+        res = await c.say("עוד אחת")                        # the same conversation: Grok stays on
+        assert res.reply["text"].startswith("למה המחשב") and len(provider.requests) == 2
+        assert c.core._ai_ok is not None
+        c.core._ai_ok = ("xai", time.monotonic() - 1)       # quiet for two minutes: the next one asks again
+        res = await c.say("ועוד אחת")
+        assert res.reply["text"] == ASK_GROK and len(provider.requests) == 2
+
+    async def test_no_and_noise_do_not_use_grok(self, c: C) -> None:
+        provider = grok(c, chat_turn("לא אמור לקרות"))
+        assert (await c.say("ספר לי בדיחה", source="voice")).reply["text"] == ASK_GROK
+        res = await c.say("לא", source="voice")
+        assert res.reply["text"] == "בסדר, בלי Grok." and res.speech["follow_up"] is False
+        assert (await c.say("ספר לי בדיחה", source="voice")).reply["text"] == ASK_GROK
+        await c.say("OK.", source="voice")                  # what Whisper makes of noise is not a yes
+        assert not provider.requests and c.core._ai_ok is None
+
+    async def test_use_grok_on_its_own_then_without_it(self, c: C) -> None:
+        provider = grok(c, chat_turn("הנה בדיחה."))
+        res = await c.say("מעכשיו תשתמש בגרוק", source="voice")
+        assert res.reply["text"] == "בסדר, Grok כאן. מה לבקש ממנו?" and res.speech["follow_up"] is True
+        assert (await c.say("ספר לי בדיחה")).reply["text"] == "הנה בדיחה." and len(provider.requests) == 1
+        assert (await c.say("בלי גרוק")).reply["text"] == "בסדר, בלי Grok."
+        assert (await c.say("ספר לי בדיחה")).reply["text"] == ASK_GROK and len(provider.requests) == 1
+        res = await c.say("תשתמש בגרוק")                    # said instead of "yes"
+        assert res.reply["text"] == "הנה בדיחה." and len(provider.requests) == 2
+
+    async def test_an_ai_without_a_key_says_so(self, c: C) -> None:
+        provider = grok(c, chat_turn("לא אמור לקרות"))
+        res = await c.say("תשתמש בקלוד ותכתוב לי שיר")
+        assert res.reply["text"] == "כדי להשתמש ב-Claude צריך להוסיף את המפתח שלו: הגדרות ← מפתחות API."
+        assert not provider.requests and c.core._ai_ok is None
+
+    async def test_commands_that_need_no_model_just_run(self, c: C) -> None:
+        provider = grok(c, chat_turn("לא אמור לקרות"))
+        res = await c.say("ג'ארוויס, פתח לי את כרום", source="voice")
+        assert res.reply["text"] == "פתחתי את Google Chrome." and not provider.requests
+        res = await c.say("תכתוב לי סקריפט בפייתון שמדפיס שלום")   # writing code needs the model
+        assert res.intent["name"] == I.WRITE_CODE and res.reply["text"] == ASK_GROK and not provider.requests
+
+    async def test_a_task_carries_the_users_word_to_its_agents(self, c: C) -> None:
+        def respond(request: CompletionRequest) -> AIResponse:
+            return reply("Grok: נמל, גלים, חוף.\n\nSTATUS: success")
+
+        provider = grok(c, respond)
+        task = await c.core.agent_task("creative", "תשתמש בגרוק ותן לי שלושה שמות לבית קפה ליד הים")
+        assert task.allowed_ai == "xai" and task.goal == "תן לי שלושה שמות לבית קפה ליד הים"
+        done = await c.finished(task.id)
+        assert done.status == S.COMPLETED and provider.requests and provider.requests[0].role == "agent"
+        assert JarvisTask.from_record(done.to_record()).allowed_ai == "xai"     # a resumed task keeps it
+        c.core._ai_ok = None
+        quiet = await c.core.agent_task("creative", "תן לי שלושה שמות לחנות פרחים")
+        assert quiet.allowed_ai == ""
+        await c.finished(quiet.id)
+        assert len(provider.requests) == 1                  # no word, no Grok: the agent worked without it
 
 
 # ================================================================================== chat log

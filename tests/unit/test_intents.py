@@ -7,6 +7,7 @@ import time
 import pytest
 
 from jarvis.common.enums import AgentId
+from jarvis.core.ai_words import named_ai
 from jarvis.core.intents import I, detect_intent
 
 CASES: list[tuple[str, str, dict]] = [
@@ -249,3 +250,44 @@ def test_detection_is_fast() -> None:
         detect_intent(t)
     per_call_ms = (time.perf_counter() - start) * 1000 / (len(texts) * 5)
     assert per_call_ms < 5, per_call_ms
+
+
+AI_WORDS: list[tuple[str, str | None, bool, str]] = [
+    # A request that names a cloud AI: (command, provider, negated, the rest of the command)
+    ("תשתמש בגרוק ותכתוב לי שיר", "xai", False, "תכתוב לי שיר"),
+    ("תשאל את גרוק מה הבירה של צרפת", "xai", False, "מה הבירה של צרפת"),
+    ("בגרוק: מה הבירה של צרפת", "xai", False, "מה הבירה של צרפת"),
+    ("גרוק, תכתוב לי בדיחה", "xai", False, "תכתוב לי בדיחה"),
+    ("תכתוב לי שיר עם גרוק", "xai", False, "תכתוב לי שיר"),
+    ("תכתוב לי שיר ותשתמש בגרוק", "xai", False, "תכתוב לי שיר"),
+    ("תענה בגרוק מה השעה בטוקיו", "xai", False, "תענה מה השעה בטוקיו"),
+    ("תבקש מגרוק לסכם את זה", "xai", False, "לסכם את זה"),
+    ("שישיתמש בגרוק", "xai", False, ""),                    # the user's own spelling
+    ("מעכשיו תשתמש ב-Grok", "xai", False, ""),
+    ("use grok to write a poem", "xai", False, "write a poem"),
+    ("Use Grok and tell me a joke", "xai", False, "tell me a joke"),
+    ("ask Claude what time it is in Tokyo", "anthropic", False, "what time it is in Tokyo"),
+    ("תשתמש בקלאוד ותסכם את המייל", "anthropic", False, "תסכם את המייל"),
+    ("תשתמש בצ'אט ג'יפיטי ותתרגם", "openai", False, "תתרגם"),
+    # ...or tells JARVIS not to use it
+    ("אל תשתמש בגרוק", "xai", True, ""),
+    ("תפסיק להשתמש בגרוק", "xai", True, ""),
+    ("בלי גרוק תפתח את כרום", "xai", True, "תפתח את כרום"),
+    # A mention is not a request; "קלאוד" alone is "cloud"
+    ("מה זה גרוק?", None, False, "מה זה גרוק?"),
+    ("תפתח את גרוק", None, False, "תפתח את גרוק"),
+    ("תשמור את זה בקלאוד", None, False, "תשמור את זה בקלאוד"),
+    ("תסנכרן עם קלאוד", None, False, "תסנכרן עם קלאוד"),
+    ("תפתח את וואטסאפ", None, False, "תפתח את וואטסאפ"),
+]
+
+
+@pytest.mark.parametrize(("text", "provider", "negated", "rest"), AI_WORDS, ids=[c[0] for c in AI_WORDS])
+def test_a_named_cloud_ai(text: str, provider: str | None, negated: bool, rest: str) -> None:
+    word = named_ai(text)
+    assert (word.provider, word.negated, word.rest) == (provider, negated, rest)
+
+
+def test_the_rest_is_understood_on_its_own() -> None:
+    word = named_ai("ג'ארוויס, תשתמש בגרוק ותפתח לי את כרום")
+    assert word.provider == "xai" and detect_intent(word.rest).name == I.OPEN_APP

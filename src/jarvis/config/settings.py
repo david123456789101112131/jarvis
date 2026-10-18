@@ -108,13 +108,16 @@ PROVIDER_NAMES = ("anthropic", "xai", "openai", "local")
 
 
 def _default_agent_providers() -> dict[str, str]:
-    # The five agents work with Grok when an xAI key is set; without one (or when Grok fails) they
-    # fall back to the usual order, Claude first.
+    # The five agents work with Grok when an xAI key is set (and, with `cloud_only_when_told`, the user said
+    # so); without one (or when Grok fails) they fall back to the usual order, Claude first.
     return {a.value: "xai" for a in AgentId}
 
 
 class AISettings(_Section):
     provider: Literal["auto", "anthropic", "xai", "openai", "local", "none"] = "auto"
+    # Grok, Claude and OpenAI cost money per request: use one only when the user says so, by naming it in the
+    # request ("תשתמש בגרוק ...") or with a yes when JARVIS asks. A local model needs no word.
+    cloud_only_when_told: bool = True
     roles: dict[str, AIRoleSettings] = Field(default_factory=_default_roles)
     # Preferred provider for everything an agent asks a model while it works ("auto" = the role's order).
     agent_providers: dict[str, str] = Field(default_factory=_default_agent_providers)
@@ -253,6 +256,7 @@ class VoiceSettings(_Section):
     end_silence_ms: int = 700
     partial_transcripts: bool = True
     always_listening: bool = True
+    ctrl_to_talk: bool = True              # a short press of Ctrl on its own starts listening (Windows)
 
 
 class UISettings(_Section):

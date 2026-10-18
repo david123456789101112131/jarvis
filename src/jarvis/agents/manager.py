@@ -36,7 +36,7 @@ from jarvis.agents.base import (
     agent_address,
     t,
 )
-from jarvis.ai.context import agent_scope
+from jarvis.ai.context import agent_scope, allow_provider
 from jarvis.bus.message import Message, event
 from jarvis.common.cancel import CancelToken
 from jarvis.common.clock import iso, utcnow
@@ -315,7 +315,8 @@ class AgentManager:
         a.timeout_s = task.timeout_s or float(self.runtime.settings.agents.timeouts_s.get(st.id.value, 300.0))
         self._arm_timer(a, a.timeout_s)
         run = RunContext(agent, task, a.token, reporter=self, assignment_id=a.id)
-        with agent_scope(st.id.value):           # every model call of this assignment uses the agent's provider
+        # Every model call of this assignment uses the agent's provider, and a cloud AI only if the user allowed it.
+        with agent_scope(st.id.value), allow_provider(task.allowed_ai or None):
             handle = asyncio.ensure_future(agent.handle(task, run))
         try:
             result = await self._await_handle(handle, a)

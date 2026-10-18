@@ -436,13 +436,22 @@ class TestSession:
         out = await _session(FakeBackend(), FakeClient([_click()]), FakeCtx(), max_steps=3).run()
         assert out.reason == "max_steps" and out.steps == 3
 
-    async def test_denied_action_is_fed_back_then_model_answers(self) -> None:
-        ctx = FakeCtx(results={"computer_act": ToolResult(ok=False, denied="confirmation", summary="no")})
+    async def test_an_action_the_user_declines_ends_the_session(self) -> None:
+        ctx = FakeCtx(results={"computer_act": ToolResult(ok=False, denied="confirmation", summary="no",
+                                                          error="The user did not approve: click")})
+        client = FakeClient([_click(), _click(), _answer("tried another way")])
+        out = await _session(FakeBackend(), client, ctx).run()
+        assert out.reason == "declined" and out.steps == 1 and "did not approve" in out.error
+        assert client.i == 1                           # the model was not asked for another way
+
+    async def test_an_action_jarvis_refuses_is_fed_back_then_model_answers(self) -> None:
+        ctx = FakeCtx(results={"computer_act": ToolResult(ok=False, denied="blocked", summary="no",
+                                                          error="password field")})
         session = _session(FakeBackend(), FakeClient([_click(), _answer("gave up")]), ctx)
         out = await session.run()
         assert out.reason == "answer"
         tool_msgs = [m for m in session.conv.messages if m.get("role") == "tool"]
-        assert tool_msgs and "did not approve" in tool_msgs[0]["content"]
+        assert tool_msgs and "JARVIS refused" in tool_msgs[0]["content"]
 
     async def test_open_app_and_goto_route_to_their_tools(self) -> None:
         ctx = FakeCtx()
@@ -511,6 +520,14 @@ class TestWindowsKeyGuard:
         backend, sent = self._backend(monkeypatch, [7, 9])     # the first combination switched windows
         assert backend.press_keys([["alt", "tab"], ["ctrl", "w"]]) is False
         assert sent == [2, 2]                                # alt+tab down/up; ctrl+w never sent
+
+    def test_its_own_ctrl_is_not_the_users_ctrl_to_talk(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jarvis.host import winapi
+
+        monkeypatch.setattr(winapi, "_own_keys_until", 0.0)
+        backend, sent = self._backend(monkeypatch, [7])
+        assert backend.press_keys([["ctrl"]]) is True and sent == [1, 1]
+        assert winapi.own_keys_recent() is True
 
 
 # ============================================================================ the user's window comes back first
@@ -1070,6 +1087,33 @@ class TestToolsThroughGate:
         assert res.ok, res.error
         assert svc.window == "YouTube"
         assert "YouTube" in str(shown[0].details)
+
+    async def test_declining_an_action_ends_the_task(self, kit: Any) -> None:
+        backend = FakeBackend(target=_target(process="whatsapp.exe", title="WhatsApp",
+                                             element="Send", control="button"))
+        svc = _SvcForGate(backend, [_click(), _click(), _answer("sent it another way")])
+        self._wire(kit, svc)
+        answers = iter([True, False])              # yes to the task, no to its click on Send
+        asked: list[str] = []
+
+        async def respond(kit: Any) -> None:
+            for _ in range(200):
+                for req in kit.broker.pending():
+                    asked.append(req.tool)
+                    kit.broker.respond(req.id, next(answers, False))
+                await asyncio.sleep(0.01)
+
+        approver = asyncio.ensure_future(respond(kit))
+        try:
+            res = await kit.executor.execute("use_computer", {"goal": "send a message"},
+                                             agent_id="system", task_id="task_1")
+        finally:
+            approver.cancel()
+        assert asked == ["use_computer", "computer_act"]          # nothing was asked after the "no"
+        assert not res.ok and res.denied == "confirmation"
+        assert res.data["code"] == "confirmation_denied" and res.data["reason"] == "declined"
+        assert "did not approve" in (res.error or "")
+        assert not any(name == "click" for name, _ in backend.calls)
 
     async def test_computer_act_refused_without_a_session(self, kit: Any) -> None:
         svc = _SvcForGate(FakeBackend(), [])

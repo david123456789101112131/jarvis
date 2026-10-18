@@ -325,6 +325,7 @@ function ProvidersSection({ settings, onSaved }: { settings: SettingsObject; onS
   const providers = useAppState((s) => s.providers);
   const fields = useMemo<FieldDef[]>(
     () => [
+      { kind: 'toggle', path: 'ai.cloud_only_when_told', label: 'settings.cloudWhenTold', hint: 'settings.cloudWhenToldHint' },
       {
         kind: 'select',
         path: 'ai.provider',
@@ -375,8 +376,12 @@ function ProvidersSection({ settings, onSaved }: { settings: SettingsObject; onS
       <div className="provider-status" data-testid="provider-status">
         <div className="provider-status__active">
           <span className="faint">{t('settings.activeProvider')}</span>
-          <strong className="ltr">{providers.active ?? t('settings.none')}</strong>
-          {!providers.active ? <span className="hint">{t('settings.noProviderHint')}</span> : null}
+          <strong className="ltr">{providers.active ?? providers.when_told ?? t('settings.none')}</strong>
+          {providers.active ? null : providers.when_told ? (
+            <span className="hint" data-testid="provider-when-told">{t('settings.whenToldHint')}</span>
+          ) : (
+            <span className="hint">{t('settings.noProviderHint')}</span>
+          )}
         </div>
         <ul className="provider-status__list">
           {status.map((p) => (
@@ -408,6 +413,7 @@ function VoiceSection({ settings, onSaved }: { settings: SettingsObject; onSaved
     () => [
       { kind: 'toggle', path: 'voice.enabled', label: 'settings.voiceEnabled' },
       { kind: 'toggle', path: 'voice.always_listening', label: 'settings.alwaysListening', hint: 'settings.alwaysListeningHint' },
+      { kind: 'toggle', path: 'voice.ctrl_to_talk', label: 'settings.ctrlToTalk', hint: 'settings.ctrlToTalkHint' },
       { kind: 'toggle', path: 'voice.speak_responses', label: 'settings.speakResponses' },
       { kind: 'text', path: 'voice.wake_word_model', label: 'settings.wakeWord', hint: 'settings.wakeWordHint', ltr: true },
       {

@@ -31,7 +31,7 @@ HALT_CODES = frozenset({"kill_switch", "agent_stopped"})
 NO_RETRY_CODES = frozenset({
     "refusal", "permission_denied", "confirmation_denied", "security_violation", "project_not_found",
     "need_location", "needs_token", "missing_modules", "ai_required", "invalid_tool_input", "tool_not_found",
-    "plan_error", "user_stopped", "computer_unavailable",
+    "plan_error", "user_stopped", "computer_unavailable", "ai_needs_ok",
 })
 # The AI model failed: the next attempt runs the step's offline skill when it has one.
 MODEL_CODES = frozenset({"ai_unavailable", "ai_error"})

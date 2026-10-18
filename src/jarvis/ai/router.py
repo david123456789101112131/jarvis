@@ -8,6 +8,11 @@ skipped for that call. A refusal is not routed to another vendor: it is reported
 While one of the five agents works (`jarvis.ai.context.agent_scope`), the provider chosen for it
 in `ai.agent_providers` goes first and JARVIS's usual order follows as its fallback: when the
 agent's provider fails for any reason but a refusal, the call moves on down that order.
+
+Cloud AI costs money per request. With `ai.cloud_only_when_told` (the default) Anthropic, xAI and
+OpenAI are left out of every order unless the user allowed one for the work in progress
+(`jarvis.ai.context.allow_provider`): then that one goes first and only free (local) models follow
+it. `asks_first()` names the cloud AI that would do some work once the user says so.
 """
 
 from __future__ import annotations
@@ -22,7 +27,7 @@ from pydantic import BaseModel, ValidationError
 
 from jarvis.ai.anthropic_provider import AnthropicProvider
 from jarvis.ai.base import AIProvider
-from jarvis.ai.context import current_agent
+from jarvis.ai.context import allowed_provider, current_agent
 from jarvis.ai.openai_provider import LocalModelProvider, OpenAIProvider, XaiProvider
 from jarvis.ai.types import AIMessage, AIResponse, CompletionRequest, Effort, ToolSpec
 from jarvis.common.enums import AgentId
@@ -33,6 +38,9 @@ log = logging.getLogger(__name__)
 
 T = TypeVar("T", bound=BaseModel)
 AUTO_ORDER = ("anthropic", "xai", "openai", "local")
+CLOUD = ("anthropic", "xai", "openai")          # paid per request: used only when the user says so
+CLOUD_NAMES = {"anthropic": "Claude", "xai": "Grok", "openai": "ChatGPT"}
+CLOUD_SAY_HE = {"anthropic": "בקלוד", "xai": "בגרוק", "openai": "בצ'אט ג'י-פי-טי"}   # "תשתמש בגרוק"
 # Who makes a model, for a role whose model name is set while its provider is "auto".
 _MODEL_FAMILIES = (("claude", "anthropic"), ("grok", "xai"), ("gpt", "openai"), ("chatgpt", "openai"),
                    ("o1", "openai"), ("o3", "openai"), ("o4", "openai"))
@@ -105,14 +113,35 @@ class ProviderRouter:
         return self.chain_for(role, current_agent())
 
     def chain_for(self, role: str, agent: str | None) -> list[AIProvider]:
-        """The order for a role as `agent` would get it (None: JARVIS's own calls)."""
+        """The order for a role as `agent` would get it (None: JARVIS's own calls), for the work in progress:
+        a cloud AI only when the user allowed it (`allow_provider`), or always with `cloud_only_when_told` off."""
         if self.settings.provider == "none":
             return []
+        order = self._preferred(role, agent)
+        told = allowed_provider()
+        if told in self.providers:
+            order = [told, *(n for n in order if n != told and n not in CLOUD)]
+        elif self.settings.cloud_only_when_told:
+            order = [n for n in order if n not in CLOUD]
+        return self._usable(order)
+
+    def asks_first(self, role: str = "agent", agent: str | None = None) -> str | None:
+        """The cloud AI that would do this work once the user says so; None when it can go ahead now, or when
+        no AI could do it anyway."""
+        if self.settings.provider == "none" or self.chain_for(role, agent):
+            return None
+        usable = self._usable(self._preferred(role, agent))
+        return usable[0].name if usable and usable[0].name in CLOUD else None
+
+    def _preferred(self, role: str, agent: str | None) -> list[str]:
         order = list(AUTO_ORDER)
         for preferred in (self._role_preference(role), self.agent_preference(agent)):
             if preferred in order:
                 order.remove(preferred)
                 order.insert(0, preferred)
+        return order
+
+    def _usable(self, order: Sequence[str]) -> list[AIProvider]:
         return [self.providers[n] for n in order if n in self.providers and self.providers[n].available()]
 
     def _role_preference(self, role: str) -> str | None:
@@ -126,20 +155,28 @@ class ProviderRouter:
         preferred = self.settings.agent_providers.get(agent, "auto") if agent else "auto"
         return preferred if preferred in self.providers else None
 
+    def has(self, name: str) -> bool:
+        """Whether provider `name` is set up (has its key, or is switched on)."""
+        provider = self.providers.get(name)
+        return bool(provider and provider.available())
+
     def active_name(self) -> str | None:
         chain = self.chain_for("agent", None)
         return chain[0].name if chain else None
 
     def agent_info(self, agent: str) -> dict[str, Any]:
-        """Which provider and model an agent works with right now (for its card in the UI)."""
+        """Which provider and model an agent works with (for its card in the UI); `when_told`: only when the
+        user says so."""
         chain = self.chain_for("agent", agent)
-        first = chain[0] if chain else None
+        told = self.asks_first("agent", agent) if not chain else None
+        first = chain[0] if chain else self.providers.get(told) if told else None
         model = self.settings.role("agent").model
         if first is not None and not (model and self._model_owner("agent", model) == first.name):
             model = first.model
         return {"preferred": self.settings.agent_providers.get(agent, "auto"),
                 "provider": first.name if first else None,
-                "model": model if first else None}
+                "model": model if first else None,
+                "when_told": told is not None}
 
     def status(self) -> dict[str, Any]:
         def on(name: str) -> bool:
@@ -149,6 +186,7 @@ class ProviderRouter:
         anthropic = self.providers.get("anthropic")
         return {
             "active": self.active_name(),
+            "when_told": self.asks_first("agent", None),     # the cloud AI JARVIS uses once the user says so
             "anthropic": on("anthropic"),
             "xai": on("xai"),
             "openai": on("openai"),
@@ -195,6 +233,11 @@ class ProviderRouter:
         if provider is not None:
             chain = [p for p in chain if p.name == provider] or chain
         if not chain:
+            told = self.asks_first(request.role, agent)
+            if told is not None:
+                name = CLOUD_NAMES[told]
+                raise ProviderUnavailable(f"{name} is used only when you ask for it: say \"use {name}\" in the "
+                                          "request.", details={"code": "ai_needs_ok", "provider": told})
             raise ProviderUnavailable(NO_PROVIDER)
         agents_choice = self.agent_preference(agent)
         owner = self._model_owner(request.role, request.model) if request.model else None

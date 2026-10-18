@@ -80,6 +80,8 @@ export interface AgentAI {
   preferred: ProviderName | 'auto';
   provider: ProviderName | null;
   model: string | null;
+  /** The agent uses this cloud AI only when the user says so. */
+  when_told?: boolean;
 }
 
 export interface AgentDetail extends AgentView {
@@ -221,6 +223,8 @@ export interface KillSwitchState {
 
 export interface ProvidersInfo {
   active: string | null;
+  /** The cloud AI JARVIS uses once the user says so ("use Grok"); null when one answers freely, or none could. */
+  when_told?: ProviderName | null;
   anthropic: boolean;
   xai: boolean;
   openai: boolean;
@@ -397,6 +401,7 @@ export interface SettingsObject {
     enabled?: boolean;
     speak_responses?: boolean;
     always_listening?: boolean;
+    ctrl_to_talk?: boolean;
     wake_word_model?: string;
     stt_language?: 'auto' | 'he' | 'en';
     tts_voice_he?: string;

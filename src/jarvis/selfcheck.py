@@ -258,9 +258,10 @@ async def _ai(report: CheckReport, settings: Settings, secrets: SecretStore) -> 
         st = router.status()
     finally:
         await router.aclose()
-    if st["active"]:
+    if st["active"] or st.get("when_told"):
         agents = sorted(set(st["agents"].values()) - {None})
-        detail = (f"answers with: {st['active']}; agents work with: {', '.join(agents)}"
+        answers = st["active"] or f"{st['when_told']}, only when you ask for it"
+        detail = (f"answers with: {answers}; agents work with: {', '.join(agents)}"
                   + ("; Anthropic server-side fallbacks on" if st.get("fallbacks") else ""))
         report.add("ai", "ok", detail, **st)
     else:

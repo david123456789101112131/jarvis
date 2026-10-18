@@ -35,7 +35,7 @@ MAX_IMAGE_WIDTH = 1376
 
 @dataclass
 class Outcome:
-    reason: str                # "answer" | "user_stop" | "takeover" | "max_steps" | "time_limit" | "error"
+    reason: str                # "answer" | "user_stop" | "takeover" | "declined" | "max_steps" | "time_limit" | "error"
     content: str = ""
     steps: int = 0
     error: str = ""
@@ -107,6 +107,9 @@ class ComputerSession:
                 result = await self._act(step, shot)
                 log.info("Computer step %d (%s): look %.1f s, model %.1f s, act %.1f s", n + 1, step.tool,
                          looked - began, thought - looked, time.monotonic() - thought)
+                if result.denied == "confirmation":   # the user said no: stop here, no other way around it
+                    return Outcome("declined", steps=n + 1, error=result.error or result.summary,
+                                   actions=self.actions)
                 self.conv.result(step, _feedback(result))
                 if result.ok and step.content:
                     self.actions.append(step.content.splitlines()[0][:200])
@@ -173,8 +176,6 @@ def _feedback(result: ToolResult) -> str:
     """What the model is told happened, so it can plan the next step (or give up)."""
     if result.ok:
         return f"done: {result.summary}" if result.summary else "done"
-    if result.denied == "confirmation":
-        return "The user did not approve this action. Stop and report with answer."
     if result.denied:
         return f"JARVIS refused this action: {result.error or result.summary}. Do not retry it."
     return f"failed: {result.error or result.summary}"

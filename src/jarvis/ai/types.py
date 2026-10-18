@@ -33,6 +33,7 @@ class ToolOutput(BaseModel):
     content: str
     is_error: bool = False
     name: str = ""
+    halt: bool = False         # the user said no to this action: no more tool calls, the model reports
 
 
 class AIMessage(BaseModel):

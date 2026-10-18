@@ -22,6 +22,8 @@ State machine (`VoiceState`)::
   The wake engine keeps running (threshold slightly raised against our own echo): saying the
   wake word stops playback at once and goes back to LISTENING (barge-in).
 * `follow_up=True` → LISTENING again for `follow_up_window_s` without the wake word.
+* Ctrl on its own (`talk_key()`, from `hotkey.py`) is the wake word without speaking it: the same "listening"
+  acknowledgement and one command; pressed again while listening, it stops listening.
 * Push-to-talk skips the wake word; `cancel()`, `mute()/unmute()` and `speak()` (proactive
   announcements, queued until the pipeline is quiet unless `interrupt=True`) are available.
 * Errors put the pipeline in ERROR for a moment, then back to IDLE; the frame loop never dies.
@@ -235,7 +237,7 @@ class _EventDispatcher:
 @dataclass
 class _Listen:
     id: int
-    trigger: str  # "wake" | "ptt" | "follow_up" | "retry"
+    trigger: str  # "wake" | "key" | "ptt" | "follow_up" | "retry"
     explicit: bool
     retries: int = 0
     echo_text: str | None = None
@@ -292,7 +294,7 @@ class VoicePipeline:
         self.last_transcript: Transcript | None = None
         self.last_error: str | None = None
         self.disabled_reason: str | None = None
-        self.stats = {"wakes": 0, "barge_ins": 0, "turns": 0, "errors": 0, "frames": 0}
+        self.stats = {"wakes": 0, "talk_keys": 0, "barge_ins": 0, "turns": 0, "errors": 0, "frames": 0}
         self._listen: _Listen | None = None
         self._listen_seq = 0
         self._turn_seq = 0
@@ -414,6 +416,10 @@ class VoicePipeline:
     def push_to_talk_stop(self) -> None:
         self._call(self._ptt_stop)
 
+    def talk_key(self) -> None:
+        """The talk key (Ctrl on its own) was tapped: listen for one command; tapped again, stop listening."""
+        self._call(self._talk_key_now)
+
     def cancel(self) -> None:
         self._call(self._cancel_now)
 
@@ -505,6 +511,7 @@ class VoicePipeline:
     def _ptt_start(self) -> None:
         if self._stopping:
             return
+        log.info("Push-to-talk: listening")
         self._interrupt()
         self._begin_listen("ptt", explicit=True)
 
@@ -519,6 +526,25 @@ class VoicePipeline:
             self._to_rest()
             return
         self._start_turn(listen, utterance)
+
+    def _talk_key_now(self) -> None:
+        if self._stopping:
+            return
+        if self.disabled_reason:  # e.g. no microphone: saying "yes?" would promise what cannot happen
+            log.info("Talk key ignored: %s", self.disabled_reason)
+            return
+        listen = self._listen
+        if listen is not None and listen.explicit:  # pressed again while listening: never mind
+            log.info("Talk key: stopped listening")
+            self._cancel_now()
+            return
+        self.stats["talk_keys"] += 1
+        log.info("Talk key: listening")
+        self._interrupt()
+        self._set_state(VoiceState.WAKE, trigger="key")
+        holdoff, echo = self._play_ack_now("listening", self.language)
+        self._begin_listen("key", explicit=True, holdoff_s=holdoff, timeout_s=self.options.no_speech_timeout_s,
+                           echo_text=echo)
 
     def _cancel_now(self) -> None:
         self._interrupt()
@@ -600,7 +626,7 @@ class VoicePipeline:
             return
         if event is EndpointEvent.NO_SPEECH:
             self._listen = None
-            log.debug("No speech after %s", listen.trigger)
+            log.info("No speech after %s", listen.trigger)
             self._to_rest()
             return
         self._maybe_partial(listen)
@@ -706,6 +732,7 @@ class VoicePipeline:
     # Turns: transcribe → handler → speak → follow-up
     # ------------------------------------------------------------------------------------------
     def _start_turn(self, listen: _Listen, utterance: Utterance) -> None:
+        log.info("Heard %.1f s of speech after %s", utterance.duration_s, listen.trigger)
         self._turn_seq += 1
         echo = listen.echo_text if utterance.started_in_holdoff else None
         self._launch_turn(
@@ -763,7 +790,7 @@ class VoicePipeline:
             )
             return
         if noise:
-            log.debug("Ignoring empty/noise transcript %r", transcript.text)
+            log.info("Ignoring an empty or noise transcript after %s", turn.trigger)
             if turn.explicit and turn.retries < o.max_retries:
                 await self._say(None, "not_understood", language, guard=lambda: self._is_current(turn), trigger="reply")
                 if self._is_current(turn):

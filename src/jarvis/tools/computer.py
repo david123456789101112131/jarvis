@@ -98,14 +98,19 @@ class UseComputerTool(Tool):
             return ToolResult(ok=True, summary=outcome.content or ctx.t("סיימתי.", "Done."),
                               data=data, actions=outcome.actions)
         if outcome.stopped_by_user:
-            text = ctx.t("עצרת את JARVIS.", "You stopped JARVIS.") if outcome.reason == "user_stop" \
-                else ctx.t("עצרתי כי לקחת את העכבר.", "Stopped because you took back the mouse.")
-            return ToolResult(ok=False, summary=text, denied="stopped", data={**data, "code": "user_stopped"},
-                              actions=outcome.actions)
+            text = ctx.t("עצרת את JARVIS (Esc פעמיים).", "You stopped JARVIS (Esc twice).") \
+                if outcome.reason == "user_stop" else ctx.t("עצרתי כי לקחת את העכבר.", "Stopped because you took back the mouse.")
+            return ToolResult(ok=False, summary=text, error=text, denied="stopped",
+                              data={**data, "code": "user_stopped"}, actions=outcome.actions)
+        if outcome.reason == "declined":     # the user said no to one of its actions: the whole task stops
+            text = ctx.t("לא אישרת את הפעולה, אז עצרתי.", "You did not approve the action, so I stopped.")
+            return ToolResult(ok=False, summary=text, error=outcome.error or text, denied="confirmation",
+                              data={**data, "code": "confirmation_denied"}, actions=outcome.actions)
         if outcome.reason in ("max_steps", "time_limit"):
             text = ctx.t("לא הספקתי לסיים את המשימה על המסך.", "I could not finish the on-screen task in time.")
             return ToolResult.fail(text, data={**data, "code": "computer_incomplete"}, actions=outcome.actions)
-        return ToolResult.fail(ctx.t(f"שליטה במחשב נכשלה: {outcome.error}", f"Computer control failed: {outcome.error}"),
+        error = outcome.error or outcome.reason
+        return ToolResult.fail(ctx.t(f"שליטה במחשב נכשלה: {error}", f"Computer control failed: {error}"),
                                data={**data, "code": "computer_error"})
 
 

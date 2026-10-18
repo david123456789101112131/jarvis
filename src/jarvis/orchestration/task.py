@@ -87,6 +87,7 @@ class JarvisTask(BaseModel):
     followups: int = 0           # follow-up rounds added after the plan (helpers, autonomous steps)
     runs: int = 0                # 1 for the first run, +1 for every resume or retry
     auto_title: bool = True      # the title came from the goal and may be replaced by the plan's title
+    allowed_ai: str = ""         # the cloud AI the user allowed for this task ("" = free models only)
 
     # ------------------------------------------------------------------ state
     @property
@@ -148,7 +149,7 @@ class JarvisTask(BaseModel):
             "timeline": [e.model_dump(mode="json") for e in self.timeline],
             "outcome": self.outcome.model_dump(mode="json") if self.outcome else None,
             "dispatches": self.dispatches, "followups": self.followups, "runs": self.runs,
-            "auto_title": self.auto_title,
+            "auto_title": self.auto_title, "allowed_ai": self.allowed_ai,
         }
         return TaskRecord(
             id=self.id, title=self.title, goal=self.goal, status=self.status.value,
@@ -196,6 +197,7 @@ class JarvisTask(BaseModel):
             started_at=parse_iso(rec.started_at), finished_at=parse_iso(rec.finished_at),
             dispatches=int(data.get("dispatches") or 0), followups=int(data.get("followups") or 0),
             runs=int(data.get("runs") or 0), auto_title=bool(data.get("auto_title", True)),
+            allowed_ai=str(data.get("allowed_ai") or ""),
         )
 
 

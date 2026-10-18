@@ -47,9 +47,9 @@ log = logging.getLogger(__name__)
 
 # Biases recognition towards names JARVIS hears all the time (Whisper "initial prompt").
 PROMPTS = {
-    "he": "ג'ארוויס, כרום, יוטיוב, ספוטיפיי, וואטסאפ, וורד, אקסל. JARVIS, Chrome, YouTube.",
-    "en": "JARVIS, Chrome, YouTube, Spotify, WhatsApp, Visual Studio Code, Word, Excel.",
-    "auto": "JARVIS, ג'ארוויס, Chrome, כרום, YouTube, יוטיוב.",
+    "he": "ג'ארוויס, גרוק, כרום, יוטיוב, ספוטיפיי, וואטסאפ, וורד, אקסל. JARVIS, Chrome, YouTube.",
+    "en": "JARVIS, Grok, Chrome, YouTube, Spotify, WhatsApp, Visual Studio Code, Word, Excel.",
+    "auto": "JARVIS, ג'ארוויס, גרוק, Chrome, כרום, YouTube, יוטיוב.",
 }
 
 # Phrases Whisper is known to invent for noise/silence.

@@ -34,6 +34,7 @@ from pydantic import ValidationError
 from jarvis.agents import manager as manager_module
 from jarvis.agents.base import AGENT_INFO, AgentResult, AgentTask, t
 from jarvis.agents.planner.planning import fallback_plan, rule_plan
+from jarvis.ai.context import allow_provider, allowed_provider
 from jarvis.bus.message import Message, event
 from jarvis.common.cancel import CancelToken
 from jarvis.common.clock import utcnow
@@ -185,8 +186,11 @@ class TaskOrchestrator:
         plan: TaskPlan | None = None,
         context: dict[str, Any] | None = None,
         project_id: str | None = None,
+        allowed_ai: str | None = None,
     ) -> JarvisTask:
-        """Start a task in the background and return it at once (status pending → planning → running)."""
+        """Start a task in the background and return it at once (status pending → planning → running).
+
+        `allowed_ai`: the cloud AI the user allowed for it (default: the one allowed where `submit` is called)."""
         goal = " ".join((goal or "").split())
         lang = language if language in ("he", "en") else detect_language(goal, "he")
         if not goal:
@@ -200,7 +204,7 @@ class TaskOrchestrator:
         task = JarvisTask(goal=goal, title=(title or short_title(goal))[:120], auto_title=title is None,
                           intent=intent, slots=dict(slots or {}), language=lang, mode=mode,
                           priority=Priority.parse(priority), source=source, plan=plan, context=dict(context or {}),
-                          project_id=project_id)
+                          project_id=project_id, allowed_ai=(allowed_provider() or "") if allowed_ai is None else allowed_ai)
         self._keep(task)
         await self._note(task, "received", t(lang, f"JARVIS קיבל משימה: {task.title}", f"JARVIS received a task: "
                                              f"{task.title}"), activity=True)
@@ -408,6 +412,11 @@ class TaskOrchestrator:
 
     async def _drive(self, run: _Run) -> None:
         task = run.task
+        with allow_provider(task.allowed_ai or None):      # planning, checks and the summary: the task's AI
+            await self._drive_allowed(run)
+
+    async def _drive_allowed(self, run: _Run) -> None:
+        task = run.task
         limit = self.cfg.autonomous_task_timeout_s if task.mode == Mode.AUTONOMOUS else self.cfg.task_timeout_s
         try:
             deadline = asyncio.timeout(limit)
@@ -465,6 +474,7 @@ class TaskOrchestrator:
             params={"goal": task.goal, "intent": task.intent, "slots": task.slots, "context": memory_text,
                     "max_steps": 12 if task.mode == Mode.AUTONOMOUS else 8},
             context={"goal": task.goal}, priority=self._priority(task, Priority.HIGH), mode=task.mode, language=lang,
+            allowed_ai=task.allowed_ai,
         )
         result = await self.manager.run(request, cancel=run.token)
         if run.stop is not None:
@@ -597,7 +607,7 @@ class TaskOrchestrator:
             params=dict(s.params), context=self._context(run, s), priority=self._priority(task, s.priority),
             mode=task.mode, timeout_s=s.timeout_s, cwd=plan.project_dir, language=lang,
             acceptance_criteria=list(s.acceptance_criteria), expected_files=list(s.expected_files),
-            attempt=s.attempts, allow_llm=s.id not in run.offline,
+            attempt=s.attempts, allow_llm=s.id not in run.offline, allowed_ai=task.allowed_ai,
         )
         future = await self.manager.submit(request, cancel=run.token)
         run.running[s.id] = future
@@ -661,7 +671,10 @@ class TaskOrchestrator:
         s.progress = max(s.progress, min(1.0, float(result.progress or 0.0)))
         for conf_id in [c for c, sid in run.confirmations.items() if sid == s.id]:
             run.confirmations.pop(conf_id, None)
-        if result.status in (ResultStatus.SUCCESS, ResultStatus.PARTIAL):
+        # The user said no to one of the step's actions: it ends there (no check, no retry, no other agent),
+        # and the steps that needed it do not run.
+        declined = result.data.get("code") == "confirmation_denied"
+        if result.status in (ResultStatus.SUCCESS, ResultStatus.PARTIAL) and not declined:
             problems: list[str] = []
             if self.cfg.verify_results and run.stop is None:
                 s.status = TaskStatus.VERIFYING
@@ -709,7 +722,8 @@ class TaskOrchestrator:
             await self._failed(run, s, result, code=stop, error=result.summary or stop)
             return
         code = failure_code(result.status, result.data.get("code"), result.denied)
-        error = (result.errors[-1] if result.errors else result.summary) or t(lang, "שגיאה לא ידועה", "Unknown error")
+        error = ((result.denied[-1] if declined and result.denied else None)          # what the user said no to
+                 or (result.errors[-1] if result.errors else result.summary) or t(lang, "שגיאה לא ידועה", "Unknown error"))
         await self._failed(run, s, result, code=code, error=error, feedback=error)
 
     async def _complete(self, run: _Run, s: SubTask, result: AgentResult) -> None:

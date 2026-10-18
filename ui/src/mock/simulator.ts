@@ -377,15 +377,26 @@ export class Simulator {
     const prefs = (ai.agent_providers ?? {}) as Record<string, string>;
     const agents: ProvidersInfo['agents'] = {};
     for (const id of this.agents.keys()) agents[id] = first(prefs[id] ?? 'xai');
-    return { active: first(ai.provider), ...on, fallbacks: on.anthropic, agents };
+    // As the server: a cloud AI answers only when the user says so, unless that rule is switched off.
+    const chosen = first(ai.provider);
+    const told = ai.cloud_only_when_told !== false && chosen !== null && chosen !== 'local' && !on.local;
+    const active = ai.cloud_only_when_told !== false && chosen !== 'local' ? (on.local ? 'local' : null) : chosen;
+    return { active, when_told: told ? chosen : null, ...on, fallbacks: on.anthropic, agents };
   }
 
   private agentAI(id: AgentId, info: ProvidersInfo): AgentAI {
     const ai = (this.settings.ai ?? {}) as Record<string, { model?: string } | string | undefined>;
     const prefs = (ai.agent_providers ?? {}) as unknown as Record<string, AgentAI['preferred']>;
-    const provider = info.agents?.[id] ?? null;
+    const told = (this.settings.ai as Record<string, unknown> | undefined)?.cloud_only_when_told !== false;
+    const cloud = info.agents?.[id] ?? null;
+    const provider = told && info.local ? 'local' : cloud;
     const section = provider ? ai[provider] : undefined;
-    return { preferred: prefs[id] ?? 'xai', provider, model: typeof section === 'object' ? section.model ?? null : null };
+    return {
+      preferred: prefs[id] ?? 'xai',
+      provider,
+      model: typeof section === 'object' ? section.model ?? null : null,
+      when_told: told && provider !== null && provider !== 'local',
+    };
   }
 
   /** A key or an AI setting changed: tell the UI, as the core does. */

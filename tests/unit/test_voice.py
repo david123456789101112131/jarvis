@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -41,6 +42,7 @@ from jarvis.voice.audio import (
     NullSink,
 )
 from jarvis.voice.base import ACK_PHRASES, SpeechReply, Transcript, VoiceState
+from jarvis.voice.hotkey import CtrlTapWatch, TapDetector, watch_ctrl_taps
 from jarvis.voice.pipeline import PipelineOptions, VoicePipeline, coerce_reply, strip_echo
 from jarvis.voice.service import VoiceService
 from jarvis.voice.stt import (
@@ -1206,6 +1208,206 @@ class TestPipeline:
 
 
 # =============================================================================================
+# Ctrl to talk
+# =============================================================================================
+class ScriptedKeys:
+    """A keyboard read from a script: each poll takes the next (ctrl, others, tick, cursor); then nothing is down."""
+
+    def __init__(self, polls: list[tuple[bool, bool, int, tuple[int, int]]], *, failures: int = 0) -> None:
+        self.polls = list(polls)
+        self.failures = failures
+        self.now: tuple[bool, bool, int, tuple[int, int]] = (False, False, 0, (0, 0))
+        self.finished = threading.Event()
+
+    def ctrl_down(self) -> bool:
+        if self.failures:
+            self.failures -= 1
+            raise OSError("access denied")
+        if self.polls:
+            self.now = self.polls.pop(0)
+        else:
+            self.now = (False, False, self.now[2], self.now[3])
+            self.finished.set()
+        return self.now[0]
+
+    def others_down(self) -> bool:
+        return self.now[1]
+
+    def last_input(self) -> int:
+        return self.now[2]
+
+    def cursor(self) -> tuple[int, int]:
+        return self.now[3]
+
+
+class TestCtrlTap:
+    """Which presses of Ctrl count as "Ctrl on its own" (the poll-by-poll decision, without Windows)."""
+
+    @staticmethod
+    def _press(detector: TapDetector, polls: list[tuple[float, bool, bool, int, tuple[int, int]]],
+               *, own: bool = False) -> bool:
+        results = [detector.feed(t, ctrl, others, tick, cursor, own) for t, ctrl, others, tick, cursor in polls]
+        assert not any(results[:-1])
+        return results[-1]
+
+    def _detector(self) -> TapDetector:
+        detector = TapDetector()
+        assert detector.feed(0.0, False) is False      # Ctrl was up when watching started
+        return detector
+
+    def test_a_short_press_alone_counts(self) -> None:
+        d = self._detector()
+        assert self._press(d, [(1.00, True, False, 5, (10, 10)), (1.04, True, False, 5, (10, 10)),
+                               (1.12, False, False, 6, (10, 10))]) is True
+
+    def test_a_shortcut_does_not(self) -> None:
+        d = self._detector()      # Ctrl+C: C goes down while Ctrl is held
+        assert self._press(d, [(1.00, True, False, 5, (0, 0)), (1.04, True, True, 6, (0, 0)),
+                               (1.08, True, False, 7, (0, 0)), (1.12, False, False, 8, (0, 0))]) is False
+        # Shift held first, then Ctrl (Shift+Ctrl switches the keyboard language on some computers)
+        assert self._press(d, [(2.00, True, True, 9, (0, 0)), (2.10, False, False, 10, (0, 0))]) is False
+        # and the next press on its own counts again
+        assert self._press(d, [(3.00, True, False, 11, (0, 0)), (3.10, False, False, 12, (0, 0))]) is True
+
+    def test_a_long_hold_does_not(self) -> None:
+        d = self._detector()
+        assert self._press(d, [(1.0, True, False, 5, (0, 0)), (1.3, True, False, 5, (0, 0)),
+                               (1.6, True, False, 5, (0, 0)), (1.7, False, False, 6, (0, 0))]) is False
+
+    def test_the_wheel_does_not_but_moving_the_mouse_does(self) -> None:
+        d = self._detector()      # Ctrl+wheel (zoom): input arrives while nothing else is down and the mouse is still
+        assert self._press(d, [(1.00, True, False, 5, (40, 40)), (1.04, True, False, 6, (40, 40)),
+                               (1.10, False, False, 7, (40, 40))]) is False
+        # the hand on the mouse moved it a little while pressing Ctrl: still Ctrl on its own
+        assert self._press(d, [(2.00, True, False, 8, (40, 40)), (2.04, True, False, 9, (42, 41)),
+                               (2.08, True, False, 9, (42, 41)), (2.12, False, False, 10, (42, 41))]) is True
+
+    def test_ctrl_already_down_when_watching_starts_is_not_a_press(self) -> None:
+        d = TapDetector()
+        assert self._press(d, [(0.00, True, False, 1, (0, 0)), (0.10, False, False, 2, (0, 0))]) is False
+        assert self._press(d, [(1.00, True, False, 3, (0, 0)), (1.10, False, False, 4, (0, 0))]) is True
+
+    def test_ctrl_pressed_by_jarvis_does_not_count(self) -> None:
+        d = self._detector()
+        assert self._press(d, [(1.00, True, False, 5, (0, 0)), (1.03, False, False, 6, (0, 0))], own=True) is False
+        assert d.feed(2.00, True, False, 7, (0, 0)) is False
+        assert d.feed(2.03, False, own=True) is False            # JARVIS's own keys were sent meanwhile
+
+    def test_the_marker_for_jarvis_own_keys(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jarvis.host import winapi
+
+        monkeypatch.setattr(winapi, "_own_keys_until", 0.0)
+        assert winapi.own_keys_recent() is False
+        winapi.note_own_keys(5.0)
+        assert winapi.own_keys_recent() is True
+        winapi.note_own_keys(0.0)                                # a shorter mark never cuts a longer one
+        assert winapi.own_keys_recent() is True
+
+    def test_the_watcher_thread_calls_back_once_per_tap(self) -> None:
+        keys = ScriptedKeys([(False, False, 0, (0, 0)),
+                             (True, False, 1, (0, 0)), (True, False, 1, (0, 0)), (False, False, 2, (0, 0)),
+                             (True, False, 3, (0, 0)), (True, True, 4, (0, 0)), (False, False, 5, (0, 0)),
+                             (True, False, 6, (0, 0)), (False, False, 7, (0, 0))], failures=3)
+        taps: list[str] = []
+        watch = CtrlTapWatch(lambda: taps.append(threading.current_thread().name), keys, poll_s=0.001)
+        try:
+            assert keys.finished.wait(5.0)
+            assert watch.running
+        finally:
+            watch.stop()
+        assert taps == ["jarvis-ctrl-watch", "jarvis-ctrl-watch"]   # the Ctrl+key press in between did nothing
+        assert not watch.running
+
+    def test_a_failing_handler_does_not_stop_the_watcher(self) -> None:
+        keys = ScriptedKeys([(False, False, 0, (0, 0)), (True, False, 1, (0, 0)), (False, False, 2, (0, 0)),
+                             (True, False, 3, (0, 0)), (False, False, 4, (0, 0))])
+        calls: list[int] = []
+
+        def handler() -> None:
+            calls.append(1)
+            raise RuntimeError("UI gone")
+
+        watch = CtrlTapWatch(handler, keys, poll_s=0.001)
+        try:
+            assert keys.finished.wait(5.0)
+        finally:
+            watch.stop()
+        assert calls == [1, 1]
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="Windows has the keyboard to watch")
+    def test_only_on_windows(self) -> None:
+        assert watch_ctrl_taps(lambda: None) is None
+
+
+class TestTalkKey:
+    """What the pipeline does when Ctrl is tapped on its own."""
+
+    async def test_listens_for_one_command(self, tmp_path: Path) -> None:
+        reply = SpeechReply(text="It is noon.", follow_up=False)
+        async with Harness(tmp_path, texts=["what time is it"], reply=reply) as h:
+            await h.cache.warm()
+            h.pipeline.talk_key()
+            assert h.pipeline.state is VoiceState.LISTENING
+            h.source.append(speechlike(1.0))       # no wake word said
+            await wait_for(lambda: h.handled and h.quiet, what="the command")
+            await h.pipeline.flush_events()
+        assert h.events.transitions() == ["idle", "wake", "listening", "processing", "speaking", "idle"]
+        triggers = [e[2] for e in h.events.events if e[0] == "state" and e[1] == "listening"]
+        assert triggers == ["key"]
+        assert h.played()[0] == "כן?" and h.handled[0].text == "what time is it"
+        assert h.pipeline.stats["talk_keys"] == 1 and h.pipeline.stats["wakes"] == 0
+
+    async def test_pressed_again_stops_listening(self, tmp_path: Path) -> None:
+        async with Harness(tmp_path, texts=["this was not for you"]) as h:
+            h.pipeline.talk_key()
+            assert h.pipeline.state is VoiceState.LISTENING
+            h.pipeline.talk_key()
+            assert h.quiet
+            h.source.append(speechlike(1.0))       # people talking in the room afterwards
+            await h.source.drained(5.0)
+            await asyncio.sleep(0.1)
+        assert h.handled == [] and h.stt.calls == []
+
+    async def test_during_follow_up_it_keeps_listening(self, tmp_path: Path) -> None:
+        async with Harness(tmp_path, texts=["open chrome", "and youtube"], reply="Which profile?") as h:
+            h.say(1.0)
+            await wait_for(lambda: len(h.handled) == 1 and h.pipeline.state is VoiceState.LISTENING, what="follow-up")
+            h.pipeline.talk_key()                  # the person presses Ctrl to answer: not a "never mind"
+            assert h.pipeline.state is VoiceState.LISTENING
+            h.say(1.0, wake=False)
+            await wait_for(lambda: len(h.handled) == 2, what="the answer")
+        assert [t.text for t in h.handled] == ["open chrome", "and youtube"]
+
+    async def test_stops_speech_and_listens(self, tmp_path: Path) -> None:
+        long_reply = "This is a long answer that keeps going. " * 6
+        async with Harness(tmp_path, texts=["tell me a story", "stop"], reply=long_reply, sink_speed=0.2) as h:
+            h.say(1.0)
+            await wait_for(lambda: h.pipeline.state is VoiceState.SPEAKING and h.sink.playing, what="speaking")
+            h.pipeline.talk_key()
+            assert h.pipeline.state is VoiceState.LISTENING
+            h.say(0.8, wake=False)
+            await wait_for(lambda: len(h.handled) == 2, what="second command")
+        assert h.sink.interrupted and h.sink.interrupted[0].text.startswith("This is a long answer")
+
+    async def test_ignored_without_a_microphone(self, tmp_path: Path) -> None:
+        async with Harness(tmp_path, source=BrokenSource(missing=True)) as h:
+            await wait_for(lambda: h.pipeline.state is VoiceState.DISABLED, what="disabled")
+            h.pipeline.talk_key()
+            await h.pipeline.flush_events()
+            assert h.pipeline.state is VoiceState.DISABLED
+        assert "listening" not in h.events.states() and h.sink.played == []
+
+    async def test_works_while_muted_like_the_microphone_button(self, tmp_path: Path) -> None:
+        async with Harness(tmp_path, texts=["open chrome"], reply=SpeechReply(text="OK.", follow_up=False)) as h:
+            h.pipeline.mute()
+            await wait_for(lambda: not h.source.running, what="microphone closed")
+            h.pipeline.talk_key()
+            h.source.append(speechlike(1.0))
+            await wait_for(lambda: h.handled and h.quiet, what="the command")
+            await wait_for(lambda: not h.source.running, what="microphone closed again")
+
+
+# =============================================================================================
 # Service
 # =============================================================================================
 async def _noop_handler(transcript: Transcript) -> None:
@@ -1305,6 +1507,54 @@ class TestService:
         finally:
             await service.stop()
         assert service.info()["state"] == "disabled" and events.states()[-1] == "disabled"
+
+    @needs_numpy
+    async def test_ctrl_to_talk(self, paths: Any) -> None:
+        source = ArraySource(realtime=True, time_scale=0.05, fill_silence=True)
+        handled: list[str] = []
+
+        async def handler(transcript: Transcript) -> SpeechReply:
+            handled.append(transcript.text)
+            return SpeechReply(text="It is noon.", follow_up=False)
+
+        class FakeWatch:
+            def __init__(self, on_tap: Any) -> None:
+                self.on_tap, self.stopped = on_tap, False
+
+            def stop(self) -> None:
+                self.stopped = True
+
+        made: list[FakeWatch] = []
+        service = VoiceService(VoiceSettings(), paths, None, handler, Recorder(), source=source,
+                               sink=NullSink(realtime=True, speed=0.05), wake=MarkerWake(), stt=FakeSTT(["what time is it"]),
+                               tts=FakeTTS(), talk_key=lambda on_tap: made.append(FakeWatch(on_tap)) or made[-1])
+        await service.start()
+        try:
+            assert len(made) == 1 and service.details()["reasons"]["talk_key"] == "Ctrl"
+            tap = threading.Thread(target=made[0].on_tap)   # the watcher calls from its own thread
+            tap.start()
+            tap.join()
+            await wait_for(lambda: service.info()["state"] == "listening", what="listening after Ctrl")
+            source.append(speechlike(1.0))
+            await wait_for(lambda: handled == ["what time is it"] and service.info()["state"] == "idle", what="turn")
+            await service.restart()                          # a restart watches again, with a new watcher
+            assert len(made) == 2 and made[0].stopped and not made[1].stopped
+        finally:
+            await service.stop()
+        assert made[1].stopped
+
+    @needs_numpy
+    async def test_ctrl_to_talk_off(self, paths: Any) -> None:
+        made: list[Any] = []
+        service = VoiceService(VoiceSettings(ctrl_to_talk=False), paths, None, _noop_handler, Recorder(),
+                               source=ArraySource(realtime=True, time_scale=0.05, fill_silence=True),
+                               sink=NullSink(), wake=MarkerWake(), stt=FakeSTT(), tts=FakeTTS(),
+                               talk_key=lambda on_tap: made.append(on_tap))
+        await service.start()
+        try:
+            assert made == [] and service.details()["reasons"]["talk_key"] == "off"
+        finally:
+            await service.stop()
 
     def test_list_devices(self, paths: Any) -> None:
         devices = VoiceService(VoiceSettings(), paths, None, _noop_handler).list_devices()

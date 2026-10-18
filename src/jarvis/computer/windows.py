@@ -43,6 +43,7 @@ from jarvis.host.winapi import (
     _com_method,
     _com_release,
     _proto,
+    note_own_keys,
 )
 
 log = logging.getLogger(__name__)
@@ -581,6 +582,7 @@ class WindowsBackend:
             codes = [VK[k][0] for k in combo]
             if VK_ESCAPE in codes:
                 self.own_escape_until = time.monotonic() + 0.4
+            note_own_keys()                   # a Ctrl JARVIS presses is not the user's Ctrl to talk
             downs = (INPUT * len(codes))()
             ups = (INPUT * len(codes))()
             for i, code in enumerate(codes):

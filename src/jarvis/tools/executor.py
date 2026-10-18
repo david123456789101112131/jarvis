@@ -221,14 +221,16 @@ class ToolExecutor:
             result.error = self.services.redactor.redact_text(result.error)
         if result.data is not None:
             result.data = self.services.redactor.redact(result.data)
+        # Why it failed: the error, else what the tool said (a stopped computer session has only a summary).
+        reason = None if result.ok else (result.error or result.summary or t(lang, "בלי סיבה", "no reason given"))
         await self._audit(agent, task_id, tool_name, plan.summary, req_params, decision.risk,
                           "confirmed" if confirmed else "allowed", "ok" if result.ok else "error",
-                          "; ".join(decision.reasons), error=result.error, duration_ms=result.duration_ms)
+                          "; ".join(decision.reasons), error=reason, duration_ms=result.duration_ms)
         if not tool.read_only or not result.ok:
             text = result.summary or plan.summary
             await self._activity(
-                f"{name}: {text}" if result.ok else t(lang, f"{name}: נכשל — {plan.summary}: {result.error}",
-                                                      f"{name}: failed — {plan.summary}: {result.error}"),
+                f"{name}: {text}" if result.ok else t(lang, f"{name}: נכשל — {plan.summary}: {reason}",
+                                                      f"{name}: failed — {plan.summary}: {reason}"),
                 agent, task_id, level="info" if result.ok else "error",
             )
         return result

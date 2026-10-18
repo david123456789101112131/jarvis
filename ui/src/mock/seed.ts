@@ -68,7 +68,7 @@ export function seedAgents(lang: Lang, now: number): AgentView[] {
     queue: 0,
     stats: stats[p.id],
     skills: p.skills,
-    ai: { preferred: 'xai', provider: 'xai', model: 'grok-4.7' },
+    ai: { preferred: 'xai', provider: 'xai', model: 'grok-4.7', when_told: true },
   }));
 }
 
@@ -497,12 +497,14 @@ export function seedSettings(ui: UISettings, lang: Lang): SettingsObject {
       tts_voice_en: 'en-GB-RyanNeural',
       speak_responses: true,
       always_listening: true,
+      ctrl_to_talk: true,
       input_device: '',
       output_device: '',
     },
     ui: { ...ui, window_width: 1480, window_height: 920 },
     ai: {
       provider: 'auto',
+      cloud_only_when_told: true,
       agent_providers: { research: 'xai', system: 'xai', development: 'xai', creative: 'xai', planner: 'xai' },
       anthropic: { model: 'claude-opus-5-5', fallbacks: true },
       xai: { model: 'grok-4.7' },

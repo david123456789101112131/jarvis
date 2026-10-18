@@ -12,7 +12,9 @@ command center.
 **מה צריך:** Windows 10 או 11 (64 ביט), אינטרנט בזמן ההתקנה, ובערך 3GB פנויים בדיסק (כולל מודלי הדיבור).
 מפתח AI אינו חובה: בלעדיו פקודות, פרויקטים ותוכניות עובדים, ואיתו JARVIS מבין שיחה חופשית וכותב קוד
 מותאם. חמשת הסוכנים עובדים עם Grok של xAI כשיש מפתח שלו, ו-JARVIS עצמו עם Claude; כל אחד מהם ממשיך עם
-הספק השני כשהראשון לא זמין.
+הספק השני כשהראשון לא זמין. כל בקשה ל-AI בענן עולה כסף, ולכן JARVIS משתמש בו רק כשאומרים לו: "תשתמש בגרוק"
+בתוך הבקשה (למשל "תשתמש בגרוק ותכתוב לי שיר"), או "כן" כשהוא שואל "להשתמש ב-Grok?". אחרי זה Grok נשאר
+בשיחה עד שקט של שתי דקות, ו"בלי גרוק" מפסיק אותו. אפשר לבטל את הכלל ב**הגדרות ← ספקי AI**.
 
 ### התקנה מתיקיית הקוד
 
@@ -188,7 +190,10 @@ Options: `--no-voice`, `--port N` (default 8765, the next free port if busy), `-
 - AI providers: Anthropic Claude (default model `claude-opus-5-5`, with Anthropic's server-side fallbacks on),
   xAI Grok (`grok-4.7`), OpenAI, or a local OpenAI-compatible server such as Ollama. The five agents ask the
   provider set for them in `ai.agent_providers` first (Grok by default) and fall back to JARVIS's order,
-  Anthropic → xAI → OpenAI → local, which JARVIS's own calls use. API keys: `ANTHROPIC_API_KEY`, `XAI_API_KEY`,
+  Anthropic → xAI → OpenAI → local, which JARVIS's own calls use. With `ai.cloud_only_when_told` (on by default)
+  a cloud provider is used only when the user names it in the request ("use Grok ...", "תשתמש בגרוק ...") or says
+  yes when JARVIS asks; the choice lasts for that conversation and goes with the tasks it starts. A local model
+  needs no word. API keys: `ANTHROPIC_API_KEY`, `XAI_API_KEY`,
   `OPENAI_API_KEY`; optional `BRAVE_API_KEY` or `TAVILY_API_KEY` (web search), `PICOVOICE_ACCESS_KEY`
   (Porcupine wake word), `GITHUB_TOKEN` (Development agent).
 

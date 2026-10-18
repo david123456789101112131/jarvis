@@ -5,7 +5,8 @@ Guarantees:
 - every tool_use gets exactly one result in the next user message (errors flagged);
 - tools are never run from a reply that was cut off by the length limit;
 - the history is append-only (nothing earlier is edited or removed);
-- a step limit, a repeated-failure guard and cancellation stop runaway loops.
+- a step limit, a repeated-failure guard and cancellation stop runaway loops;
+- after the user says no to an action (`ToolOutput.halt`) nothing more runs: the model only reports.
 """
 
 from __future__ import annotations
@@ -53,6 +54,11 @@ REPEAT_NOTE = (
     "or stop and report the blocker."
 )
 CUT_OFF_NOTE = "Not executed: your reply hit the length limit before this call was complete. Send it again, smaller."
+DECLINED_NOTE = (
+    "The user did not approve that action. Do not try it another way and call no more tools: write your final "
+    "report now, saying what was not approved."
+)
+DECLINED_CALL = "Not executed: the user did not approve an earlier action, so this task stops here."
 
 
 @dataclass
@@ -60,7 +66,7 @@ class LoopResult:
     text: str
     messages: list[AIMessage]
     steps: int
-    stop_reason: str                    # end | max_steps | loop_guard | max_tokens
+    stop_reason: str                    # end | max_steps | loop_guard | max_tokens | declined
     tool_calls: list[ToolCall] = field(default_factory=list)
     tool_outputs: list[ToolOutput] = field(default_factory=list)
     usage: Usage = field(default_factory=Usage)
@@ -134,6 +140,7 @@ async def run_tool_loop(
     length_continuations = 0
     text_so_far: list[str] = []
     step_limit_announced = False
+    declined = False
 
     while True:
         if cancel is not None:
@@ -168,6 +175,14 @@ async def run_tool_loop(
             result.stop_reason = "end"
             break
 
+        if declined:
+            # The user said no and the model still calls tools: answer them so the history stays valid, then stop.
+            outputs = [ToolOutput(tool_call_id=c.id, name=c.name, content=DECLINED_CALL, is_error=True)
+                       for c in response.tool_calls]
+            history.append(AIMessage.results(outputs))
+            result.stop_reason = "declined"
+            break
+
         if result.steps >= max_steps and step_limit_announced:
             # The model ignored the step-limit note; answer its calls so the history stays valid, then stop.
             outputs = [ToolOutput(tool_call_id=c.id, name=c.name, content="Not executed: step limit reached.",
@@ -198,6 +213,9 @@ async def run_tool_loop(
         if result.stop_reason != "loop_guard" and result.steps >= max_steps - 1 and not step_limit_announced:
             note = (note + "\n\n" if note else "") + STEP_LIMIT_NOTE
             step_limit_announced = True
+        if any(out.halt for out in outputs):
+            declined = True
+            note = DECLINED_NOTE
         history.append(AIMessage.results(outputs, note=note))
         if result.stop_reason == "loop_guard":
             await _emit(on_event, "loop_guard", {"calls": [c.name for c in response.tool_calls]})
@@ -239,4 +257,10 @@ async def _run_calls(
         except BaseExceptionGroup as eg:  # cancellation / kill switch from one call stops the others
             raise eg.exceptions[0] from None
         return [t.result() for t in tasks]
-    return [await one(c) for c in calls]
+    outputs: list[ToolOutput] = []
+    for call in calls:
+        if any(out.halt for out in outputs):  # the user said no: the rest of this batch does not run either
+            outputs.append(ToolOutput(tool_call_id=call.id, name=call.name, content=DECLINED_CALL, is_error=True))
+        else:
+            outputs.append(await one(call))
+    return outputs

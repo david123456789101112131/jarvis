@@ -132,14 +132,15 @@ class TestManager:
     async def test_each_agent_works_with_its_own_provider(self, env: Env) -> None:
         claude = ScriptedProvider([], name="anthropic", default=lambda r: reply("Claude: A, B, C.\n\nSTATUS: success"))
         grok = ScriptedProvider([], name="xai", default=lambda r: reply("Grok: A, B, C.\n\nSTATUS: success"))
-        settings = AISettings()
+        settings = AISettings(cloud_only_when_told=False)
         settings.agent_providers["planner"] = "auto"           # the Planner follows JARVIS's order (Claude first)
         env.runtime.router = ProviderRouter(settings, [claude, grok])
         result = await env.run("creative", "תן לי שלושה שמות לבית קפה")
         assert result.used_llm and "Grok" in result.summary and grok.requests and not claude.requests
         await env.run("planner", skill="decompose", params={"goal": "תשווה ניידים ותכין מצגת"})
         assert claude.requests and all(r.role == "planner" for r in claude.requests)
-        assert env.manager.view("creative")["ai"] == {"preferred": "xai", "provider": "xai", "model": "scripted-model"}
+        assert env.manager.view("creative")["ai"] == {"preferred": "xai", "provider": "xai", "model": "scripted-model",
+                                                      "when_told": False}
         assert env.manager.view("planner")["ai"]["provider"] == "anthropic"
 
     async def test_status_events_follow_the_work(self, env: Env) -> None:

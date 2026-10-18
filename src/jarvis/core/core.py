@@ -6,6 +6,11 @@
         ├─ complex intent → acknowledged at once, then planned and run by the Task Orchestrator
         └─ anything else → conversation with the AI model, which can also hand work to the agents
 
+Cloud AI (Grok, Claude, OpenAI) costs money per request, so with `ai.cloud_only_when_told` it is used only
+when the user says so: by naming it in the command ("תשתמש בגרוק ותכתוב לי שיר"; `ai_words.named_ai`), which
+also keeps it on for the rest of that conversation, or by a yes to "להשתמש ב-Grok?", which JARVIS asks before
+work that needs it. The choice travels with the work (`allow_provider`), into tasks and their agents.
+
 The core keeps the conversation (chat memory and command history), tracks context ("open it"
 after a build opens the project), answers approval requests by voice, announces results of
 background work, and owns the current mode. It never touches the OS itself: all work goes
@@ -29,15 +34,19 @@ from typing import TYPE_CHECKING, Any, Literal
 from pydantic import BaseModel, Field
 
 from jarvis.agents.base import AgentResult, AgentTask, t
+from jarvis.agents.planner.planning import rule_plan
+from jarvis.ai.context import allow_provider, allowed_provider
+from jarvis.ai.router import CLOUD_NAMES
 from jarvis.ai.types import AIMessage
 from jarvis.bus.message import event
 from jarvis.common.cancel import CancelToken
 from jarvis.common.clock import iso, utcnow
 from jarvis.common.enums import AgentId, Mode, Priority, TaskStatus
-from jarvis.common.errors import ProviderError, TaskRefused
+from jarvis.common.errors import PlanError, ProviderError, TaskRefused
 from jarvis.common.ids import new_id
 from jarvis.common.text import detect_language, normalize
 from jarvis.core import replies as R
+from jarvis.core.ai_words import AIWord, named_ai
 from jarvis.core.intents import ACTION_INTENTS, I, Intent, IntentDetector
 from jarvis.memory.models import ChatRecord
 
@@ -60,6 +69,8 @@ Source = Literal["text", "voice", "api", "system"]
 
 FAST_WAIT_S = 8.0           # a fast-path command answers within this, else it reports when done
 QUESTION_TTL_S = 90.0       # how long a question JARVIS asked ("which city?") waits for its answer
+AI_OK_TTL_S = 120.0         # a cloud AI the user named stays on until the conversation is quiet this long
+AI_ASK_TTL_S = 60.0         # how long "use Grok?" waits for its answer
 CHAT_HISTORY_TURNS = 12
 SPOKEN_LIMIT = 400          # characters of a result that are read aloud (the rest is on screen)
 
@@ -70,6 +81,9 @@ _YES = re.compile(r"^(?:כן|כן כן|אשר|מאשר|מאשרת|תאשר|תא�
                   r"(?:\s+(?:תודה|please|thanks))?$", re.I)
 _NO = re.compile(r"^(?:לא|לא לא|אל|אל תעשה את זה|אל תאשר|תדחה|דחה|אני לא מאשר|אני לא מאשרת|בטל|תבטל|עזוב|"
                  r"no|nope|deny|denied|reject|don't|do not|cancel|stop|don't do it)(?:\s+(?:תודה|thanks))?$", re.I)
+# A yes to "use Grok?". Stricter than an approval: "ok"/"okay"/"בסדר" are what Whisper makes of noise.
+_AI_YES = re.compile(r"^(?:כן|כן כן|כן בבקשה|כן תשתמש(?: בו)?|תשתמש(?: בו)?|בטח|יאללה|קדימה|תעשה את זה|"
+                     r"yes|yeah|yep|sure|yes please|go ahead|do it|use it)(?:\s+(?:תודה|please|thanks))?$", re.I)
 _PREFERENCE = re.compile(r"^(?:אני\s+(?:מעדיף|מעדיפה|אוהב|אוהבת|שונא|שונאת|רוצה\s+תמיד)|תמיד\s|אף\s+פעם\s|"
                          r"i\s+(?:prefer|like|love|hate|always|never)|always\s|never\s|my\s+favou?rite)", re.I)
 _PIPELINE_LABELS = {
@@ -92,11 +106,18 @@ class ChatTurn(BaseModel):
                                        "designs, plans) that the agents should carry out")
     task: str = Field(description="When run_task is true: the request restated as one complete, self-contained "
                                   "instruction in the user's language; otherwise an empty string")
+    agent: Literal["", "research", "system", "development", "creative", "planner"] = Field(
+        default="", description="When run_task is true and one agent can do the whole task in one go (open or "
+                                "control something on the computer, look something up, write one text): that agent. "
+                                "Empty when the work needs several agents or stages (JARVIS plans those), or when "
+                                "run_task is false")
 
 
 CHAT_SYSTEM = """You are {name}, the personal AI assistant of {user} on their Windows computer. You speak like a calm,
 capable assistant: warm, brief and precise. Replies may be read aloud, so keep them short (one to four sentences)
 unless the user asks for detail; no tables or headings, and code only when asked.
+Start with the answer itself, without an opening such as "Yes, I hear you" or "Sure". End with a question only when
+you need the user's answer (JARVIS then listens for it); no "anything else?".
 Always answer in the user's language ({language}).
 Five agents do the actual work on the computer: Research (web research, comparisons, summaries), System (files,
 folders, apps, settings, system health), Development (apps, websites, code, tests), Creative (ideas, design, logos,
@@ -107,10 +128,19 @@ Now: {now}. Mode: {mode}.{tasks}{memory}"""
 _DELEGATE_RULE = """
 When the user wants something done on the computer or wants work produced (files, code, a website, a design, a
 plan, research that needs current information), set run_task and restate the request in "task"; the agents will do
-it and report back. Answer questions, advice and conversation yourself with run_task false."""
+it and report back. When one agent can do all of it, name that agent in "agent" so it starts at once. Answer
+questions, advice and conversation yourself with run_task false."""
 _CHAT_MODE_RULE = """
 You are in chat mode: you only talk. If the user asks you to act on the computer, say that in normal mode you
 would hand it to the agents."""
+
+
+_QUESTION_END = re.compile(r"[?？؟][\s\"'”“»«)\]]*$")
+
+
+def asks_question(text: str | None) -> bool:
+    """Whether a spoken reply ends by asking the user something."""
+    return bool(text) and bool(_QUESTION_END.search((text or "").strip()))
 
 
 @dataclass
@@ -150,6 +180,15 @@ class _Question:
     slots: dict[str, Any]
     slot: str
     lang: str
+    expires: float
+
+
+@dataclass
+class _AIWait:
+    """JARVIS asked "use Grok?" before work that needs it; a yes runs `turn` with that AI."""
+
+    turn: _Turn
+    provider: str
     expires: float
 
 
@@ -199,6 +238,8 @@ class JarvisCore:
         self._mode = Mode(settings.general.default_mode)
         self._speaker: Speaker | None = None
         self._question: _Question | None = None
+        self._ai_ok: tuple[str, float] | None = None   # (cloud AI the user named, until when it stays on)
+        self._ai_wait: _AIWait | None = None
         self._fast: dict[str, _Fast] = {}
         self._task_commands: dict[str, str] = {}      # task id -> command id (to record how it ended)
         self._quiet: set[str] = set()                  # tasks whose end needs no announcement (the user stopped them)
@@ -257,8 +298,10 @@ class JarvisCore:
         """Handle one command or message. Returns quickly: long work continues in the background and its
         result arrives as a chat message (and speech, for voice commands)."""
         raw = " ".join((text or "").split())
-        intent = self.detector.detect(raw)
-        lang = self._reply_language(intent.language if re.search(r"[A-Za-z֐-׿]", intent.text or raw)
+        word = named_ai(raw)                     # "תשתמש בגרוק ותכתוב לי שיר": the AI, then the command itself
+        command = word.rest if word.provider else raw
+        intent = self.detector.detect(command)
+        lang = self._reply_language(intent.language if re.search(r"[A-Za-z֐-׿]", intent.text or command)
                                     else (language or detect_language(raw, "he")))
         intent_view = {"name": intent.name, "complexity": intent.complexity,
                        "agents": [a.value for a in intent.agents]}
@@ -269,11 +312,12 @@ class JarvisCore:
             with contextlib.suppress(Exception):
                 cmd_id = (await self.memory.add_command(raw, source=str(source), intent=intent.name)).id
         message = await self.say(raw, role="user", kind="answer", lang=lang, source=str(source), intent=intent.name)
-        turn = _Turn(text=intent.text or raw, raw=raw, intent=intent, lang=lang, source=str(source), cmd_id=cmd_id,
-                     message=message)
+        turn = _Turn(text=intent.text or command, raw=raw, intent=intent, lang=lang, source=str(source),
+                     cmd_id=cmd_id, message=message)
         await self._pipeline("understanding", "done", lang, intent.name)
         try:
-            result = await self._route(turn)
+            with allow_provider(self._allowance(word)):
+                result = await self._route(turn, word)
         except Exception as exc:
             log.exception("Command failed: %s", raw)
             reply = await self.say(t(lang, f"משהו השתבש: {exc}", f"Something went wrong: {exc}"), kind="error",
@@ -292,10 +336,13 @@ class JarvisCore:
         return await self.handle_input(text, source="voice", language=language)
 
     # ================================================================== routing
-    async def _route(self, turn: _Turn) -> CommandResult:
+    async def _route(self, turn: _Turn, word: AIWord | None = None) -> CommandResult:
         answer = self._approval_answer(turn.text)
         if answer is not None:
             return await self._answer_approval(turn, answer)
+        about_ai = await self._ai_turn(turn, word or AIWord())
+        if about_ai is not None:
+            return about_ai
         self._fill_question(turn)
         self._resolve_reference(turn)
         intent = turn.intent
@@ -322,6 +369,89 @@ class JarvisCore:
         if intent.complexity == "simple" or turn.skill:
             return await self._fast_path(turn)
         return await self._task(turn)
+
+    # -- cloud AI only when the user says so ------------------------------------------------------
+    def _allowance(self, word: AIWord) -> str | None:
+        """The cloud AI this command may use: the one it names, else the one named earlier in this conversation
+        (until it has been quiet for AI_OK_TTL_S)."""
+        now = time.monotonic()
+        if word.provider:
+            self._ai_ok = None if word.negated else (word.provider, now + AI_OK_TTL_S)
+            return None if word.negated else word.provider
+        if self._ai_ok is None or now > self._ai_ok[1]:
+            self._ai_ok = None
+            return None
+        self._ai_ok = (self._ai_ok[0], now + AI_OK_TTL_S)
+        return self._ai_ok[0]
+
+    async def _ai_turn(self, turn: _Turn, word: AIWord) -> CommandResult | None:
+        """Answers about the cloud AI itself: "use Grok" or "no Grok" on their own, a named AI that has no key,
+        and the answer to "use Grok?". None: the command goes on as usual."""
+        wait, self._ai_wait = self._ai_wait, None
+        lang = turn.lang
+        if word.provider is not None:
+            name = CLOUD_NAMES.get(word.provider, word.provider)
+            if word.negated:
+                if word.rest:
+                    return None                  # "בלי גרוק, תפתח את כרום": the rest, without it
+                return await self._reply(turn, t(lang, f"בסדר, בלי {name}.", f"OK, no {name}."), follow_up=False)
+            router = self.router
+            if router is None or not router.has(word.provider):
+                self._ai_ok = None
+                return await self._reply(turn, t(lang, f"כדי להשתמש ב-{name} צריך להוסיף את המפתח שלו: הגדרות ← מפתחות API.",
+                                                 f"To use {name}, add its key first: Settings > API keys."),
+                                         kind="info", ok=False, follow_up=False)
+        if wait is not None and time.monotonic() <= wait.expires:
+            clean = normalize(turn.text).strip(" .,!?")
+            chosen = word.provider if word.provider and not word.rest else \
+                wait.provider if word.provider is None and _AI_YES.match(clean) else None
+            if chosen is not None:               # "כן", or "תשתמש בגרוק" on its own
+                self._ai_ok = (chosen, time.monotonic() + AI_OK_TTL_S)
+                with allow_provider(chosen):
+                    return await self._route(wait.turn)
+            if word.provider is None and _NO.match(clean):
+                name = CLOUD_NAMES.get(wait.provider, wait.provider)
+                return await self._reply(turn, t(lang, f"בסדר, בלי {name}.", f"OK, no {name}."), follow_up=False)
+        if word.provider is not None and not word.rest:
+            name = CLOUD_NAMES.get(word.provider, word.provider)
+            return await self._reply(turn, t(lang, f"בסדר, {name} כאן. מה לבקש ממנו?",
+                                             f"OK, {name} it is. What should I ask?"))
+        return None
+
+    async def _ask_ai_first(self, turn: _Turn, role: str, agent: str | None = None) -> CommandResult | None:
+        """Work that needs a cloud AI the user did not ask for: ask "use Grok?" and keep the command for a yes.
+        None: nothing to ask (the AI is allowed or free, or no AI could do it anyway)."""
+        router = self.router
+        told = router.asks_first(role, agent) if router is not None else None
+        if told is None:
+            return None
+        self._ai_wait = _AIWait(turn, told, time.monotonic() + AI_ASK_TTL_S)
+        name = CLOUD_NAMES.get(told, told)
+        await self._pipeline("routing", "done", turn.lang, name)
+        return await self._reply(turn, t(turn.lang, f"בשביל זה צריך את {name}. להשתמש בו?",
+                                         f"This needs {name}. Shall I use it?"), kind="info", ok=None)
+
+    def _model_work(self, turn: _Turn, plan: Any) -> tuple[str, str] | None:
+        """(role, agent) of the first model call a task would make, or None when it can run without a model."""
+        if plan is None:                         # the Planner: rules for known requests, else the model
+            intent = turn.intent
+            try:
+                plan = rule_plan(None if intent.name == I.CHAT else intent.name, dict(intent.slots), turn.text,
+                                 turn.lang)
+            except PlanError:
+                plan = None
+            if plan is None:
+                return "planner", AgentId.PLANNER.value
+        for s in plan.subtasks:
+            if self._needs_llm(s.agent, s.skill):
+                return "agent", s.agent.value
+        return None
+
+    def _needs_llm(self, agent: AgentId, skill: str | None) -> bool:
+        if not skill:
+            return True                          # the agent's own model loop
+        info = self.manager.agent(agent).skills.get(skill)
+        return info is None or info.needs_llm
 
     # -- context ---------------------------------------------------------------------------------
     def _fill_question(self, turn: _Turn) -> None:
@@ -409,6 +539,10 @@ class JarvisCore:
             if pair is None:
                 return await self._task(turn)
             agent, skill_name = pair
+        if self._needs_llm(agent, skill_name):
+            asked = await self._ask_ai_first(turn, "agent", agent.value)
+            if asked is not None:
+                return asked
         if self._mode == Mode.TASK:      # task mode: even a simple command becomes a (one-step) task
             title, _icon = R.action_title(intent.name, intent.slots, turn.lang)
             plan = self.orchestrator.direct_plan(agent, turn.text, title=title.rstrip("…"), skill=skill_name,
@@ -425,7 +559,7 @@ class JarvisCore:
         self._fast[turn.cmd_id] = fast
         request = AgentTask(task_id=turn.cmd_id, agent=agent, skill=skill_name, params=dict(intent.slots),
                             instruction=turn.text, title=title.rstrip("…"), priority=Priority.HIGH, mode=self._mode,
-                            language=lang)
+                            language=lang, allowed_ai=allowed_provider() or "")
         running = asyncio.ensure_future(self.manager.run(request, cancel=token))
         asking = asyncio.ensure_future(fast.asking.wait())
         try:
@@ -459,7 +593,7 @@ class JarvisCore:
             text += "\n" + result.details[:3000]
         await self._record(turn, ok=ok)
         return await self._reply(turn, text, kind="result" if ok else "info" if state == "info" else "error", ok=ok,
-                                 speak=summary, follow_up=not ok or self._question is not None)
+                                 speak=summary, follow_up=True if self._question is not None else None)
 
     def _settle(self, turn: _Turn, result: AgentResult) -> str:
         """The action card's end state; a question back ("which city?") waits for the user's answer."""
@@ -494,6 +628,11 @@ class JarvisCore:
         lang = turn.lang
         if self._mode == Mode.CHAT:
             return await self._reply(turn, R.chat_mode_refusal(lang), kind="info", ok=False)
+        work = self._model_work(turn, plan)
+        if work is not None:
+            asked = await self._ask_ai_first(turn, *work)
+            if asked is not None:
+                return asked
         await self._pipeline("routing", "done", lang, t(lang, "מחלק בין הסוכנים", "Splitting between the agents"))
         try:
             task = await self.orchestrator.submit(
@@ -524,11 +663,17 @@ class JarvisCore:
 
     async def agent_task(self, agent: AgentId | str, instruction: str, *, priority: Priority | str | None = None,
                          source: str = "api", language: str | None = None) -> JarvisTask:
-        """Give one agent a task directly (the Agents panel); it runs as a one-step task."""
+        """Give one agent a task directly (the Agents panel); it runs as a one-step task. A cloud AI works on it
+        only when the instruction names it ("תשתמש בגרוק ...") or one is on in the conversation."""
+        word = named_ai(instruction)
+        if word.provider and word.rest:
+            instruction = word.rest
+        allowed = self._allowance(word)
         lang = self._reply_language(language or detect_language(instruction, "he"))
         plan = self.orchestrator.direct_plan(agent, instruction, lang=lang)
         return await self.orchestrator.submit(instruction, language=lang, mode=self._mode if self._mode != Mode.CHAT
-                                              else Mode.NORMAL, priority=priority, source=source, plan=plan)
+                                              else Mode.NORMAL, priority=priority, source=source, plan=plan,
+                                              allowed_ai=allowed or "")
 
     async def _resume(self, turn: _Turn) -> CommandResult:
         lang = turn.lang
@@ -564,6 +709,9 @@ class JarvisCore:
     # -- conversation -------------------------------------------------------------------------------------
     async def _converse(self, turn: _Turn) -> CommandResult:
         lang = turn.lang
+        asked = await self._ask_ai_first(turn, "chat")
+        if asked is not None:
+            return asked
         router = self.router
         if router is None or not router.available:
             return await self._reply(turn, R.offline_chat(lang), kind="info")
@@ -588,9 +736,12 @@ class JarvisCore:
                 return await self._reply(turn, t(lang, "מתג החירום פעיל, ולכן הסוכנים לא מבצעים פעולות.",
                                                  "The kill switch is engaged, so the agents take no actions."),
                                          kind="error", ok=False)
+            # One agent can do it: hand it over at once (planning it would only add a model call).
+            plan = self.orchestrator.direct_plan(decision.agent, decision.task.strip(), lang=lang) \
+                if decision.agent else None
             try:
                 task = await self.orchestrator.submit(decision.task.strip(), language=lang, mode=self._mode,
-                                                      source=turn.source)
+                                                      source=turn.source, plan=plan)
             except TaskRefused as exc:
                 return await self._reply(turn, exc.message, kind="info", ok=False)
             self._task_commands[task.id] = turn.cmd_id
@@ -623,8 +774,10 @@ class JarvisCore:
         if self.memory is not None:
             history = [r for r in self.memory.short.recent(CHAT_HISTORY_TURNS + 1)
                        if r.role in ("user", "jarvis") and r.kind != "info"]
-            if history and turn.message and history[-1].id == turn.message.get("id"):
-                history = history[:-1]
+            own = turn.message.get("id") if turn.message else None
+            cut = next((i for i, r in enumerate(history) if r.id == own), None)
+            if cut is not None:                  # the command itself goes last (after "use Grok?", before the "yes")
+                history = history[:cut]
         messages: list[AIMessage] = []
         for rec in history[-CHAT_HISTORY_TURNS:]:
             role: Literal["user", "assistant"] = "user" if rec.role == "user" else "assistant"
@@ -951,8 +1104,11 @@ class JarvisCore:
 
     async def _reply(self, turn: _Turn, text: str, *, kind: str = "answer", ok: bool | None = True,
                      task_id: str | None = None, speak: str | None = None, ack: str | None = None,
-                     follow_up: bool = True, speak_text: bool = True) -> CommandResult:
-        """Answer the turn: a chat message, the command's outcome (`ok`; None = known later) and the speech."""
+                     follow_up: bool | None = None, speak_text: bool = True) -> CommandResult:
+        """Answer the turn: a chat message, the command's outcome (`ok`; None = known later) and the speech.
+
+        `follow_up`: listen for an answer without the wake word afterwards; by default only when the spoken
+        reply ends with a question (anything else would hear the room as the next command)."""
         reply = await self.say(text, kind=kind, lang=turn.lang, task_id=task_id, intent=turn.intent.name)
         if ok is not None:
             await self._record(turn, ok=ok and kind != "error")
@@ -961,6 +1117,8 @@ class JarvisCore:
             spoken = (speak if speak is not None else text).strip()
             if len(spoken) > SPOKEN_LIMIT:
                 spoken = spoken[:SPOKEN_LIMIT].rsplit(" ", 1)[0] + "…"
+        if follow_up is None:
+            follow_up = asks_question(spoken)
         speech = {"text": spoken or None, "ack_key": ack, "language": turn.lang, "follow_up": follow_up}
         intent = {"name": turn.intent.name, "complexity": turn.intent.complexity,
                   "agents": [a.value for a in turn.intent.agents]}

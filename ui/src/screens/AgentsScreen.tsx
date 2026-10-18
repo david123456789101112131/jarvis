@@ -47,6 +47,7 @@ function AgentModel({ agent }: { agent: AgentView }) {
       ) : (
         <p className="hint">{t('agents.noModel')}</p>
       )}
+      {ai?.when_told ? <p className="hint" data-testid="agent-ai-when-told">{t('agents.whenTold')}</p> : null}
       {ai && ai.preferred !== 'auto' && ai.provider !== ai.preferred ? (
         <p className="hint" data-testid="agent-ai-fallback">{t('agents.modelFallback', { provider: label(ai.preferred) })}</p>
       ) : null}

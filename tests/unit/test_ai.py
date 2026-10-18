@@ -22,8 +22,8 @@ from jarvis.ai import (
     strict_schema,
 )
 from jarvis.ai.anthropic_provider import FALLBACK_BETA, UPDATES_BETA, sanitize_after_fallback
-from jarvis.ai.context import agent_scope, current_agent
-from jarvis.ai.loop import CUT_OFF_NOTE, STEP_LIMIT_NOTE, run_tool_loop
+from jarvis.ai.context import agent_scope, allow_provider, allowed_provider, current_agent
+from jarvis.ai.loop import CUT_OFF_NOTE, DECLINED_CALL, DECLINED_NOTE, STEP_LIMIT_NOTE, run_tool_loop
 from jarvis.common.cancel import CancelToken
 from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable, TaskCancelled
 from jarvis.config.settings import (
@@ -335,7 +335,7 @@ class TestXai:
 def router_with(*providers: ScriptedProvider, **settings: Any) -> ProviderRouter:
     for p in providers:
         assert p.name in ("anthropic", "xai", "openai", "local")
-    return ProviderRouter(AISettings(**settings), list(providers))
+    return ProviderRouter(AISettings(**{"cloud_only_when_told": False, **settings}), list(providers))
 
 
 class TestRouter:
@@ -358,7 +358,7 @@ class TestRouter:
     async def test_role_preference_and_none(self) -> None:
         a = ScriptedProvider([], name="anthropic")
         o = ScriptedProvider([reply("x")], name="openai")
-        settings = AISettings()
+        settings = AISettings(cloud_only_when_told=False)
         settings.roles["planner"].provider = "openai"
         router = ProviderRouter(settings, [a, o])
         assert router.chain("planner")[0].name == "openai"
@@ -379,7 +379,8 @@ class TestRouter:
     def test_status_reports_fallbacks(self) -> None:
         router = ProviderRouter.from_settings(AISettings(), None)
         assert [p.name for p in router.providers.values()] == ["anthropic", "xai", "openai", "local"]
-        assert router.status() == {"active": None, "anthropic": False, "xai": False, "openai": False, "local": False,
+        assert router.status() == {"active": None, "when_told": None, "anthropic": False, "xai": False,
+                                   "openai": False, "local": False,
                                    "fallbacks": False, "agents": dict.fromkeys(
                                        ("research", "system", "development", "creative", "planner"))}
 
@@ -405,7 +406,8 @@ class TestAgentProviders:
         router.settings.agent_providers["research"] = "auto"
         with agent_scope("research"):
             assert (await router.ask("agent", "hi")) == "claude"
-        assert router.agent_info("system") == {"preferred": "xai", "provider": "xai", "model": "scripted-model"}
+        assert router.agent_info("system") == {"preferred": "xai", "provider": "xai", "model": "scripted-model",
+                                               "when_told": False}
         assert router.agent_info("research")["provider"] == "anthropic"
         assert router.status()["agents"]["system"] == "xai" and router.status()["active"] == "anthropic"
 
@@ -416,7 +418,7 @@ class TestAgentProviders:
         with agent_scope("creative"):
             assert (await router.ask("agent", "hi")) == "claude"
         assert router.agent_info("creative") == {"preferred": "xai", "provider": "anthropic",
-                                                 "model": "scripted-model"}
+                                                 "model": "scripted-model", "when_told": False}
 
     async def test_the_agents_provider_falls_back_on_any_failure_but_a_refusal(self) -> None:
         claude, xai = self.providers()
@@ -474,6 +476,67 @@ class TestAgentProviders:
         with pytest.raises(ValidationError):
             AISettings(agent_providers={"research": "grok"})
         assert AISettings(provider="xai").provider == "xai"
+
+
+class TestCloudOnlyWhenTold:
+    """Grok, Claude and OpenAI cost money per request: by default JARVIS uses one only when the user said so."""
+
+    def providers(self) -> tuple[ScriptedProvider, ScriptedProvider, ScriptedProvider]:
+        return (ScriptedProvider([], name="anthropic", default=lambda r: reply("claude")),
+                ScriptedProvider([], name="xai", default=lambda r: reply("grok")),
+                ScriptedProvider([], name="local", default=lambda r: reply("local")))
+
+    async def test_no_cloud_ai_until_the_user_allows_one(self) -> None:
+        claude, xai, local = self.providers()
+        local.is_available = False
+        router = router_with(claude, xai, cloud_only_when_told=True)
+        assert AISettings().cloud_only_when_told
+        assert router.chain("chat") == [] and not router.available
+        assert router.asks_first("chat") == "anthropic"                  # who would answer, once allowed
+        assert router.asks_first("agent", "research") == "xai"
+        with pytest.raises(ProviderUnavailable) as info:
+            await router.ask("chat", "hi")
+        assert info.value.details == {"code": "ai_needs_ok", "provider": "anthropic"}
+        assert "only when you ask" in info.value.message
+        assert not claude.requests and not xai.requests
+        with allow_provider("xai"):                                      # "תשתמש בגרוק ..."
+            assert [p.name for p in router.chain("chat")] == ["xai"]     # that one only: never another paid one
+            assert router.asks_first("chat") is None
+            assert (await router.ask("chat", "hi")) == "grok"
+            with agent_scope("research"):
+                assert (await router.ask("agent", "hi")) == "grok"
+        assert allowed_provider() is None and len(xai.requests) == 2 and not claude.requests
+
+    async def test_free_models_need_no_word_and_stay_as_the_fallback(self) -> None:
+        claude, xai, local = self.providers()
+        router = router_with(claude, xai, local, cloud_only_when_told=True)
+        assert [p.name for p in router.chain("chat")] == ["local"] and router.asks_first("chat") is None
+        assert (await router.ask("chat", "hi")) == "local"
+        xai.push(ProviderUnavailable("network down", retryable=True))
+        with allow_provider("xai"):
+            assert [p.name for p in router.chain("chat")] == ["xai", "local"]
+            assert (await router.ask("chat", "hi")) == "local"           # Grok failed: the free one, not Claude
+        assert not claude.requests
+
+    def test_status_and_agent_cards_say_when_the_user_must_ask(self) -> None:
+        claude, xai, local = self.providers()
+        claude.is_available = local.is_available = False
+        router = router_with(claude, xai, local, cloud_only_when_told=True)
+        status = router.status()
+        assert status["active"] is None and status["when_told"] == "xai" and status["agents"]["system"] == "xai"
+        assert router.agent_info("system") == {"preferred": "xai", "provider": "xai", "model": "scripted-model",
+                                               "when_told": True}
+        assert router.has("xai") and not router.has("anthropic")
+        router.settings.cloud_only_when_told = False                     # the old rule: whoever has a key
+        assert router.status()["active"] == "xai" and router.status()["when_told"] is None
+
+    async def test_the_allowance_follows_tasks_started_inside_it(self) -> None:
+        claude, xai, local = self.providers()
+        local.is_available = False
+        router = router_with(claude, xai, cloud_only_when_told=True)
+        with allow_provider("xai"):
+            child = asyncio.ensure_future(router.ask("chat", "hi"))
+        assert (await child) == "grok"
 
 
 class TestStrictSchema:
@@ -553,6 +616,36 @@ class TestToolLoop:
         res = await self._loop(p, run)
         assert res.stop_reason == "loop_guard" and res.steps == 5
         assert "failed 3 times" in res.messages[6].text
+
+    async def test_after_the_user_says_no_only_the_report_follows(self) -> None:
+        ran: list[str] = []
+
+        async def run(call):
+            ran.append(call.input["path"])
+            declined = call.input["path"] == "a"
+            return ToolOutput(tool_call_id=call.id, content="not approved" if declined else "ok", is_error=declined,
+                              halt=declined)
+
+        p = ScriptedProvider([tool("list_files", {"path": "a"}, more=[("list_files", {"path": "b"})]),
+                              reply("The user did not approve deleting a, so I stopped.")], name="anthropic")
+        res = await self._loop(p, run)
+        assert ran == ["a"]                              # the rest of that batch did not run either
+        assert res.completed and "did not approve" in res.text
+        assert DECLINED_NOTE in res.messages[2].text
+        assert res.messages[2].tool_results[1].content == DECLINED_CALL
+
+    async def test_a_model_that_keeps_calling_tools_after_a_no_is_stopped(self) -> None:
+        ran: list[str] = []
+
+        async def run(call):
+            ran.append(call.input["path"])
+            return ToolOutput(tool_call_id=call.id, content="not approved", is_error=True, halt=True)
+
+        p = ScriptedProvider(default=lambda r: tool("list_files", {"path": str(len(r.messages))}), name="anthropic")
+        res = await self._loop(p, run)
+        assert res.stop_reason == "declined" and res.steps == 2 and len(ran) == 1
+        last = res.messages[-1]
+        assert last.role == "user" and [o.content for o in last.tool_results] == [DECLINED_CALL]
 
     async def test_cut_off_calls_are_not_run(self) -> None:
         ran: list[str] = []

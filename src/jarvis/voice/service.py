@@ -24,8 +24,8 @@ import importlib.util
 import logging
 import sys
 import time
-from collections.abc import Coroutine
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Coroutine
+from typing import TYPE_CHECKING, Any, Protocol
 
 from jarvis.voice.base import CommandHandler, NullVoiceEvents, VoiceEventSink, VoiceState
 
@@ -45,6 +45,12 @@ INPUT_RECHECK_S = 20.0
 DEFAULT_MIC_RECHECK_S = 3.0    # how often Windows' default microphone is compared with the open one
 FOLLOW_DEFAULT_MIC = sys.platform == "win32"
 _CORE_MODULES = ("numpy",)
+
+
+class TalkKeyWatch(Protocol):
+    """What watches the talk key (`hotkey.CtrlTapWatch`)."""
+
+    def stop(self) -> None: ...
 
 
 def _short(exc: BaseException) -> str:
@@ -104,6 +110,7 @@ class VoiceService:
         stt: STTEngine | None = None,
         tts: TTSEngine | None = None,
         options: PipelineOptions | None = None,
+        talk_key: Callable[[Callable[[], None]], TalkKeyWatch | None] | None = None,
     ) -> None:
         self.settings = settings
         self.paths = paths
@@ -112,6 +119,8 @@ class VoiceService:
         self.events: VoiceEventSink = events or NullVoiceEvents()
         self._injected: dict[str, Any] = {"source": source, "sink": sink, "wake": wake, "stt": stt, "tts": tts}
         self._options = options
+        self._talk_key_factory = talk_key
+        self._talk_key: TalkKeyWatch | None = None
         self.pipeline: VoicePipeline | None = None
         self.source: AudioSource | None = None
         self.sink: AudioSink | None = None
@@ -245,8 +254,12 @@ class VoiceService:
         self._spawn(self._warm_up(pipeline))
         if injected["source"] is None:
             self._spawn(self._watch_input(pipeline))
+        self._start_talk_key(real_microphone=injected["source"] is None)
 
     async def _teardown(self) -> None:
+        watch, self._talk_key = self._talk_key, None
+        if watch is not None:
+            await asyncio.to_thread(watch.stop)
         tasks = [t for t in self._tasks if not t.done()]
         for task in tasks:
             task.cancel()
@@ -267,6 +280,36 @@ class VoiceService:
                 log.debug("Closing %s failed", type(engine).__name__, exc_info=True)
         self._owned = []
         self._wake_loading = False
+
+    def _start_talk_key(self, *, real_microphone: bool) -> None:
+        """Ctrl to talk: watched on Windows with the real microphone (a test's injected one has no keyboard)."""
+        factory = self._talk_key_factory
+        if not self.settings.ctrl_to_talk or (factory is None and not real_microphone):
+            self.reasons["talk_key"] = "off"
+            return
+        if factory is None:
+            from jarvis.voice.hotkey import watch_ctrl_taps
+
+            factory = watch_ctrl_taps
+        try:
+            self._talk_key = factory(self._on_talk_key)
+        except Exception as exc:
+            log.warning("Ctrl to talk could not start: %s", _short(exc))
+            self._talk_key = None
+        self.reasons["talk_key"] = "Ctrl" if self._talk_key is not None else "not available here"
+
+    def _on_talk_key(self) -> None:
+        """Ctrl was tapped (called on the keyboard watcher's thread)."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            return
+        with contextlib.suppress(RuntimeError):  # the loop is closing
+            loop.call_soon_threadsafe(self.talk_key)
+
+    def talk_key(self) -> None:
+        """Listen for one command, as if the wake word was said (or stop listening when already listening)."""
+        if self.pipeline is not None and self._started:
+            self.pipeline.talk_key()
 
     # ------------------------------------------------------------------------------------------
     # Background work

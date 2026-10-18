@@ -44,6 +44,19 @@ INPUT_KEYBOARD = 1
 KEYEVENTF_EXTENDEDKEY = 0x0001
 KEYEVENTF_KEYUP = 0x0002
 
+_own_keys_until = 0.0          # time.monotonic() until which the keys pressed are JARVIS's own
+
+
+def note_own_keys(seconds: float = 0.5) -> None:
+    """JARVIS is about to press keys itself (computer control): Ctrl to talk ignores them for `seconds`."""
+    global _own_keys_until
+    _own_keys_until = max(_own_keys_until, time.monotonic() + seconds)
+
+
+def own_keys_recent() -> bool:
+    return time.monotonic() < _own_keys_until
+
+
 # ----------------------------------------------------------------------------- misc constants
 CF_UNICODETEXT = 13
 GMEM_MOVEABLE = 0x0002
