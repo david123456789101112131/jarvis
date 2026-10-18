@@ -27,11 +27,12 @@ _FINISH = {"stop": "end", "tool_calls": "tool_use", "function_call": "tool_use",
 
 
 def _said(exc: Exception) -> str:
-    """The provider's own reason from an error response, short and with secrets removed (" " + text, or "")."""
-    body = getattr(exc, "body", None)
-    reason: Any = None
-    if isinstance(body, dict):
-        reason = body.get("error") or body.get("message")
+    """The provider's own reason from an error response, short and with secrets removed (" " + text, or "").
+
+    The SDK keeps the JSON "error" field as the body: xAI's is the text itself, OpenAI's an object."""
+    reason: Any = getattr(exc, "body", None)
+    if isinstance(reason, dict):
+        reason = reason.get("error") or reason.get("message")
         if isinstance(reason, dict):
             reason = reason.get("message")
     if not isinstance(reason, str) or not reason.strip():

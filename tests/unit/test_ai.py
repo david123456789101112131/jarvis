@@ -313,12 +313,18 @@ class TestXai:
         assert not XaiProvider(XaiSettings(), lambda: None).available()
 
     async def test_the_providers_reason_reaches_the_user(self) -> None:
-        # A new xAI team without credits answers 403 with its reason; JARVIS passes it on.
-        p, _ = grok(openai_error("PermissionDeniedError", 403, "Your newly created team doesn't have any "
-                                 "credits or licenses yet. You can purchase those on https://console.x.ai/team/t1."))
-        with pytest.raises(ProviderUnavailable) as info:
-            await p.complete(req())
-        assert "(403)" in str(info.value) and "credits or licenses" in str(info.value)
+        import httpx2
+        import openai
+
+        # An xAI team without credits answers 403 {"code": ..., "error": "<text>"}; the SDK keeps the text as the
+        # body (OpenAI's own errors keep an object with "message"). JARVIS passes the reason on either way.
+        response = httpx2.Response(403, request=httpx2.Request("POST", "https://api.x.ai/v1/chat/completions"))
+        reason = "Your team t1 has either used all available credits or reached its monthly spending limit."
+        for body in (reason, {"message": reason, "type": "permission_error"}):
+            p, _ = grok(openai.PermissionDeniedError(f"Error code: 403 - {body}", response=response, body=body))
+            with pytest.raises(ProviderUnavailable) as info:
+                await p.complete(req())
+            assert "(403)" in str(info.value) and "monthly spending limit" in str(info.value)
         # A key with non-ASCII letters cannot go in a header: say so instead of a codec error.
         p, _ = grok(UnicodeEncodeError("ascii", "שלום", 0, 4, "ordinal not in range(128)"))
         with pytest.raises(ProviderUnavailable) as info:
