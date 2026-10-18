@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import time
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 
@@ -42,6 +43,10 @@ class ComputerService:
         self._active: ComputerSession | None = None
         self._lock = asyncio.Lock()
         self._idle_task: asyncio.Task[None] | None = None
+        self._warm_task: asyncio.Task[None] | None = None
+        self._warm_until = 0.0
+        self._warm_runs = 0
+        self._runs = 0                     # tasks started so far: a model loaded for none of them is stopped
         self._working = 0                  # the user's window when the last task was asked for (0: none)
 
     def root(self) -> Path:
@@ -65,7 +70,32 @@ class ComputerService:
             self._idle_task = asyncio.ensure_future(self._idle_loop())
 
     # ------------------------------------------------------------------ running a session
+    def warm_up(self, unused_after_s: float) -> None:
+        """While the approval is on screen: start loading the local model (about 20 s), so an approved task can
+        begin at once. If no task has started `unused_after_s` later (declined, or the approval expired), the
+        model is stopped again and the graphics card freed. Nothing is looked at or touched before approval."""
+        if self.settings.server_url or self.problem() is not None:
+            return
+        self._warm_until = time.monotonic() + unused_after_s      # a newer request moves the deadline
+        self._warm_runs = self._runs
+        if self._warm_task is None or self._warm_task.done():
+            self.start()
+            self._warm_task = asyncio.ensure_future(self._warm())
+
+    async def _warm(self) -> None:
+        try:
+            await self.server.ensure_running()
+        except Exception as exc:              # the task tries again when it starts, and reports it there
+            log.warning("Loading the computer-control model ahead of the task failed: %s", exc)
+            return
+        while (left := self._warm_until - time.monotonic()) > 0:
+            await asyncio.sleep(left)
+        if self._runs == self._warm_runs and not self.busy():
+            log.info("Stopping the computer-control model: the task it was loaded for did not start")
+            await self.server.stop()
+
     async def run(self, goal: str, ctx: ToolContext, *, max_steps: int, lang: str = "en") -> Outcome:
+        self._runs += 1
         if self.settings.server_url:
             base_url, api_key = self.settings.server_url.rstrip("/"), ""
         else:
@@ -155,10 +185,11 @@ class ComputerService:
             pass
 
     async def aclose(self) -> None:
-        if self._idle_task is not None:
-            self._idle_task.cancel()
-            with contextlib.suppress(BaseException):
-                await self._idle_task
+        for task in (self._idle_task, self._warm_task):
+            if task is not None:
+                task.cancel()
+                with contextlib.suppress(BaseException):
+                    await task
         with contextlib.suppress(Exception):
             await self.server.stop()
 

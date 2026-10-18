@@ -28,7 +28,9 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
-MAX_IMAGE_WIDTH = 1280         # the screenshot is scaled to this before it goes to the model
+# The screenshot is scaled to this width before it goes to the model: on a 16:9 screen that is just over
+# the 1024 picture tokens Qwen-VL based models need to place clicks well (1280 came out at about 900).
+MAX_IMAGE_WIDTH = 1376
 
 
 @dataclass
@@ -79,25 +81,32 @@ class ComputerSession:
                 if time.monotonic() > deadline:
                     return Outcome("time_limit", steps=n, actions=self.actions)
 
+                began = time.monotonic()
                 await self.service.ensure_covered()
                 shot = await asyncio.to_thread(self.backend.capture, MAX_IMAGE_WIDTH)
                 if baseline is not None and await self._taken_over(baseline):
                     return Outcome("takeover", steps=n, actions=self.actions)
 
                 self.conv.observe(shot)
+                looked = time.monotonic()
                 try:
                     step = await self.client.step(self.conv)
                 except ModelError as exc:
                     log.warning("Computer-control model step failed: %s", exc)
                     return Outcome("error", steps=n, error=str(exc), actions=self.actions)
+                thought = time.monotonic()
                 self.conv.record(step)
                 await self._report(step, n)
 
                 if step.is_answer:
+                    log.info("Computer step %d (answer): look %.1f s, model %.1f s", n + 1, looked - began,
+                             thought - looked)
                     return Outcome("answer", content=step.arguments.get("content", ""), steps=n + 1,
                                    actions=self.actions)
 
                 result = await self._act(step, shot)
+                log.info("Computer step %d (%s): look %.1f s, model %.1f s, act %.1f s", n + 1, step.tool,
+                         looked - began, thought - looked, time.monotonic() - thought)
                 self.conv.result(step, _feedback(result))
                 if result.ok and step.content:
                     self.actions.append(step.content.splitlines()[0][:200])

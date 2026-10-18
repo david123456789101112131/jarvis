@@ -6,8 +6,10 @@ its own permission gate. The model ends the task by calling `answer`.
 
 Conventions that matter (H Company's Holo format):
 * coordinates are integers in [0, 1000] relative to the image sent, origin top-left;
-* every step sends the current screenshot in an `<observation>` wrapper; only the last few images
-  are kept (older ones become "[screenshot evicted]") so the context stays small;
+* every step sends the current screenshot in an `<observation>` wrapper; at most three images are kept
+  (older ones become "[screenshot evicted]") so the context stays small. They are dropped all but the
+  newest at once, never one per step: the server reuses its prompt cache only up to the first change, so a
+  conversation that only grows costs one new picture per step instead of re-reading every kept one;
 * thinking is on, but the reasoning is *not* fed back — anything to remember goes in the reply text;
 * `tool_choice` is "required", so every step is an action.
 """
@@ -28,7 +30,7 @@ from jarvis.computer.backend import Shot
 log = logging.getLogger(__name__)
 
 COORD_MAX = 1000               # the model's coordinate space (both axes), per the Holo convention
-KEEP_IMAGES = 3                # screenshots kept in the conversation; older ones are evicted
+KEEP_IMAGES = 3                # at most this many screenshots in the conversation (see _evict)
 EVICTED = "[screenshot evicted]"
 
 
@@ -136,10 +138,16 @@ class Conversation:
         self._evict()
 
     def _evict(self) -> None:
+        """Past KEEP_IMAGES pictures, drop all but the newest in one go (the model then sees 1 to 3).
+
+        Dropping only the oldest each step would change the conversation right before the pictures still
+        kept, so the server would re-read all of them every step (about 2.5 s of each step in the first
+        live trial); this way every message before the new picture stays as the server has it cached."""
         images = [m for m in self.messages if isinstance(m.get("content"), list)
                   and any(p.get("type") == "image_url" for p in m["content"])]
-        for msg in images[:-KEEP_IMAGES]:
-            msg["content"] = EVICTED              # keep the turn, drop the picture
+        if len(images) > KEEP_IMAGES:
+            for msg in images[:-1]:
+                msg["content"] = EVICTED          # keep the turn, drop the picture
 
     def record(self, step: Step) -> None:
         """Append the model's own turn (reply text + tool call), without the reasoning."""

@@ -67,6 +67,7 @@ class UseComputerTool(Tool):
         if service.busy():
             raise ToolError(ctx.t("כבר רצה משימת שליטה במחשב אחת", "a computer-control session is already running"))
         await service.note_working_window()          # before the approval comes up in front of it
+        service.warm_up(ctx.services.settings.security.confirm_timeout_s + 60.0)   # load the model meanwhile
         goal = params.goal.strip()
         summary = ctx.t(f"שליטה במחשב: {goal}", f"Use the computer: {goal}")
         plan = ActionPlan(summary=summary[:160], risk=RiskLevel.HIGH, always_confirm=True,

@@ -32,6 +32,7 @@ log = logging.getLogger(__name__)
 OWNER = "computer-model"
 EXE_NAME = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 HEALTH_TIMEOUT_S = 240.0       # loading ~10 GB onto the GPU takes a while the first time
+IMAGE_MIN_TOKENS = 1024        # the least picture detail the model grounds clicks well with
 _CREATE_NO_WINDOW = 0x08000000
 
 
@@ -125,16 +126,24 @@ class ModelServer:
                 raise RuntimeError(problem)
             await self._start()
 
-    async def _start(self) -> None:
+    def command(self) -> list[str]:
+        """The llama-server command line, for the port and key of this start."""
         assert self.files.exe and self.files.model and self.files.mmproj
-        self._port = self.settings.port or _free_port()
-        self._api_key = secrets.token_hex(24)
-        args = [
+        return [
             str(self.files.exe), "-m", str(self.files.model), "--mmproj", str(self.files.mmproj),
             "--host", "127.0.0.1", "--port", str(self._port),
             "-ngl", str(self.settings.gpu_layers), "-c", str(self.settings.context),
             "-fa", "on", "--jinja", "--parallel", "1", "--api-key", self._api_key,
+            # Qwen-VL based models place clicks badly on pictures of fewer than 1024 tokens (llama-server
+            # warns about it at load); smaller screenshots (a small or square screen) are scaled up to that.
+            "--image-min-tokens", str(IMAGE_MIN_TOKENS),
         ]
+
+    async def _start(self) -> None:
+        assert self.files.exe and self.files.model and self.files.mmproj
+        self._port = self.settings.port or _free_port()
+        self._api_key = secrets.token_hex(24)
+        args = self.command()
         self.logs_dir.mkdir(parents=True, exist_ok=True)
         self._log = (self.logs_dir / "computer-model.log").open("ab")
         kwargs: dict[str, Any] = {}

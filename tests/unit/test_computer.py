@@ -169,9 +169,29 @@ class TestConversation:
         for _ in range(5):
             conv.observe(self._shot())
         images = [m for m in conv.messages if isinstance(m.get("content"), list)]
-        assert len(images) == 3                   # only the last three keep their picture
+        assert len(images) == 2                   # the 4th picture dropped the first three; the 5th was added
         evicted = [m for m in conv.messages if m.get("content") == "[screenshot evicted]"]
-        assert len(evicted) == 2
+        assert len(evicted) == 3
+
+    def test_each_step_resends_only_its_new_picture(self) -> None:
+        # The model server reuses its cache up to the first message that differs from the last request, so
+        # everything after that point is read again. Dropping one old picture per step made that three
+        # pictures a step (about 2.5 s of each step in the first live trial).
+        import copy
+        import itertools
+
+        conv = Conversation("do a thing")
+        sent: list[list[dict[str, Any]]] = []
+        for n in range(12):
+            conv.observe(self._shot())
+            sent.append(copy.deepcopy(conv.messages))
+            step = Step(content=f"step {n}", tool="click", arguments={"x": 1, "y": 2}, call_id=f"c{n}")
+            conv.record(step)
+            conv.result(step, "done")
+        for before, now in itertools.pairwise(sent):
+            same = next((i for i, (a, b) in enumerate(zip(before, now, strict=False)) if a != b), len(before))
+            assert len([m for m in now[same:] if isinstance(m.get("content"), list)]) == 1
+            assert 1 <= len([m for m in now if isinstance(m.get("content"), list)]) <= 3
 
     def test_record_drops_reasoning(self) -> None:
         conv = Conversation("x")
@@ -677,6 +697,123 @@ class TestWorkingWindow:
         assert backend.bring_to_front(0) is False
 
 
+# ============================================================================ the model loads while the approval waits
+class _FakeModelServer:
+    def __init__(self) -> None:
+        self.running = False
+        self.starts = 0
+        self.stops = 0
+        self.base_url, self.api_key = "http://127.0.0.1:1", "key"
+
+    def problem(self) -> str | None:
+        return None
+
+    async def ensure_running(self) -> None:
+        if not self.running:
+            self.starts += 1
+            await asyncio.sleep(0.01)            # loading
+            self.running = True
+
+    async def stop(self) -> None:
+        if self.running:
+            self.stops += 1
+        self.running = False
+
+    async def stop_if_idle(self) -> bool:
+        return False
+
+    def touch(self) -> None: ...
+
+
+class TestWarmUp:
+    """The model (about 20 s to load) starts loading while the approval is on screen, not after it."""
+
+    def _service(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch, *, server_url: str = "") -> Any:
+        from types import SimpleNamespace
+
+        from jarvis.computer import service as svc
+        from jarvis.config.settings import ComputerSettings
+        from jarvis.security.process import ProcessRegistry
+
+        async def window(action: str) -> bool:
+            return True
+
+        monkeypatch.setattr(svc, "HoloClient", lambda *a, **k: FakeClient([_answer()]))
+        settings = ComputerSettings(server_url=server_url, settle_s=0.0)
+        paths = SimpleNamespace(models=tmp_path, logs=tmp_path)
+        service = svc.ComputerService(settings, paths, ProcessRegistry(), window,  # type: ignore[arg-type]
+                                      backend=FakeBackend())
+        service.server = _FakeModelServer()      # type: ignore[assignment]
+        return service
+
+    async def test_loads_during_the_approval_and_the_task_reuses_it(
+            self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = self._service(tmp_path, monkeypatch)
+        try:
+            service.warm_up(60.0)
+            await asyncio.sleep(0.05)            # the user reads the approval
+            assert service.server.running
+            out = await service.run("goal", FakeCtx(), max_steps=3)
+            assert out.reason == "answer"
+            assert service.server.starts == 1 and service.server.stops == 0
+        finally:
+            await service.aclose()
+
+    async def test_stopped_again_when_no_task_comes(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = self._service(tmp_path, monkeypatch)
+        try:
+            service.warm_up(0.05)                # declined, or the approval expired
+            await asyncio.sleep(0.3)
+            assert service.server.starts == 1 and service.server.stops == 1 and not service.server.running
+        finally:
+            await service.aclose()
+
+    async def test_a_newer_request_moves_the_deadline(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = self._service(tmp_path, monkeypatch)
+        try:
+            service.warm_up(0.1)                 # declined
+            await asyncio.sleep(0.05)
+            service.warm_up(0.6)                 # asked again: this approval is still on screen
+            await asyncio.sleep(0.3)             # past the first deadline
+            assert service.server.running
+            await asyncio.sleep(0.7)
+            assert service.server.stops == 1 and service.server.starts == 1
+        finally:
+            await service.aclose()
+
+    async def test_a_task_that_started_keeps_it(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = self._service(tmp_path, monkeypatch)
+        try:
+            service.warm_up(0.05)
+            await service.run("goal", FakeCtx(), max_steps=3)
+            await asyncio.sleep(0.3)             # the idle timeout, not the warm-up, stops it later
+            assert service.server.running and service.server.stops == 0
+        finally:
+            await service.aclose()
+
+    async def test_nothing_loads_for_a_server_elsewhere(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        service = self._service(tmp_path, monkeypatch, server_url="http://192.168.1.20:8080")
+        try:
+            service.warm_up(60.0)
+            await asyncio.sleep(0.05)
+            assert service.server.starts == 0    # and nothing is sent anywhere before the approval
+        finally:
+            await service.aclose()
+
+    def test_server_asks_for_enough_picture_detail(self, tmp_path: Any) -> None:
+        from jarvis.computer.server import ModelServer
+        from jarvis.config.settings import ComputerSettings
+        from jarvis.security.process import ProcessRegistry
+
+        server = ModelServer(ComputerSettings(), tmp_path, ProcessRegistry(), tmp_path)
+        server.files.exe = tmp_path / "llama-server"
+        server.files.model = tmp_path / "Holo-3.1-9B-Q8_0.gguf"
+        server.files.mmproj = tmp_path / "mmproj.gguf"
+        command = server.command()
+        assert command[command.index("--image-min-tokens") + 1] == "1024"
+        assert command[command.index("--host") + 1] == "127.0.0.1"
+
+
 # ============================================================================ the tools through the gate
 from jarvis.tools.computer import ComputerActTool, UseComputerTool  # noqa: E402
 
@@ -701,6 +838,9 @@ class _SvcForGate:
 
     async def note_working_window(self) -> None:
         self.noted += 1
+
+    def warm_up(self, unused_after_s: float) -> None:
+        self.warmed = unused_after_s
 
     async def run(self, goal: str, ctx: ToolContext, *, max_steps: int, lang: str = "en") -> Outcome:
         session = ComputerSession(goal, client=FakeClient(self.steps), backend=self.backend, ctx=ctx,
@@ -778,6 +918,7 @@ class TestToolsThroughGate:
         assert res.summary == "message sent"
         assert ("click", (960, 540, "left", 1)) in backend.calls     # the approved click ran
         assert svc.noted == 1                  # the user's window was noted when the task was planned
+        assert svc.warmed > 60                 # and the model started loading, for longer than an approval waits
 
     async def test_computer_act_refused_without_a_session(self, kit: Any) -> None:
         svc = _SvcForGate(FakeBackend(), [])
