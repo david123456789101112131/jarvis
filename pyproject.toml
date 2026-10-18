@@ -41,6 +41,12 @@ desktop = ["pywebview>=5.0"]
 windows = ["pywin32>=306; sys_platform == 'win32'", "comtypes>=1.2; sys_platform == 'win32'"]
 creative = ["pillow>=10", "python-pptx>=1.0"]
 computer = ["pillow>=10", "httpx>=0.27"]
+# NVIDIA's CUDA 12 libraries (over 1 GB), so speech recognition runs on an NVIDIA graphics card. Not in "all":
+# setup.ps1 adds it when it finds such a card.
+gpu = [
+  "nvidia-cublas-cu12>=12.8,<13; sys_platform == 'win32'",
+  "nvidia-cudnn-cu12>=9.7,<10; sys_platform == 'win32'",
+]
 all = ["jarvis-assistant[ai,voice,desktop,windows,creative,computer]"]
 dev = [
   "pytest>=8",

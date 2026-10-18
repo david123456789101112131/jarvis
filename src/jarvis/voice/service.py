@@ -381,7 +381,7 @@ class VoiceService:
             return
         try:
             await stt.warm_up()
-            self.reasons["stt"] = stt.reason or stt.name
+            self.reasons["stt"] = stt.describe()
         except Exception as exc:
             message = f"Speech recognition unavailable: {_short(exc)}"
             self.reasons["stt"] = message
@@ -506,9 +506,12 @@ class VoiceService:
     def details(self) -> dict[str, Any]:
         """Diagnostics beyond `info()`: why each engine was chosen, warm-up results, counters."""
         pipeline = self.pipeline
+        reasons = dict(self.reasons)
+        if self.stt is not None and self.stt.ready:
+            reasons["stt"] = self.stt.describe()  # a better model may have taken over since start-up
         return {
             **self.info(),
-            "reasons": dict(self.reasons),
+            "reasons": reasons,
             "warmup": dict(self.warmup),
             "stats": dict(pipeline.stats) if pipeline else {},
             "ready": {

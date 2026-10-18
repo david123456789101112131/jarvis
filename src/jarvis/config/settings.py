@@ -246,6 +246,9 @@ class VoiceSettings(_Section):
     stt_language: Literal["auto", "he", "en"] = "auto"
     stt_device: Literal["auto", "cpu", "cuda"] = "auto"
     stt_compute_type: str = "int8"
+    # On an NVIDIA graphics card (with `pip install jarvis-assistant[gpu]`): a larger model, much better in Hebrew.
+    stt_model_gpu: str = "large-v3-turbo"
+    stt_compute_type_gpu: str = "int8_float16"
     tts_engine: Literal["auto", "edge", "sapi", "none"] = "auto"
     tts_voice_he: str = "he-IL-AvriNeural"
     tts_voice_en: str = "en-GB-RyanNeural"

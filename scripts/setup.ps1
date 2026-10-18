@@ -93,6 +93,12 @@ if (-not (Test-Path $venvPython)) {
 Write-Step 'Installing JARVIS and the packages it uses (the first time takes a few minutes)'
 Invoke-Native 'Updating pip' $venvPython @('-m', 'pip', 'install', '--upgrade', '--quiet', 'pip')
 $extras = if ($Dev) { 'all,dev' } else { 'all' }
+# An NVIDIA graphics card: NVIDIA's CUDA libraries too, so speech recognition runs on the card (faster, better Hebrew).
+$nvidia = @(Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue | Where-Object { $_.Name -match 'NVIDIA' })
+if ($nvidia.Count -gt 0) {
+    Write-Host "Found $($nvidia[0].Name): adding NVIDIA's libraries for speech recognition on it (over 1 GB)."
+    $extras += ',gpu'
+}
 Invoke-Native 'Installing JARVIS' $venvPython @('-m', 'pip', 'install', '--quiet', '-e', ".[$extras]")
 if ($Dev) {
     Write-Host 'The window tests use Microsoft Edge (or run: .venv\Scripts\python -m playwright install chromium).'

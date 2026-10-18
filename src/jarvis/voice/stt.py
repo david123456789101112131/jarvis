@@ -9,8 +9,16 @@
   settings saves it. Typical CPU timings for a 3 s command (8-thread desktop CPU, int8):
   "base" ≈ 0.3 s, "small" ≈ 0.6-1.0 s. The model is loaded and warmed up in the background at
   start-up, first trying the local cache (no network) and downloading into
-  `<cache>/models/whisper` only when missing. CUDA is used when available, with an automatic
-  fall back to CPU when the CUDA libraries are missing.
+  `<cache>/models/whisper` only when missing.
+  On an NVIDIA graphics card a larger model runs instead (`stt_model_gpu`, "large-v3-turbo"
+  int8_float16: far better Hebrew, and faster than "small" on the CPU). It needs NVIDIA's CUDA 12
+  libraries, which `pip install jarvis-assistant[gpu]` puts in site-packages/nvidia (setup.ps1 does
+  it when it finds such a card); `use_nvidia_dlls` lets CTranslate2 find them. Start-up never
+  waits for the card or a download: the CPU model serves first, and the larger one takes over in
+  the background once it is loaded and warmed up on the card (about 10 s, and up to a minute the
+  first time, while the driver prepares its code for the card), downloaded first when it is
+  missing. When the graphics card fails (missing libraries, or out of memory while a game or the
+  computer-control model fills it), the CPU model takes over.
 * `OpenAISTT` — cloud fallback through the OpenAI SDK ("gpt-4o-mini-transcribe", falling back
   to "whisper-1"), sending a 16 kHz WAV built in memory.
 * `NullSTT` — no recognition (reports why).
@@ -21,15 +29,18 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import contextlib
 import importlib.util
 import logging
 import math
 import os
 import re
+import sys
 import threading
 import time
 from abc import ABC, abstractmethod
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -117,6 +128,80 @@ def echoes_prompt(text: str, prompt: str | None, confidence: float | None = None
     return len(words) >= 3 or confidence is None or confidence < 0.5
 
 
+# What CTranslate2 loads to run Whisper on an NVIDIA card (CUDA 12: cuBLAS, and cuDNN 9 for the convolutions).
+CUDA_DLLS = ("cublas64_12.dll", "cudnn64_9.dll")
+_dll_dirs_added: set[str] = set()
+_dll_handles: list[Any] = []
+
+
+def nvidia_dll_dirs() -> list[Path]:
+    """Folders of NVIDIA's CUDA libraries installed as Python packages (nvidia-cublas-cu12, nvidia-cudnn-cu12),
+    whose Windows wheels keep the DLLs in site-packages/nvidia/<library>/bin."""
+    try:
+        spec = importlib.util.find_spec("nvidia")
+    except (ImportError, ValueError):
+        return []
+    found: list[Path] = []
+    for root in (spec.submodule_search_locations or []) if spec is not None else []:
+        with contextlib.suppress(OSError):
+            found += [sub / "bin" for sub in sorted(Path(root).iterdir()) if (sub / "bin").is_dir()]
+    return found
+
+
+def use_nvidia_dlls() -> list[Path]:
+    """Let CTranslate2 find those libraries (Windows). It loads them by name the first time a model runs on the card,
+    so their folders go first on PATH, and into Python's own DLL search as well."""
+    if sys.platform != "win32":
+        return []
+    # The driver compiles CTranslate2's code for newer cards on first use (about a minute) and keeps it in its cache;
+    # a cache too small for it (and for the computer-control model's) would mean that minute again.
+    os.environ.setdefault("CUDA_CACHE_MAXSIZE", str(4 * 1024**3))
+    dirs = nvidia_dll_dirs()
+    current = os.environ.get("PATH", "")
+    missing = [str(d) for d in dirs if str(d) not in current.split(os.pathsep)]
+    if missing:
+        os.environ["PATH"] = os.pathsep.join([*missing, current])
+    for d in map(str, dirs):
+        if d not in _dll_dirs_added and hasattr(os, "add_dll_directory"):
+            with contextlib.suppress(OSError):
+                _dll_handles.append(os.add_dll_directory(d))
+            _dll_dirs_added.add(d)
+    return dirs
+
+
+def _not_downloaded(exc: BaseException) -> bool:
+    """The model is not (all) on disk: not in the cache yet, or a download that was cut off half way."""
+    return isinstance(exc, FileNotFoundError) or "EntryNotFound" in type(exc).__name__ or "Unable to open file" in str(exc)
+
+
+def cuda_libraries_problem() -> str | None:
+    """What is missing for Whisper on the graphics card (Windows), or None. Elsewhere the load itself tells."""
+    if sys.platform != "win32":
+        return None
+    folders = [*map(str, nvidia_dll_dirs()), *os.environ.get("PATH", "").split(os.pathsep)]
+    missing = [dll for dll in CUDA_DLLS if not any(f and os.path.isfile(os.path.join(f, dll)) for f in folders)]
+    if not missing:
+        return None
+    return f"{' and '.join(missing)} not found (install them with: pip install jarvis-assistant[gpu])"
+
+
+def gpu_note(device: str = "auto", gpu_model: str = "") -> str | None:
+    """For `jarvis check`: where speech recognition runs when there is an NVIDIA graphics card (None without one)."""
+    if device == "cpu" or not _have("ctranslate2"):
+        return None
+    try:
+        import ctranslate2
+
+        if ctranslate2.get_cuda_device_count() <= 0:
+            return None
+    except Exception:
+        return None
+    problem = cuda_libraries_problem()
+    if problem:
+        return f"speech recognition stays on the CPU: {problem}"
+    return "speech recognition runs on the graphics card" + (f" ('{gpu_model}')" if gpu_model else "")
+
+
 class STTEngine(ABC):
     """`await transcribe(int16 16 kHz audio, "auto"|"he"|"en") -> Transcript`."""
 
@@ -149,6 +234,15 @@ class STTEngine(ABC):
         """Transcribe int16 mono 16 kHz audio. `hint=False` disables the name-biasing prompt;
         `partial=True` asks for a cheap interim result (may return empty text)."""
 
+    def describe(self) -> str:
+        """What recognizes speech right now. It can change after start-up: a better model that finished
+        loading, or the CPU instead of the graphics card."""
+        return self.reason or self.name
+
+    def settle(self, timeout: float | None = None) -> bool:
+        """Wait for a better model that is still loading in the background. True when none is left."""
+        return True
+
     def close(self) -> None:
         return None
 
@@ -167,6 +261,15 @@ class NullSTT(STTEngine):
         raise STTUnavailable(self.reason)
 
 
+@dataclass
+class _Loaded:
+    model: Any
+    device: str
+    compute_type: str
+    name: str
+    seconds: float
+
+
 class FasterWhisperSTT(STTEngine):
     name = "faster_whisper"
     supports_partials = True
@@ -178,6 +281,8 @@ class FasterWhisperSTT(STTEngine):
         *,
         device: str = "auto",
         compute_type: str = "int8",
+        gpu_model: str = "",
+        gpu_compute_type: str = "int8_float16",
         download_root: Path | str | None = None,
         cpu_threads: int = 0,
         beam_size: int = 1,
@@ -185,9 +290,11 @@ class FasterWhisperSTT(STTEngine):
         allow_download: bool = True,
     ) -> None:
         super().__init__()
-        self.model_size = model_size or "small"
+        self.model_size = model_size or "small"            # on the CPU
         self.device = device or "auto"
         self.compute_type = compute_type or "int8"
+        self.gpu_model = gpu_model or self.model_size      # on an NVIDIA graphics card
+        self.gpu_compute_type = gpu_compute_type or "int8_float16"
         self.download_root = Path(download_root) if download_root else None
         self.cpu_threads = int(cpu_threads) or max(2, min(8, (os.cpu_count() or 4) // 2))
         self.beam_size = max(1, min(5, int(beam_size)))
@@ -195,9 +302,16 @@ class FasterWhisperSTT(STTEngine):
         self.allow_download = allow_download
         self.device_used: str | None = None
         self.compute_type_used: str | None = None
+        self.model_used: str | None = None
         self.load_seconds: float | None = None
+        self.gpu_problem: str | None = None                # why the graphics card is not used, when it is not
         self._model: Any = None
+        self._current: _Loaded | None = None
         self._loading = False
+        self._upgrading = False
+        self._settled = threading.Event()
+        self._settled.set()
+        self._closed = False
         self._load_error: str | None = None
         self._load_failed_at = 0.0
         self._lock = threading.Lock()
@@ -212,14 +326,35 @@ class FasterWhisperSTT(STTEngine):
         return self._loading
 
     def _resolve_device(self) -> str:
-        if self.device in ("cpu", "cuda"):
-            return self.device
+        if self.device == "cpu":
+            return "cpu"
+        use_nvidia_dlls()
+        if self.device == "cuda":
+            return "cuda"
         try:
             import ctranslate2
 
-            return "cuda" if ctranslate2.get_cuda_device_count() > 0 else "cpu"
+            if ctranslate2.get_cuda_device_count() <= 0:
+                return "cpu"
         except Exception:
             return "cpu"
+        self.gpu_problem = cuda_libraries_problem()
+        if self.gpu_problem:
+            log.info("An NVIDIA graphics card is here, but speech recognition stays on the CPU: %s", self.gpu_problem)
+            return "cpu"
+        return "cuda"
+
+    def _plans(self) -> list[tuple[str, str, str]]:
+        """(device, model, compute type) to try, best first."""
+        cpu = ("cpu", self.model_size, self.compute_type)
+        return [("cuda", self.gpu_model, self.gpu_compute_type), cpu] if self._resolve_device() == "cuda" else [cpu]
+
+    def _use(self, loaded: _Loaded) -> None:
+        self._current = loaded
+        self._model = loaded.model
+        self.device_used, self.compute_type_used, self.model_used = loaded.device, loaded.compute_type, loaded.name
+        self.load_seconds = loaded.seconds
+        self.reason = f"faster-whisper '{loaded.name}' on {loaded.device} ({loaded.compute_type})"
 
     def load(self) -> None:
         with self._lock:
@@ -229,7 +364,7 @@ class FasterWhisperSTT(STTEngine):
                 raise STTUnavailable(self._load_error)
             self._loading = True
             try:
-                self._model = self._load_model()
+                self._use(self._load_model())
                 self._load_error = None
             except STTError as exc:
                 self._load_error, self._load_failed_at = exc.message, time.monotonic()
@@ -240,61 +375,128 @@ class FasterWhisperSTT(STTEngine):
             finally:
                 self._loading = False
 
-    def _load_model(self) -> Any:
+    def _load_model(self) -> _Loaded:
+        """The model to start with: the CPU one when it is on disk, and the graphics card's model takes over in the
+        background (`_upgrade`). Without a card there is only the CPU model."""
         np = np_module()
         try:
             from faster_whisper import WhisperModel
         except ImportError as exc:
             raise STTUnavailable(f"faster-whisper is not installed: {exc}") from exc
-        device = self._resolve_device()
-        attempts = [(device, self.compute_type)]
-        if device == "cuda":
-            attempts.append(("cpu", "int8"))
-        root = str(self.download_root) if self.download_root else None
+        plans = self._plans()
+        best = plans[0]
+        order = plans[::-1]                # the CPU model first: quick to load, and the smaller download
         errors: list[str] = []
-        for dev, compute in attempts:
-            started = time.monotonic()
-            model = None
-            for local_only in (True, False) if self.allow_download else (True,):  # cache first: no network at start-up
-                if not local_only:
-                    log.info("Downloading the Whisper model '%s' into %s (first use)…", self.model_size, root or "the HF cache")
-                try:
-                    model = WhisperModel(
-                        self.model_size,
-                        device=dev,
-                        compute_type=compute,
-                        cpu_threads=self.cpu_threads,
-                        download_root=root,
-                        local_files_only=local_only,
-                    )
-                    break
-                except Exception as exc:
-                    errors.append(f"{dev}/{compute}{' (cache)' if local_only else ''}: {_short(exc)}")
-                    log.debug("faster-whisper load attempt failed: %s", errors[-1])
-            if model is None:
-                continue
-            try:
-                # One tiny inference: surfaces missing CUDA libraries now (not on the first
-                # command) and pays the one-off kernel/allocator warm-up cost up front.
-                segments, _info = model.transcribe(
-                    np.zeros(SAMPLE_RATE // 2, dtype=np.float32),
-                    language="en",
-                    beam_size=1,
-                    without_timestamps=True,
-                    max_new_tokens=4,
-                    condition_on_previous_text=False,
-                )
-                list(segments)
-            except Exception as exc:
-                errors.append(f"{dev}/{compute} warm-up: {_short(exc)}")
-                log.warning("faster-whisper failed on %s (%s)", dev, errors[-1])
-                continue
-            self.device_used, self.compute_type_used = dev, compute
-            self.load_seconds = time.monotonic() - started
-            self.reason = f"faster-whisper '{self.model_size}' on {dev} ({compute})"
-            log.info("Loaded %s in %.1f s", self.reason, self.load_seconds)
-            return model
+        card_failed = False                # the card's model is on disk but does not work: no point in more tries
+        for plan in order:
+            loaded, missing = self._open(WhisperModel, np, plan, local_only=True, errors=errors)
+            if loaded is not None:
+                if plan != best and not card_failed:
+                    self._upgrade_later(best)
+                return loaded
+            card_failed = card_failed or (plan == best and len(plans) > 1 and not missing)
+        if self.allow_download:
+            for plan in order:
+                if plan == best and card_failed:
+                    continue
+                loaded, _ = self._open(WhisperModel, np, plan, local_only=False, errors=errors)
+                if loaded is not None:
+                    if plan != best and not card_failed:
+                        self._upgrade_later(best)
+                    return loaded
         raise STTUnavailable(f"faster-whisper could not load model '{self.model_size}': {errors[-1] if errors else 'unknown error'}")
+
+    def _open(self, whisper: Any, np: Any, plan: tuple[str, str, str], *, local_only: bool,
+              errors: list[str]) -> tuple[_Loaded | None, bool]:
+        """Load and warm up one model. The flag says it failed only because it is not downloaded yet."""
+        dev, name, compute = plan
+        root = str(self.download_root) if self.download_root else None
+        started = time.monotonic()
+        if not local_only:
+            log.info("Downloading the Whisper model '%s' into %s (first use)…", name, root or "the HF cache")
+        try:
+            model = whisper(name, device=dev, compute_type=compute, cpu_threads=self.cpu_threads, download_root=root,
+                            local_files_only=local_only)
+        except Exception as exc:
+            errors.append(f"{name} {dev}/{compute}{' (cache)' if local_only else ''}: {_short(exc)}")
+            log.debug("faster-whisper load attempt failed: %s", errors[-1])
+            missing = local_only and _not_downloaded(exc)
+            if dev == "cuda" and not missing:
+                self.gpu_problem = errors[-1]
+            return None, missing
+        try:
+            # One tiny inference: surfaces missing CUDA libraries now (not on the first
+            # command) and pays the one-off kernel/allocator warm-up cost up front.
+            segments, _info = model.transcribe(
+                np.zeros(SAMPLE_RATE // 2, dtype=np.float32),
+                language="en",
+                beam_size=1,
+                without_timestamps=True,
+                max_new_tokens=4,
+                condition_on_previous_text=False,
+            )
+            list(segments)
+        except Exception as exc:
+            errors.append(f"{name} {dev}/{compute} warm-up: {_short(exc)}")
+            log.warning("faster-whisper failed on %s (%s)", dev, errors[-1])
+            if dev == "cuda":
+                self.gpu_problem = errors[-1]
+            return None, False
+        loaded = _Loaded(model, dev, compute, name, time.monotonic() - started)
+        log.info("Loaded faster-whisper '%s' on %s (%s) in %.1f s", name, dev, compute, loaded.seconds)
+        return loaded, False
+
+    def _upgrade_later(self, plan: tuple[str, str, str]) -> None:
+        """Load the better model in the background (downloading it when it is missing); it takes over once it works."""
+        if self._upgrading:
+            return
+        self._upgrading = True
+        self._settled.clear()
+        threading.Thread(target=self._upgrade, args=(plan,), name="jarvis-stt-upgrade", daemon=True).start()
+
+    def _upgrade(self, plan: tuple[str, str, str]) -> None:
+        try:
+            from faster_whisper import WhisperModel
+
+            errors: list[str] = []
+            loaded = self._open_or_download(WhisperModel, plan, errors)
+            if loaded is None:
+                log.warning("Speech recognition stays on '%s': %s", self.model_used, errors[-1] if errors else "?")
+                return
+            with self._lock:
+                if self._closed:
+                    return
+                self._use(loaded)
+                self.gpu_problem = None
+            log.info("Speech recognition now uses %s", self.reason)
+        except Exception:  # pragma: no cover - defensive: a background thread must not die loudly
+            log.exception("Upgrading the speech recognition model failed")
+        finally:
+            self._upgrading = False
+            self._settled.set()
+
+    def settle(self, timeout: float | None = None) -> bool:
+        return self._settled.wait(timeout)
+
+    def _open_or_download(self, whisper: Any, plan: tuple[str, str, str], errors: list[str]) -> _Loaded | None:
+        np = np_module()
+        loaded, missing = self._open(whisper, np, plan, local_only=True, errors=errors)
+        if loaded is None and missing and self.allow_download and not self._closed:
+            loaded, _ = self._open(whisper, np, plan, local_only=False, errors=errors)
+        return loaded
+
+    def _cpu_instead(self) -> Any:
+        """The graphics card failed mid-session: the CPU model from now on (None when it cannot load either)."""
+        from faster_whisper import WhisperModel
+
+        errors: list[str] = []
+        loaded = self._open_or_download(WhisperModel, ("cpu", self.model_size, self.compute_type), errors)
+        if loaded is None:
+            log.warning("The CPU model could not load either: %s", errors[-1] if errors else "?")
+            return None
+        with self._lock:
+            self._use(loaded)
+        return loaded.model
 
     def prompt_for(self, language: str) -> str | None:
         return self.prompts.get(language) or self.prompts.get("auto")
@@ -322,7 +524,21 @@ class FasterWhisperSTT(STTEngine):
         return ("he" if he >= en else "en"), max(he, en)
 
     def _transcribe_sync(self, audio: Any, language: str, hint: bool, partial: bool) -> Transcript:
-        model = self._model
+        current = self._current            # the model and its device together (a better one can take over meanwhile)
+        model = current.model if current is not None else self._model
+        try:
+            return self._transcribe_with(model, audio, language, hint, partial)
+        except RuntimeError as exc:  # how CTranslate2 reports CUDA failures ("CUDA failed with error out of memory")
+            if current is None or current.device != "cuda":
+                raise
+            self.gpu_problem = _short(exc)
+            log.warning("Speech recognition on the graphics card failed (%s); the CPU takes over", self.gpu_problem)
+            cpu = self._cpu_instead()
+            if cpu is None:
+                raise
+            return self._transcribe_with(cpu, audio, language, hint, partial)
+
+    def _transcribe_with(self, model: Any, audio: Any, language: str, hint: bool, partial: bool) -> Transcript:
         samples = to_float32(audio)
         duration = len(samples) / float(SAMPLE_RATE)
         if len(samples) < SAMPLE_RATE // 10:
@@ -371,8 +587,9 @@ class FasterWhisperSTT(STTEngine):
         return Transcript(text=text, language=lang, final=not partial, confidence=confidence, duration_s=duration)
 
     def close(self) -> None:
+        self._closed = True
         self._executor.shutdown(wait=False, cancel_futures=True)
-        self._model = None
+        self._model = self._current = None
 
 
 class OpenAISTT(STTEngine):
@@ -518,6 +735,14 @@ class FallbackSTT(STTEngine):
             log.warning("%s failed (%s); retrying with %s", self.primary.name, _short(exc), self.backup.name)
             return await self.backup.transcribe(audio, language, hint=hint, partial=partial)
 
+    def describe(self) -> str:
+        if self._active is self.primary:
+            return self.primary.describe()
+        return self.reason or self.backup.describe()
+
+    def settle(self, timeout: float | None = None) -> bool:
+        return self._active.settle(timeout)
+
     def close(self) -> None:
         self.primary.close()
         self.backup.close()
@@ -551,6 +776,8 @@ def create_stt_engine(settings: VoiceSettings, paths: AppPaths, secrets: SecretS
             settings.stt_model,
             device=settings.stt_device,
             compute_type=settings.stt_compute_type,
+            gpu_model=settings.stt_model_gpu,
+            gpu_compute_type=settings.stt_compute_type_gpu,
             download_root=paths.models / "whisper",
         )
 

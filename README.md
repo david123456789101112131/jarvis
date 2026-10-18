@@ -49,9 +49,10 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 
 ## איך מדברים עם JARVIS
 
-- **בקול:** לומר "Hey Jarvis" ואז את הפקודה, בעברית או באנגלית. לא צריך ללחוץ על כלום: JARVIS מאזין כל
-  הזמן, גם כשהחלון סגור (נשאר רק העיגול הקטן בפינת המסך) וגם מיד אחרי הכניסה ל-Windows. אפשר גם להחזיק את
-  כפתור המיקרופון במרכז הפיקוד.
+- **בקול:** לומר "Hey Jarvis" ואז את הפקודה, בעברית או באנגלית, או ללחוץ פעם אחת על Ctrl לבד ולדבר.
+  JARVIS מאזין כל הזמן, גם כשהחלון סגור (נשאר רק העיגול הקטן בפינת המסך) וגם מיד אחרי הכניסה ל-Windows.
+  אפשר גם להחזיק את כפתור המיקרופון במרכז הפיקוד. במחשב עם כרטיס מסך של NVIDIA זיהוי הדיבור רץ על הכרטיס,
+  מהר ומדויק יותר (`setup.bat` מוסיף לשם כך את הקבצים של NVIDIA).
 - **בכתב:** בשורת הפקודה במרכז הפיקוד.
 
 | דוגמה | מה קורה |
@@ -184,6 +185,10 @@ Options: `--no-voice`, `--port N` (default 8765, the next free port if busy), `-
 - `general.start_with_windows` (on by default): the JARVIS window keeps a sign-in entry under
   `HKCU\Software\Microsoft\Windows\CurrentVersion\Run` that starts `--background`; no administrator rights.
   Turning JARVIS off in Task Manager's Startup apps is respected.
+- Speech recognition: faster-whisper `voice.stt_model` ("small", int8) on the CPU; with an NVIDIA graphics card
+  and the `gpu` extra (NVIDIA's CUDA 12 libraries, which `setup.ps1` installs when it finds such a card)
+  `voice.stt_model_gpu` ("large-v3-turbo", int8_float16) takes over in the background once it is loaded on the
+  card, and the CPU model comes back if the card fails. `voice.ctrl_to_talk`: a lone Ctrl tap starts listening.
 - Any setting can be overridden with an environment variable `JARVIS__<SECTION>__<KEY>`, for example
   `JARVIS__VOICE__ENABLED=false` or `JARVIS__AI__PROVIDER=openai`.
 - `JARVIS_HOME=<folder>` keeps everything (data, logs, cache, workspace) under one folder: portable mode.

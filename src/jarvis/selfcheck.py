@@ -326,6 +326,7 @@ async def _voice(report: CheckReport, settings: Settings, paths: AppPaths, secre
     import importlib.util
 
     from jarvis.voice.selftest import PACKAGES, run_selftest
+    from jarvis.voice.stt import gpu_note
 
     def have(module: str) -> bool:
         try:
@@ -344,7 +345,12 @@ async def _voice(report: CheckReport, settings: Settings, paths: AppPaths, secre
         report.add("voice", "warn", f"missing: {', '.join(missing)}" + ("" if enabled else " (voice is off)"),
                    hints=['Install the voice extra: pip install "jarvis-assistant[voice]".'])
     else:
-        report.add("voice", "ok", "all voice packages installed" + ("" if enabled else " (voice is off in Settings)"))
+        v = settings.voice
+        gpu = await asyncio.to_thread(gpu_note, v.stt_device, v.stt_model_gpu) if enabled else None
+        hints = ['For the graphics card: pip install "jarvis-assistant[gpu]" (setup.ps1 does it).'] \
+            if gpu and "CPU" in gpu else []
+        report.add("voice", "ok", "all voice packages installed" + ("" if enabled else " (voice is off in Settings)")
+                   + (f"; {gpu}" if gpu else ""), hints=hints)
 
 
 async def _computer(report: CheckReport, settings: Settings, paths: AppPaths) -> None:

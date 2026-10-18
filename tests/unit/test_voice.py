@@ -768,6 +768,259 @@ class TestSTT:
         engine.close()
 
 
+class FakeWhisperWorld:
+    """A stand-in for faster-whisper and the computer under it: which models are on disk, whether downloads work,
+    and which devices fail (`broken`: device -> the exception its next inference raises)."""
+
+    class LocalEntryNotFoundError(FileNotFoundError):  # what huggingface_hub raises for a model not in the cache
+        pass
+
+    def __init__(self, cached: set[str], *, cuda_devices: int = 1, downloadable: bool = True) -> None:
+        self.cached = set(cached)
+        self.cuda_devices = cuda_devices
+        self.downloadable = downloadable
+        self.broken: dict[str, type[Exception]] = {}
+        self.loads: list[tuple[str, str, bool]] = []       # (model, device, from the cache only)
+        self.card_gate = threading.Event()                 # a model being loaded on the card waits for this
+        self.card_gate.set()
+
+    def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = self
+
+        class WhisperModel:
+            def __init__(self, name: str, *, device: str, compute_type: str, cpu_threads: int,
+                         download_root: str | None, local_files_only: bool) -> None:
+                world.loads.append((name, device, local_files_only))
+                if name not in world.cached:
+                    if local_files_only:
+                        raise FakeWhisperWorld.LocalEntryNotFoundError("Cannot find an appropriate cached snapshot")
+                    if not world.downloadable:
+                        raise ConnectionError("no network")
+                    world.cached.add(name)
+                if device == "cuda":
+                    world.card_gate.wait(10)
+                self.name, self.device, self.compute_type = name, device, compute_type
+                self.model = type("CT2", (), {"is_multilingual": True})()
+
+            def detect_language(self, audio: Any = None) -> tuple[str, float, list[tuple[str, float]]]:
+                return "he", 0.99, [("he", 0.99)]
+
+            def transcribe(self, audio: Any, **kwargs: Any) -> tuple[Any, Any]:
+                if self.device in world.broken:
+                    raise world.broken[self.device]("CUDA failed with error out of memory")
+                segment = type("Seg", (), {"text": f" {self.name} on {self.device}", "tokens": [1, 2, 3],
+                                           "avg_logprob": -0.1, "no_speech_prob": 0.01})()
+                return iter([segment]), None
+
+        fw, ct2 = type(sys)("faster_whisper"), type(sys)("ctranslate2")
+        fw.WhisperModel = WhisperModel
+        ct2.get_cuda_device_count = lambda: world.cuda_devices
+        monkeypatch.setitem(sys.modules, "faster_whisper", fw)
+        monkeypatch.setitem(sys.modules, "ctranslate2", ct2)
+        monkeypatch.setattr(stt_mod, "cuda_libraries_problem", lambda: None)
+
+    def engine(self, tmp_path: Path, **kwargs: Any) -> FasterWhisperSTT:
+        return FasterWhisperSTT("small", gpu_model="large-v3-turbo", download_root=tmp_path, **kwargs)
+
+
+@needs_numpy
+class TestWhisperOnTheGraphicsCard:
+    async def test_the_cpu_serves_until_the_card_model_takes_over(self, tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+        world = FakeWhisperWorld({"small", "large-v3-turbo"})
+        world.install(monkeypatch)
+        world.card_gate.clear()                            # the card takes its time (its first warm-up: a minute)
+        engine = world.engine(tmp_path)
+        engine.load()
+        assert (engine.model_used, engine.device_used, engine.compute_type_used) == ("small", "cpu", "int8")
+        assert not engine.settle(0.05)
+        assert (await engine.transcribe(speechlike(0.5), "he")).text == "small on cpu"
+        world.card_gate.set()
+        assert engine.settle(5)
+        assert (engine.model_used, engine.device_used, engine.compute_type_used) == ("large-v3-turbo", "cuda",
+                                                                                     "int8_float16")
+        assert engine.describe() == "faster-whisper 'large-v3-turbo' on cuda (int8_float16)" and engine.gpu_problem is None
+        assert (await engine.transcribe(speechlike(0.5), "he")).text == "large-v3-turbo on cuda"
+        assert world.loads == [("small", "cpu", True), ("large-v3-turbo", "cuda", True)]   # nothing downloaded
+        engine.close()
+
+    def test_a_missing_card_model_is_downloaded_in_the_background(self, tmp_path: Path,
+                                                                  monkeypatch: pytest.MonkeyPatch) -> None:
+        world = FakeWhisperWorld({"small"})
+        world.install(monkeypatch)
+        engine = world.engine(tmp_path)
+        engine.load()
+        assert engine.settle(5) and engine.model_used == "large-v3-turbo" and engine.device_used == "cuda"
+        assert world.loads == [("small", "cpu", True), ("large-v3-turbo", "cuda", True),
+                               ("large-v3-turbo", "cuda", False)]
+        engine.close()
+
+        quiet = FakeWhisperWorld({"small"})                # downloads off: the CPU model stays
+        quiet.install(monkeypatch)
+        engine = quiet.engine(tmp_path, allow_download=False)
+        engine.load()
+        assert engine.settle(5) and engine.model_used == "small" and engine.device_used == "cpu"
+        assert quiet.loads == [("small", "cpu", True), ("large-v3-turbo", "cuda", True)]
+        engine.close()
+
+    def test_first_run_downloads_the_cpu_model_first(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = FakeWhisperWorld(set())
+        world.install(monkeypatch)
+        world.card_gate.clear()
+        engine = world.engine(tmp_path)
+        engine.load()
+        assert engine.model_used == "small"                # speech works after the smaller download
+        world.card_gate.set()
+        assert engine.settle(5) and engine.model_used == "large-v3-turbo"
+        assert world.loads == [("small", "cpu", True), ("large-v3-turbo", "cuda", True), ("small", "cpu", False),
+                               ("large-v3-turbo", "cuda", True), ("large-v3-turbo", "cuda", False)]
+        engine.close()
+
+        only_card = FakeWhisperWorld({"large-v3-turbo"})   # only the card's model on disk: no download at all
+        only_card.install(monkeypatch)
+        engine = only_card.engine(tmp_path)
+        engine.load()
+        assert engine.model_used == "large-v3-turbo" and engine.device_used == "cuda" and engine.settle(0)
+        assert only_card.loads == [("small", "cpu", True), ("large-v3-turbo", "cuda", True)]
+        engine.close()
+
+    def test_a_card_that_fails_leaves_the_cpu(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = FakeWhisperWorld({"small", "large-v3-turbo"})
+        world.broken["cuda"] = RuntimeError
+        world.install(monkeypatch)
+        engine = world.engine(tmp_path)
+        engine.load()
+        assert engine.settle(5) and engine.model_used == "small" and engine.device_used == "cpu"
+        assert engine.gpu_problem and "out of memory" in engine.gpu_problem
+        engine.close()
+
+        no_cpu_model = FakeWhisperWorld({"large-v3-turbo"})  # the CPU model is downloaded; the card is not tried again
+        no_cpu_model.broken["cuda"] = RuntimeError
+        no_cpu_model.install(monkeypatch)
+        engine = no_cpu_model.engine(tmp_path)
+        engine.load()
+        assert engine.settle(0) and engine.model_used == "small" and engine.device_used == "cpu"
+        assert no_cpu_model.loads == [("small", "cpu", True), ("large-v3-turbo", "cuda", True), ("small", "cpu", False)]
+        engine.close()
+
+    def test_missing_cuda_libraries_or_no_card(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = FakeWhisperWorld({"small", "large-v3-turbo"})
+        world.install(monkeypatch)
+        monkeypatch.setattr(stt_mod, "cuda_libraries_problem", lambda: "cublas64_12.dll not found (install them ...)")
+        engine = world.engine(tmp_path)
+        engine.load()
+        assert engine.settle(0) and engine.device_used == "cpu" and "cublas64_12.dll" in (engine.gpu_problem or "")
+        assert world.loads == [("small", "cpu", True)]
+        engine.close()
+
+        no_card = FakeWhisperWorld({"small", "large-v3-turbo"}, cuda_devices=0)
+        no_card.install(monkeypatch)
+        engine = no_card.engine(tmp_path)
+        engine.load()
+        assert engine.settle(0) and engine.device_used == "cpu" and engine.gpu_problem is None
+        assert no_card.loads == [("small", "cpu", True)]
+        engine.close()
+
+        cpu_only = FakeWhisperWorld({"small", "large-v3-turbo"})  # the settings say CPU
+        cpu_only.install(monkeypatch)
+        engine = cpu_only.engine(tmp_path, device="cpu")
+        engine.load()
+        assert engine.settle(0) and cpu_only.loads == [("small", "cpu", True)]
+        engine.close()
+
+    async def test_a_card_failure_mid_session_hands_over_to_the_cpu(self, tmp_path: Path,
+                                                                    monkeypatch: pytest.MonkeyPatch) -> None:
+        world = FakeWhisperWorld({"small", "large-v3-turbo"})
+        world.install(monkeypatch)
+        engine = world.engine(tmp_path)
+        engine.load()
+        assert engine.settle(5) and engine.device_used == "cuda"
+        world.broken["cuda"] = ValueError                  # not a CUDA failure: raised as it is
+        with pytest.raises(ValueError):
+            await engine.transcribe(speechlike(0.5), "he")
+        assert engine.device_used == "cuda"
+        world.broken["cuda"] = RuntimeError                # a game filled the card
+        assert (await engine.transcribe(speechlike(0.5), "he")).text == "small on cpu"
+        assert engine.device_used == "cpu" and "out of memory" in (engine.gpu_problem or "")
+        assert (await engine.transcribe(speechlike(0.5), "he")).text == "small on cpu"
+        engine.close()
+
+    def test_closed_while_the_card_model_loads(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        world = FakeWhisperWorld({"small", "large-v3-turbo"})
+        world.install(monkeypatch)
+        world.card_gate.clear()
+        engine = world.engine(tmp_path)
+        engine.load()
+        engine.close()
+        world.card_gate.set()
+        assert engine.settle(5) and not engine.ready and engine.model_used == "small"
+
+    def test_cut_off_downloads_count_as_missing(self) -> None:
+        assert stt_mod._not_downloaded(FakeWhisperWorld.LocalEntryNotFoundError("not cached"))
+        assert stt_mod._not_downloaded(RuntimeError("Unable to open file 'model.bin' in model 'C:/models/x'"))
+        assert not stt_mod._not_downloaded(RuntimeError("CUDA failed with error out of memory"))
+
+    def test_nvidia_libraries_on_windows(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        root = tmp_path / "site-packages" / "nvidia"
+        for sub in ("cublas/bin", "cudnn/bin", "cuda_nvrtc/lib"):
+            (root / sub).mkdir(parents=True)
+        (root / "cublas" / "bin" / "cublas64_12.dll").write_bytes(b"")
+        real_find_spec = stt_mod.importlib.util.find_spec
+
+        def find_spec(name: str, *args: Any) -> Any:
+            if name == "nvidia":
+                return type("Spec", (), {"submodule_search_locations": [str(root)]})()
+            return real_find_spec(name, *args)
+
+        added: list[str] = []
+        windows = type(sys)("sys")
+        windows.platform = "win32"
+        monkeypatch.setattr(stt_mod.importlib.util, "find_spec", find_spec)
+        monkeypatch.setattr(stt_mod, "sys", windows)
+        monkeypatch.setattr(stt_mod.os, "add_dll_directory", added.append, raising=False)
+        monkeypatch.setattr(stt_mod, "_dll_dirs_added", set())
+        monkeypatch.setattr(stt_mod, "_dll_handles", [])
+        monkeypatch.setenv("PATH", "/usr/bin")
+        monkeypatch.setenv("CUDA_CACHE_MAXSIZE", "")
+        monkeypatch.delenv("CUDA_CACHE_MAXSIZE")
+        bins = [str(root / "cublas" / "bin"), str(root / "cudnn" / "bin")]
+        assert [str(d) for d in stt_mod.use_nvidia_dlls()] == bins
+        assert os.environ["PATH"].split(os.pathsep) == [*bins, "/usr/bin"] and added == bins
+        assert os.environ["CUDA_CACHE_MAXSIZE"] == str(4 * 1024**3)
+        stt_mod.use_nvidia_dlls()                          # once is enough
+        assert os.environ["PATH"].split(os.pathsep) == [*bins, "/usr/bin"] and added == bins
+        problem = stt_mod.cuda_libraries_problem()
+        assert problem and problem.startswith("cudnn64_9.dll not found") and "jarvis-assistant[gpu]" in problem
+        (root / "cudnn" / "bin" / "cudnn64_9.dll").write_bytes(b"")
+        assert stt_mod.cuda_libraries_problem() is None
+
+    def test_settings_and_check_note(self, paths: Any, memory_secrets: SecretStore,
+                                     monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(stt_mod, "_have", fake_have(set()))
+        engine, _ = stt_mod.create_stt_engine(VoiceSettings(), paths, memory_secrets)
+        assert isinstance(engine, FasterWhisperSTT)
+        assert (engine.gpu_model, engine.gpu_compute_type) == ("large-v3-turbo", "int8_float16")
+        engine, _ = stt_mod.create_stt_engine(VoiceSettings(stt_model_gpu=""), paths, memory_secrets)
+        assert isinstance(engine, FasterWhisperSTT) and engine.gpu_model == "small"
+        world = FakeWhisperWorld(set())
+        world.install(monkeypatch)
+        assert stt_mod.gpu_note("auto", "large-v3-turbo") == "speech recognition runs on the graphics card ('large-v3-turbo')"
+        assert stt_mod.gpu_note("cpu", "large-v3-turbo") is None
+        monkeypatch.setattr(stt_mod, "cuda_libraries_problem", lambda: "cudnn64_9.dll not found")
+        assert stt_mod.gpu_note("auto", "large-v3-turbo") == "speech recognition stays on the CPU: cudnn64_9.dll not found"
+        world.cuda_devices = 0
+        assert stt_mod.gpu_note("auto", "large-v3-turbo") is None
+
+    def test_fallback_describes_what_is_in_use(self) -> None:
+        primary, backup = FakeSTT(["a"]), FakeSTT(["b"])
+        primary.reason, backup.reason = "faster-whisper 'large-v3-turbo' on cuda (int8_float16)", "OpenAI"
+        engine = FallbackSTT(primary, backup)
+        engine.load()
+        assert engine.describe() == primary.reason and engine.settle(0)
+        primary.reason = "faster-whisper 'small' on cpu (int8)"   # the card failed since
+        assert engine.describe() == "faster-whisper 'small' on cpu (int8)"
+
+
 # =============================================================================================
 # Text to speech and the phrase cache
 # =============================================================================================

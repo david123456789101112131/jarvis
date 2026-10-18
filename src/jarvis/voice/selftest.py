@@ -304,12 +304,13 @@ async def _check_stt(
     started = time.monotonic()
     try:
         await asyncio.to_thread(engine.load)
+        await asyncio.to_thread(engine.settle, 300.0)  # the graphics card's model takes over in the background
     except Exception as exc:
         report.add("stt", "fail", f"{reason}: {short_error(exc)}", seconds=time.monotonic() - started)
         return engine
     load_s = time.monotonic() - started
     if not clips:
-        report.add("stt", "warn", f"{engine.reason or reason} loaded in {load_s:.1f} s; no audio to transcribe", seconds=load_s)
+        report.add("stt", "warn", f"{engine.describe() or reason} loaded in {load_s:.1f} s; no audio to transcribe", seconds=load_s)
         return engine
     results: dict[str, Any] = {}
     worst = "ok"
@@ -329,7 +330,7 @@ async def _check_stt(
                          "audio_s": round(len(audio) / SAMPLE_RATE, 2), "seconds": round(took, 2)}
         if score < (0.6 if lang == "en" else 0.4) and worst == "ok":
             worst = "warn"
-    detail = f"{engine.reason or reason}, loaded in {load_s:.1f} s; " + "; ".join(
+    detail = f"{engine.describe() or reason}, loaded in {load_s:.1f} s; " + "; ".join(
         f"{lang}: {r['error']}" if "error" in r else f"{lang}: \"{r['heard']}\" ({r['similarity']:.0%} match, "
         f"{r['seconds']} s for {r['audio_s']} s audio)"
         for lang, r in results.items()
