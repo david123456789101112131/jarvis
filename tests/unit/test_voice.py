@@ -781,6 +781,7 @@ class FakeWhisperWorld:
         self.downloadable = downloadable
         self.broken: dict[str, type[Exception]] = {}
         self.loads: list[tuple[str, str, bool]] = []       # (model, device, from the cache only)
+        self.runs: list[tuple[str, str]] = []              # (device, language or "detect")
         self.card_gate = threading.Event()                 # a model being loaded on the card waits for this
         self.card_gate.set()
 
@@ -803,9 +804,11 @@ class FakeWhisperWorld:
                 self.model = type("CT2", (), {"is_multilingual": True})()
 
             def detect_language(self, audio: Any = None) -> tuple[str, float, list[tuple[str, float]]]:
+                world.runs.append((self.device, "detect"))
                 return "he", 0.99, [("he", 0.99)]
 
             def transcribe(self, audio: Any, **kwargs: Any) -> tuple[Any, Any]:
+                world.runs.append((self.device, kwargs.get("language") or "auto"))
                 if self.device in world.broken:
                     raise world.broken[self.device]("CUDA failed with error out of memory")
                 segment = type("Seg", (), {"text": f" {self.name} on {self.device}", "tokens": [1, 2, 3],
@@ -840,6 +843,8 @@ class TestWhisperOnTheGraphicsCard:
         assert (engine.model_used, engine.device_used, engine.compute_type_used) == ("large-v3-turbo", "cuda",
                                                                                      "int8_float16")
         assert engine.describe() == "faster-whisper 'large-v3-turbo' on cuda (int8_float16)" and engine.gpu_problem is None
+        # The card's warm-up also goes through a real command's steps, so the first command is as quick as the next.
+        assert [run for run in world.runs if run[0] == "cuda"] == [("cuda", "en"), ("cuda", "detect"), ("cuda", "he")]
         assert (await engine.transcribe(speechlike(0.5), "he")).text == "large-v3-turbo on cuda"
         assert world.loads == [("small", "cpu", True), ("large-v3-turbo", "cuda", True)]   # nothing downloaded
         engine.close()

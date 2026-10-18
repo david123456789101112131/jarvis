@@ -436,6 +436,23 @@ class FasterWhisperSTT(STTEngine):
                 condition_on_previous_text=False,
             )
             list(segments)
+            if dev == "cuda":
+                # A real command's path as well (language detection, the names prompt, a few more words): the card
+                # loads the code for each step on first use, which would otherwise slow the first command by a second.
+                quiet = np.zeros(SAMPLE_RATE, dtype=np.float32)
+                if hasattr(model, "detect_language"):
+                    model.detect_language(audio=quiet)
+                segments, _info = model.transcribe(
+                    quiet,
+                    language="he",
+                    beam_size=self.beam_size,
+                    initial_prompt=self.prompt_for("he"),
+                    without_timestamps=True,
+                    max_new_tokens=8,
+                    condition_on_previous_text=False,
+                    vad_filter=False,
+                )
+                list(segments)
         except Exception as exc:
             errors.append(f"{name} {dev}/{compute} warm-up: {_short(exc)}")
             log.warning("faster-whisper failed on %s (%s)", dev, errors[-1])
