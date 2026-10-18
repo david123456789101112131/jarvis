@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 
 from jarvis.common.enums import RiskLevel
 from jarvis.common.i18n import t
-from jarvis.computer.backend import Target, combo_text
+from jarvis.computer.backend import Target, combo_text, plain, strip_marks
 from jarvis.permissions.risk import _PII_HE, analyze_command, find_sensitive_data
 from jarvis.security.redaction import default_redactor
 
@@ -103,7 +103,7 @@ _JARVIS_TITLE = re.compile(r"^\s*JARVIS(?:\s+Orb)?\s*$", re.I)
 
 
 def is_jarvis_title(title: str) -> bool:
-    return bool(_JARVIS_TITLE.match(title or ""))
+    return bool(_JARVIS_TITLE.match(plain(title)))
 
 
 def sensitive(target: Target) -> tuple[str, str] | None:
@@ -111,7 +111,7 @@ def sensitive(target: Target) -> tuple[str, str] | None:
     found = SENSITIVE_PROCESSES.get(target.process)
     if found is not None:
         return found
-    title = target.title or ""
+    title = plain(target.title)
     if target.process in BROWSERS:
         return ("a password manager", "מנהל סיסמאות") if _BROWSER_SENSITIVE_TITLE.search(title) else None
     if _SENSITIVE_TITLE.search(title):
@@ -126,7 +126,7 @@ def is_terminal(target: Target) -> bool:
 def is_run_box(target: Target) -> bool:
     """The Run dialog (Win+R): whatever is typed there runs as a command."""
     return target.class_name == "#32770" and target.process == "explorer.exe" and \
-        target.title.strip().lower() in _RUN_TITLES
+        plain(target.title).lower() in _RUN_TITLES
 
 
 def runs_commands(target: Target) -> bool:
@@ -136,7 +136,7 @@ def runs_commands(target: Target) -> bool:
 
 
 def is_chat(target: Target) -> bool:
-    return target.process in CHATS or (target.process in BROWSERS and bool(_CHAT_TITLE.search(target.title or "")))
+    return target.process in CHATS or (target.process in BROWSERS and bool(_CHAT_TITLE.search(plain(target.title))))
 
 
 # ----------------------------------------------------------------------------------------- buttons
@@ -196,6 +196,7 @@ _RUNNABLE = re.compile(r"\.(?:exe|msi|msix|msixbundle|appx|appxbundle|bat|cmd|ps
 
 
 def _button_rules(texts: Sequence[str], v: Verdict, lang: str) -> None:
+    texts = [plain(text) for text in texts]
     for key, pattern, level, en, he, irreversible in _BUTTON_RULES:
         if any(text and pattern.search(text) for text in texts):
             v.raise_to(level, t(lang, he, en), irreversible=irreversible, rule=key)
@@ -224,7 +225,7 @@ _PASTE = (frozenset({"ctrl", "v"}), frozenset({"shift", "insert"}), frozenset({"
 
 def _command(v: Verdict, command: str, lang: str) -> None:
     """Enter on a command line: judged like `run_command` judges the same text."""
-    command = command.strip()
+    command = strip_marks(command).strip()
     if not command:
         v.raise_to(R.HIGH, t(lang, "מריץ את מה שכתוב בשורת הפקודה", "runs whatever is on the command line"),
                    rule="command")
@@ -254,7 +255,7 @@ def assess(action: str, target: Target, *, lang: str = "en", element: str = "", 
 
     if action in POINTER_ACTIONS:
         _button_rules([target.element, element], v, lang)
-        if action == "double_click" and any(_RUNNABLE.search(s or "") for s in (target.element, element)):
+        if action == "double_click" and any(_RUNNABLE.search(plain(s)) for s in (target.element, element)):
             v.raise_to(R.HIGH, t(lang, "מפעיל קובץ תוכנה (התקנות וסקריפטים יכולים לשנות את המחשב)",
                                  "runs a program file (installers and scripts can change the computer)"),
                        irreversible=True, rule="program")
@@ -271,10 +272,11 @@ def assess(action: str, target: Target, *, lang: str = "en", element: str = "", 
         if target.password:
             v.refuse(t(lang, "זה שדה סיסמה: את הסיסמה צריך להקליד בעצמך", "this is a password field: type the "
                                                                        "password yourself"))
-        if default_redactor().find_secrets(text):
+        seen = strip_marks(text)            # what the rules read; what is typed stays as it is
+        if default_redactor().find_secrets(text) or default_redactor().find_secrets(seen):
             v.refuse(t(lang, "הטקסט כולל סוד (מפתח API, טוקן או סיסמה)",
                        "the text contains a secret (an API key, a token or a password)"))
-        lines = text.replace("\r", "").split("\n")
+        lines = seen.replace("\r", "").split("\n")
         ran = lines[:-1] + ([lines[-1]] if press_enter else [])     # each line ended by an Enter runs
         if commands:
             for i, line in enumerate(ran):
@@ -288,7 +290,7 @@ def assess(action: str, target: Target, *, lang: str = "en", element: str = "", 
                            rule="send")
             else:
                 v.raise_to(R.MEDIUM, t(lang, "לוחץ Enter (עשוי לשלוח טופס)", "presses Enter (it may submit a form)"))
-        personal = sorted(set(find_sensitive_data(text)))
+        personal = sorted(set(find_sensitive_data(seen)))
         if personal:
             v.raise_to(R.HIGH, t(lang, "מקליד מידע אישי: " + ", ".join(_PII_HE.get(p, p) for p in personal),
                                  "types personal data: " + ", ".join(personal)), rule="personal")
@@ -332,7 +334,7 @@ def window_label(target: Target, lang: str = "en") -> str:
         return t(lang, "שולחן העבודה", "the desktop")
     if cls in ("Shell_TrayWnd", "Shell_SecondaryTrayWnd"):
         return t(lang, "שורת המשימות", "the taskbar")
-    return (target.title or "").strip()[:80] or target.process or t(lang, "המסך", "the screen")
+    return plain(target.title)[:80] or target.process or t(lang, "המסך", "the screen")
 
 
 __all__ = ["BASE_RISK", "POINTER_ACTIONS", "Verdict", "assess", "is_chat", "is_jarvis_title", "is_run_box",

@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 import sys
 import threading
+import unicodedata
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -130,6 +131,24 @@ def parse_keys(text: str) -> list[list[str]]:
 
 def combo_text(combo: Sequence[str]) -> str:
     return "+".join(combo)
+
+
+# ----------------------------------------------------------------------------------------------- text
+def _hebrew_point(ch: str) -> bool:
+    return "\u0591" <= ch <= "\u05c7" and unicodedata.category(ch) == "Mn"
+
+
+def strip_marks(text: str) -> str:
+    """`text` as a person reads it, so the safety rules match what is on the screen: no invisible formatting
+    (Hebrew Windows wraps window titles in bidi marks, U+202A…U+202C; a page can hide zero-width characters
+    inside a word), no Hebrew vowel points, compatibility forms folded (NFKC). Line breaks are kept."""
+    text = unicodedata.normalize("NFKC", text or "")
+    return "".join(ch for ch in text if unicodedata.category(ch) != "Cf" and not _hebrew_point(ch))
+
+
+def plain(text: str) -> str:
+    """`strip_marks` with the whitespace collapsed: for window titles and element names."""
+    return " ".join(strip_marks(text).split())
 
 
 # ----------------------------------------------------------------------------------------------- elsewhere

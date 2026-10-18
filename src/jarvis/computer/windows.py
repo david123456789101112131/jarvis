@@ -27,7 +27,7 @@ from typing import Any
 
 import psutil
 
-from jarvis.computer.backend import Shot, Target
+from jarvis.computer.backend import Shot, Target, plain
 from jarvis.computer.policy import is_jarvis_title
 from jarvis.host.winapi import (
     COINIT_MULTITHREADED,
@@ -171,7 +171,7 @@ def _text(api: _Api, hwnd: int) -> str:
         return ""
     buf = ctypes.create_unicode_buffer(length + 1)
     api.user32.GetWindowTextW(hwnd, buf, length + 1)
-    return buf.value
+    return plain(buf.value)          # Hebrew Windows wraps titles in bidi marks
 
 
 def _class(api: _Api, hwnd: int) -> str:
@@ -235,7 +235,7 @@ def _uia(api: _Api, point: tuple[int, int] | None) -> tuple[str, str, bool]:
         _com_method(element, _EL_CONTROL_TYPE, ctypes.c_long, ctypes.POINTER(ctypes.c_int))(element, ctypes.byref(kind))
         _com_method(element, _EL_IS_PASSWORD, ctypes.c_long, ctypes.POINTER(ctypes.c_int))(element,
                                                                                            ctypes.byref(secret))
-        return " ".join(text.split())[:200], CONTROL_TYPES.get(kind.value, ""), bool(secret.value)
+        return plain(text)[:200], CONTROL_TYPES.get(kind.value, ""), bool(secret.value)
     finally:
         if name.value:
             api.oleaut32.SysFreeString(name)

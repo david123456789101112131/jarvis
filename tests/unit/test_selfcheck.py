@@ -13,7 +13,8 @@ from jarvis.config.settings import Settings
 from jarvis.selfcheck import format_report, run_checks
 
 SECRET = "sk-ant-test-" + "7" * 24
-NAMES = ["python", "folders", "memory", "server", "interface", "desktop", "keys", "ai", "tools", "internet", "voice"]
+NAMES = ["python", "folders", "memory", "server", "interface", "desktop", "keys", "ai", "tools", "internet", "voice",
+         "computer"]
 
 
 @pytest.fixture
@@ -42,6 +43,32 @@ async def test_every_area_is_reported_and_keys_are_named_never_shown(setup, monk
     text = json.dumps(report, ensure_ascii=False) + format_report(report)
     assert SECRET not in text and SECRET[-12:] not in text
     assert not list(Path(paths.workspace).glob(".jarvis-check-*"))           # probes cleaned up
+
+
+async def test_computer_control_line(setup, monkeypatch, tmp_path) -> None:
+    import jarvis.computer.backend as backend
+    from jarvis.computer.server import EXE_NAME
+
+    settings, paths = setup
+
+    class Ready:
+        def problem(self) -> None:
+            return None
+
+    monkeypatch.setattr(backend, "get_backend", lambda: Ready())
+    settings.computer.models_dir = str(tmp_path)
+    line = lambda report: next(c for c in report["checks"] if c["name"] == "computer")  # noqa: E731
+    missing = line(await run_checks(settings, paths))
+    assert missing["status"] == "warn" and "jarvis computer install" in missing["detail"]
+    (tmp_path / "llama.cpp").mkdir()
+    (tmp_path / "llama.cpp" / EXE_NAME).write_bytes(b"")
+    (tmp_path / "gguf").mkdir()
+    for name in ("Holo-3.1-9B-Q8_0.gguf", "mmproj-Holo-3.1-9B-F16.gguf"):
+        (tmp_path / "gguf" / name).write_bytes(b"")
+    ready = line(await run_checks(settings, paths))
+    assert ready["status"] == "ok" and "Holo-3.1-9B-Q8_0.gguf" in ready["detail"]
+    settings.computer.enabled = False
+    assert line(await run_checks(settings, paths))["status"] == "ok"
 
 
 async def test_without_an_ai_key_it_says_what_still_works(setup) -> None:

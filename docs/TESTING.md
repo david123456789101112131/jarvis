@@ -67,7 +67,7 @@ warning or failure. The exit code is 0 unless something failed; `--json` prints 
 
 | Command | What it does | Time |
 |---|---|---|
-| `jarvis check` | Python and Windows version, JARVIS's folders and free space, the memory database and its Hebrew search, a local port, the built interface and the WebView2 runtime, Start-menu apps, volume and brightness, where API keys are kept (names only, never values), the AI provider (no request is sent), Git, Node.js and Python for projects, the internet, the voice packages | seconds |
+| `jarvis check` | Python and Windows version, JARVIS's folders and free space, the memory database and its Hebrew search, a local port, the built interface and the WebView2 runtime, Start-menu apps, volume and brightness, where API keys are kept (names only, never values), the AI provider (no request is sent), Git, Node.js and Python for projects, the internet, the voice packages, whether the computer-control model is installed (it is not started) | seconds |
 | `jarvis check --full` | everything above, then a second JARVIS in a temporary folder runs real commands: creates a folder, checks the computer, builds a website with the agents and verifies it, refuses and then approves a permanent delete, engages and releases the kill switch, and remembers a fact across a restart | usually under a minute |
 | `jarvis check --voice` | everything above, with the whole voice self-test instead of the package check: microphone, speakers (it says two sentences), text-to-speech in Hebrew and English, speech recognition, the wake word | about a minute (the first run downloads the models) |
 | `jarvis voice-test` | only the voice self-test | about a minute |

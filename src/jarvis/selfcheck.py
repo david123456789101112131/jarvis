@@ -14,6 +14,7 @@ others, and nothing here changes the computer (the few temporary files are remov
   tools      Git, Node.js/npm and Python, which the Development Agent uses for projects
   internet   whether the web search JARVIS uses can be reached
   voice      the voice packages; with `--voice`, the whole voice self-test (microphone, speech, wake word)
+  computer   whether the local model that controls the mouse and keyboard is installed (it is not started)
 
 `--full` adds the `live` checks: a second JARVIS starts in a temporary folder (no AI, no voice, no
 window) and runs real commands end to end: a folder, a system check, a project the agents build and
@@ -75,6 +76,7 @@ async def run_checks(settings: Settings, paths: AppPaths, *, full: bool = False,
         ("tools", _tools(report)),
         ("internet", _internet(report, settings)),
         ("voice", _voice(report, settings, paths, secrets, run_all=voice)),
+        ("computer", _computer(report, settings, paths)),
     ]
     for name, job in steps:
         report.note(f"checking {name}")
@@ -342,6 +344,32 @@ async def _voice(report: CheckReport, settings: Settings, paths: AppPaths, secre
                    hints=['Install the voice extra: pip install "jarvis-assistant[voice]".'])
     else:
         report.add("voice", "ok", "all voice packages installed" + ("" if enabled else " (voice is off in Settings)"))
+
+
+async def _computer(report: CheckReport, settings: Settings, paths: AppPaths) -> None:
+    from jarvis.computer.backend import get_backend
+    from jarvis.computer.server import ModelFiles
+
+    s = settings.computer
+    if not s.enabled:
+        report.add("computer", "ok", "computer control is off in the settings")
+        return
+    problem = await asyncio.to_thread(get_backend().problem)
+    if problem:
+        report.add("computer", "skip", problem)
+        return
+    if s.server_url:
+        report.add("computer", "ok", f"uses the model server at {s.server_url} (screenshots are sent there)")
+        return
+    root = Path(s.models_dir) if s.models_dir else paths.models / "computer"
+    files = await asyncio.to_thread(ModelFiles, root)
+    missing = files.problem()
+    if missing or files.model is None:
+        report.add("computer", "warn", missing or "the model is missing", hints=[
+            "Install it: jarvis computer install (about 30 GB), or jarvis computer install --adopt <folder> for "
+            "a folder that is already downloaded."])
+        return
+    report.add("computer", "ok", f"model ready: {files.model.name} in {root}")
 
 
 # ------------------------------------------------------------------------------------------ live

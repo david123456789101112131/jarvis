@@ -12,7 +12,7 @@ import pytest
 from jarvis.common.enums import Capability, RiskLevel
 from jarvis.computer.backend import Shot, Target, parse_keys
 from jarvis.computer.model import TOOL_NAMES, Conversation, Step, to_pixels
-from jarvis.computer.policy import assess, pending_after, window_label
+from jarvis.computer.policy import assess, is_jarvis_title, is_run_box, pending_after, window_label
 from jarvis.computer.session import ComputerSession, Outcome
 from jarvis.tools.base import ToolContext, ToolResult
 
@@ -100,6 +100,56 @@ class TestPolicy:
     def test_window_label(self) -> None:
         assert window_label(_target(class_name="Progman", title=""), "en") == "the desktop"
         assert window_label(_target(title="Notepad"), "en") == "Notepad"
+
+
+class TestInvisibleMarks:
+    """Hebrew Windows wraps window titles in bidi marks (U+202A…U+202C); a page can hide zero-width
+    characters or vowel points inside a word. The rules must still see the words."""
+
+    def test_plain_and_strip_marks(self) -> None:
+        from jarvis.computer.backend import plain, strip_marks
+
+        assert plain("\u202aClaude\u202c") == "Claude"
+        assert plain("\u200f  Windows \u200b Security ") == "Windows Security"
+        assert strip_marks("a\u200bb\nc\u2066d\u2069") == "ab\ncd"
+        assert plain("שְׁלַח") == "שלח"
+        assert plain("ｓｅｎｄ") == "send"
+
+    def test_titles_with_bidi_marks(self) -> None:
+        assert is_jarvis_title("\u202aJARVIS\u202c")
+        run_box = _target(process="explorer.exe", class_name="#32770", title="\u202bהפעלה\u202c")
+        assert is_run_box(run_box)
+        v = assess("type", run_box, text="format c: /q", press_enter=True)
+        assert v.risk >= RiskLevel.HIGH and v.rule == "command"
+        security = _target(process="mmc.exe", title="\u202bאבטחת\u200f Windows\u202c")
+        assert assess("click", security).refused
+        own = _target(process="msedge.exe", class_name="Chrome_WidgetWin_1", title="\u202aJARVIS\u202c")
+        assert own.own is False and window_label(own) == "JARVIS"
+
+    def test_hidden_characters_in_a_button_name(self) -> None:
+        assert assess("click", _target(element="Se\u200bnd", control="button")).rule == "send"
+        assert assess("click", _target(element="שְׁלַח", control="button")).rule == "send"
+        assert assess("click", _target(element="\u202aPay now\u202c", control="button")).irreversible
+
+    def test_hidden_characters_in_a_typed_command(self) -> None:
+        term = _target(process="powershell.exe", title="Windows PowerShell", class_name="ConsoleWindowClass")
+        v = assess("type", term, text="Remove-Item\u200b -Recurse C:\\data", press_enter=True)
+        assert v.risk >= RiskLevel.HIGH and v.irreversible
+
+    def test_win32_title_is_cleaned(self) -> None:
+        from types import SimpleNamespace
+
+        from jarvis.computer import windows as win
+
+        class User32:
+            def GetWindowTextLengthW(self, hwnd: int) -> int:
+                return 8
+
+            def GetWindowTextW(self, hwnd: int, buf: Any, size: int) -> int:
+                buf.value = "\u202aClaude\u202c"
+                return 8
+
+        assert win._text(SimpleNamespace(user32=User32()), 1) == "Claude"   # type: ignore[arg-type]
 
 
 # ============================================================================ model conversation
