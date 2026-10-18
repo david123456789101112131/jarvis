@@ -423,6 +423,10 @@ class TestSecrets:
         status = await live.get("/api/secrets")
         assert status["ANTHROPIC_API_KEY"]["configured"] is True
         assert (await live.http.put("/api/secrets/ROOT_PASSWORD", json={"value": "x" * 10})).status_code == 404
+        # Typed with the keyboard in Hebrew: refused with a reason, never stored half-right.
+        bad = await live.http.put("/api/secrets/XAI_API_KEY", json={"value": "שלוםxai-" + "k" * 30})
+        assert bad.status_code == 400 and "xai-" not in bad.text
+        assert (await live.get("/api/secrets"))["XAI_API_KEY"]["configured"] is False
         # Even if the key is typed into the chat, it is masked everywhere it shows up.
         await live.post("/api/command", {"text": f"remember that my key is {SECRET}"})
         await events.wait("chat.message", lambda d: d["role"] == "user")

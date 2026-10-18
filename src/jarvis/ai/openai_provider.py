@@ -15,6 +15,7 @@ from jarvis.ai.base import AIProvider
 from jarvis.ai.types import AIMessage, AIResponse, CompletionRequest, Refusal, ToolCall, Usage, strict_schema
 from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable
 from jarvis.config.settings import LocalModelSettings, OpenAISettings, XaiSettings
+from jarvis.security.redaction import default_redactor
 
 log = logging.getLogger(__name__)
 
@@ -23,6 +24,19 @@ _EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "high", "m
 _XAI_EFFORT = {"low": "low", "medium": "medium", "high": "high", "xhigh": "xhigh", "max": "xhigh"}
 _FINISH = {"stop": "end", "tool_calls": "tool_use", "function_call": "tool_use", "length": "max_tokens",
            "content_filter": "refusal"}
+
+
+def _said(exc: Exception) -> str:
+    """The provider's own reason from an error response, short and with secrets removed (" " + text, or "")."""
+    body = getattr(exc, "body", None)
+    reason: Any = None
+    if isinstance(body, dict):
+        reason = body.get("error") or body.get("message")
+        if isinstance(reason, dict):
+            reason = reason.get("message")
+    if not isinstance(reason, str) or not reason.strip():
+        return ""
+    return " " + default_redactor().redact_text(" ".join(reason.split()))[:300]
 
 
 class OpenAICompatibleProvider(AIProvider):
@@ -162,9 +176,10 @@ class OpenAICompatibleProvider(AIProvider):
         except ImportError:  # pragma: no cover
             return ProviderError(str(exc))
         if isinstance(exc, openai.AuthenticationError):
-            return ProviderUnavailable(f"{self.name} rejected the API key (401).", details={"status": 401})
+            return ProviderUnavailable(f"{self.name} rejected the API key (401).{_said(exc)}", details={"status": 401})
         if isinstance(exc, openai.PermissionDeniedError):
-            return ProviderUnavailable(f"{self.name} denied access (403).", details={"status": 403})
+            # e.g. xAI: "Your newly created team doesn't have any credits or licenses yet." Say why, not just 403.
+            return ProviderUnavailable(f"{self.name} denied access (403).{_said(exc)}", details={"status": 403})
         if isinstance(exc, openai.NotFoundError):
             return ProviderError(f"{self.name}: model {self.model!r} not found (404).", details={"status": 404})
         if isinstance(exc, openai.RateLimitError):
@@ -180,6 +195,10 @@ class OpenAICompatibleProvider(AIProvider):
             status = getattr(exc, "status_code", 0) or 0
             return ProviderError(f"{self.name} API error ({status}).", retryable=status >= 500,
                                  details={"status": status})
+        if isinstance(exc, UnicodeEncodeError):
+            # Only plain ASCII can go in the request headers: a key typed with the keyboard in Hebrew ends up here.
+            return ProviderUnavailable(f"{self.name}: the saved API key has characters keys never contain; enter it "
+                                       "again in Settings > API keys.", details={"status": "bad_key"})
         return ProviderError(f"{self.name} failed: {type(exc).__name__}: {exc}")
 
     def _to_response(self, completion: Any) -> AIResponse:

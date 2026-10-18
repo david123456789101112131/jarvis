@@ -16,6 +16,7 @@ import os
 import re
 import stat
 import threading
+import unicodedata
 from pathlib import Path
 
 from jarvis.security.redaction import Redactor, default_redactor, looks_like_secret_name
@@ -37,6 +38,20 @@ KNOWN_SECRETS: dict[str, str] = {
 }
 
 _NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{1,63}$")
+
+
+class SecretFormatError(ValueError):
+    """The value cannot be a key: keys are plain ASCII (typed with the keyboard in Hebrew, it is not)."""
+
+
+def clean_secret(value: str) -> str:
+    """A key as pasted: invisible marks and the spaces around it dropped. Anything else that is not printable
+    ASCII is refused here rather than failing later on the first request."""
+    text = "".join(ch for ch in (value or "") if unicodedata.category(ch) != "Cf").strip()
+    if any(not ("!" <= ch <= "~") for ch in text):
+        raise SecretFormatError("the key has characters API keys never contain (letters outside English, or "
+                                "spaces); paste it again with the keyboard in English")
+    return text
 
 
 class SecretStore:
@@ -160,7 +175,7 @@ class SecretStore:
 
     def set(self, name: str, value: str, *, persist: bool = True) -> str:
         name = self.validate_name(name)
-        value = (value or "").strip()
+        value = clean_secret(value)
         if not value:
             raise ValueError("Secret value is empty")
         self._redactor.register(name, value)

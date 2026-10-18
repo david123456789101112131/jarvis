@@ -263,7 +263,7 @@ def _computer(settings: Any, paths: Any, args: argparse.Namespace) -> int:
 
 
 def _keys(paths: Any, action: str, name: str | None, *, every: bool = False) -> int:
-    from jarvis.security.secrets import KNOWN_SECRETS, SecretStore
+    from jarvis.security.secrets import KNOWN_SECRETS, SecretFormatError, SecretStore
 
     store = SecretStore(paths.data)
     if action == "list":
@@ -286,7 +286,11 @@ def _keys(paths: Any, action: str, name: str | None, *, every: bool = False) -> 
     if not value:
         print("Nothing entered; nothing changed.", file=sys.stderr)
         return EXIT_ERROR
-    where = store.set(name, value)
+    try:
+        where = store.set(name, value)
+    except SecretFormatError as exc:
+        print(f"Not saved: {exc}.", file=sys.stderr)
+        return EXIT_ERROR
     print(f"{name} saved ({where}). A running JARVIS picks it up within 15 seconds.")
     return EXIT_OK
 

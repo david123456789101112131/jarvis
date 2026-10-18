@@ -25,7 +25,8 @@ from starlette.types import Message as ASGIMessage
 from jarvis import __version__
 from jarvis.common.enums import AgentId, Capability, Mode
 from jarvis.common.errors import ConfigError, TaskRefused
-from jarvis.security.secrets import KNOWN_SECRETS
+from jarvis.common.i18n import t
+from jarvis.security.secrets import KNOWN_SECRETS, SecretFormatError
 from jarvis.server.auth import COOKIE, HEADER, ServerAuth
 from jarvis.server.hub import Client
 
@@ -505,7 +506,15 @@ def create_api(app: JarvisApp) -> FastAPI:
     async def put_secret(name: str, body: SecretBody) -> dict[str, Any]:
         if name not in KNOWN_SECRETS:
             raise HTTPException(404, f"Unknown key: {name}")
-        source = await app.set_secret(name, body.value)
+        try:
+            source = await app.set_secret(name, body.value)
+        except SecretFormatError:
+            raise HTTPException(400, t(app.lang, "במפתח יש תווים שאין במפתחות API (למשל אותיות בעברית, אם המקלדת "
+                                                 "הייתה בעברית). להדביק אותו שוב.",
+                                       "The key has characters API keys never contain (for example Hebrew letters, "
+                                       "if the keyboard was in Hebrew). Paste it again.")) from None
+        except ValueError:
+            raise HTTPException(400, t(app.lang, "המפתח ריק", "The key is empty")) from None
         return {"configured": True, "source": source}
 
     @api.delete("/api/secrets/{name}")

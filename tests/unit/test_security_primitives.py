@@ -114,6 +114,18 @@ class TestSecrets:
         assert store.set("OPENAI_API_KEY", "sk-test1234567890abcdef") == "file"
         assert Vault.saved == {"OPENAI_API_KEY": "sk-vault1234567890abcdef"}
 
+    def test_a_key_typed_in_hebrew_is_refused_and_invisible_marks_dropped(self, tmp_path: Path) -> None:
+        from jarvis.security.secrets import SecretFormatError
+
+        store = SecretStore(tmp_path, use_keyring=False, environ={})
+        with pytest.raises(SecretFormatError):
+            store.set("XAI_API_KEY", "שלום" + "xai-" + "k" * 30)      # the keyboard was in Hebrew first
+        with pytest.raises(SecretFormatError):
+            store.set("XAI_API_KEY", "xai-abc def")
+        assert store.get("XAI_API_KEY") is None
+        assert store.set("XAI_API_KEY", "\u200fxai-" + "k" * 30 + "\u200e \n") == "file"
+        assert store.get("XAI_API_KEY") == "xai-" + "k" * 30
+
     def test_invalid_name_rejected(self, tmp_path: Path) -> None:
         store = SecretStore(tmp_path, use_keyring=False, environ={})
         with pytest.raises(ValueError):

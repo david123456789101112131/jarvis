@@ -312,6 +312,19 @@ class TestXai:
             await p.complete(req())
         assert not XaiProvider(XaiSettings(), lambda: None).available()
 
+    async def test_the_providers_reason_reaches_the_user(self) -> None:
+        # A new xAI team without credits answers 403 with its reason; JARVIS passes it on.
+        p, _ = grok(openai_error("PermissionDeniedError", 403, "Your newly created team doesn't have any "
+                                 "credits or licenses yet. You can purchase those on https://console.x.ai/team/t1."))
+        with pytest.raises(ProviderUnavailable) as info:
+            await p.complete(req())
+        assert "(403)" in str(info.value) and "credits or licenses" in str(info.value)
+        # A key with non-ASCII letters cannot go in a header: say so instead of a codec error.
+        p, _ = grok(UnicodeEncodeError("ascii", "שלום", 0, 4, "ordinal not in range(128)"))
+        with pytest.raises(ProviderUnavailable) as info:
+            await p.complete(req())
+        assert "enter it again" in str(info.value) and "codec" not in str(info.value)
+
 
 def router_with(*providers: ScriptedProvider, **settings: Any) -> ProviderRouter:
     for p in providers:
