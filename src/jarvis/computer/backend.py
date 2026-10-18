@@ -67,11 +67,14 @@ class ComputerBackend(Protocol):
     def scroll(self, x: int | None, y: int | None, direction: str, amount: int) -> None: ...
     def drag(self, x: int, y: int, to_x: int, to_y: int) -> None: ...
 
-    def type_text(self, text: str, stop: threading.Event | None = None) -> int:
-        """Type `text` (any language: sent as Unicode, whatever the keyboard layout); returns characters typed."""
+    def type_text(self, text: str, stop: threading.Event | None = None) -> bool:
+        """Type `text` (any language: sent as Unicode, whatever the keyboard layout; a newline presses Enter).
+        False when it stopped early: `stop` was set, or the focus moved to another window, which then gets
+        none of the rest."""
 
-    def press_keys(self, combos: Sequence[Sequence[str]]) -> None:
-        """Press key combinations one after the other: [["ctrl", "s"], ["enter"]]."""
+    def press_keys(self, combos: Sequence[Sequence[str]]) -> bool:
+        """Press key combinations one after the other: [["ctrl", "s"], ["enter"]]. False when it stopped early
+        because the focus moved to another window (an earlier combination or the user switched windows)."""
 
     def watch_escape(self, on_double: Callable[[], None]) -> EscapeWatch:
         """Call `on_double` (from another thread) when the user presses Esc twice in a row."""

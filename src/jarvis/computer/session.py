@@ -1,11 +1,10 @@
 """One computer-control session: look at the screen, ask the model for the next action, run it, repeat.
 
 Every action is a `computer_act` (or `open_app` / `open_url`) call through the tool executor, so the
-permission gate, approval and audit apply to each one — the model never reaches the mouse directly. Two
-things stop a session at once, besides the model finishing or the limits:
-
-* the user presses **Esc twice** (an emergency stop watched by the backend);
-* the user **touches the mouse or keyboard** — JARVIS hands control straight back.
+permission gate, approval and audit apply to each one — the model never reaches the mouse directly. Besides
+the model finishing or the limits, a session stops at once when the user presses **Esc twice** (watched by
+the backend) or engages the kill switch. Touching the mouse or keyboard does not stop it, so the user can
+keep working alongside; with `computer.stop_on_user_input` on, it does, and JARVIS hands control back.
 
 While a session runs, JARVIS's own windows are hidden so they are not in the screenshots; they are shown
 again only to display an approval, then hidden before the approved action happens.
@@ -48,7 +47,7 @@ class Outcome:
 class ComputerSession:
     def __init__(self, goal: str, *, client: HoloClient, backend: ComputerBackend, ctx: ToolContext,
                  service: ComputerService, max_steps: int, max_minutes: float, settle_s: float,
-                 lang: str = "en") -> None:
+                 lang: str = "en", stop_on_input: bool = False) -> None:
         self.goal = goal
         self.client = client
         self.backend = backend
@@ -58,6 +57,7 @@ class ComputerSession:
         self.max_minutes = max_minutes
         self.settle_s = settle_s
         self.lang = lang
+        self.stop_on_input = stop_on_input
         self.id = ctx.subtask_id or ctx.task_id or "computer"
         self.task_id = ctx.task_id
         self.stop = threading.Event()        # set by the Esc-twice watcher, read here and while typing
@@ -70,7 +70,7 @@ class ComputerSession:
         watch = self.backend.watch_escape(self.stop.set)
         try:
             await self.service.ensure_covered()
-            baseline = await asyncio.to_thread(self.backend.input_state)
+            baseline = await self._input_baseline()
             deadline = time.monotonic() + self.max_minutes * 60
             for n in range(self.max_steps):
                 self.ctx.check_cancelled()
@@ -81,7 +81,7 @@ class ComputerSession:
 
                 await self.service.ensure_covered()
                 shot = await asyncio.to_thread(self.backend.capture, MAX_IMAGE_WIDTH)
-                if await self._taken_over(baseline):
+                if baseline is not None and await self._taken_over(baseline):
                     return Outcome("takeover", steps=n, actions=self.actions)
 
                 self.conv.observe(shot)
@@ -102,10 +102,17 @@ class ComputerSession:
                 if result.ok and step.content:
                     self.actions.append(step.content.splitlines()[0][:200])
                 await asyncio.sleep(self.settle_s)
-                baseline = await asyncio.to_thread(self.backend.input_state)
+                baseline = await self._input_baseline()
             return Outcome("max_steps", steps=self.max_steps, actions=self.actions)
         finally:
+            self.stop.set()      # however it ended (the kill switch cancels us): typing still under way stops
             watch.stop()
+
+    async def _input_baseline(self) -> tuple[int, int, int] | None:
+        """With `stop_on_input` only: the last-input time and cursor right after JARVIS's own action."""
+        if not self.stop_on_input:
+            return None
+        return await asyncio.to_thread(self.backend.input_state)
 
     async def _taken_over(self, baseline: tuple[int, int, int]) -> bool:
         """Between our own actions, any change to the last-input time or cursor means a person stepped in."""

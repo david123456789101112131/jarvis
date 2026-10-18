@@ -45,8 +45,8 @@ class UseComputerTool(Tool):
     description = (
         "Control the computer by looking at the screen and using the mouse and keyboard, for a task that can "
         "only be done through a program's window (no command or dedicated tool fits). Give the goal in words. "
-        "The user approves before it starts and can stop it at any time by pressing Esc twice or by moving the "
-        "mouse. Do not use it for things a direct tool already does (opening apps, files, settings, the web)."
+        "The user approves before it starts and can stop it at any time by pressing Esc twice. Do not use it "
+        "for things a direct tool already does (opening apps, files, settings, the web)."
     )
     capabilities = (C.SCREEN_READ, C.INPUT_CONTROL)
     Params = UseComputerParams
@@ -159,11 +159,22 @@ class ComputerActTool(Tool):
         now = await self._target(backend, params)
         if planned is not None and not now.same_window(planned):
             return ToolResult.fail(ctx.t("החלון השתנה לפני הפעולה; מדלג", "the window changed before the action; skipped"))
-        await self._perform(backend, params, session)
+        complete = await self._perform(backend, params, session)
         if params.action in ("type", "press_keys") and policy.runs_commands(now):
             text = params.text if params.action == "type" else ""
-            session.pending[now.hwnd] = policy.pending_after(session.pending.get(now.hwnd, ""), text,
-                                                             params.press_enter or params.action == "press_keys")
+            pending = session.pending.get(now.hwnd, "")
+            if complete:
+                session.pending[now.hwnd] = policy.pending_after(pending, text,
+                                                                 params.press_enter or params.action == "press_keys")
+            else:
+                # Stopped partway: any of it may be on the line and none of it is known to have run, so the
+                # next Enter there is judged against all of it.
+                session.pending[now.hwnd] = (pending + text).replace("\n", " ")
+        if not complete:
+            if session.stop.is_set():
+                return ToolResult.fail(ctx.t("נעצר ב-Esc", "stopped with Esc"))
+            return ToolResult.fail(ctx.t("החלון הפעיל התחלף באמצע, אז JARVIS הפסיק להקליד",
+                                         "the focused window changed midway, so JARVIS stopped typing there"))
         return ToolResult(ok=True, summary=self._summary(params, now, ctx))
 
     # ------------------------------------------------------------------ helpers
@@ -183,22 +194,24 @@ class ComputerActTool(Tool):
             raise PermissionDenied(ctx.t(f"צירוף מקשים לא מוכר: {exc}", f"unknown keys: {exc}"),
                                    details={"tool": self.name}) from None
 
-    async def _perform(self, backend: Any, params: ComputerActParams, session: Any) -> None:
+    async def _perform(self, backend: Any, params: ComputerActParams, session: Any) -> bool:
+        """Do the action. False when typing stopped early (Esc, or the focus left the window that was checked)."""
         a = params
         if a.action in ("click", "double_click", "right_click"):
             button = "right" if a.action == "right_click" else "left"
             count = 2 if a.action == "double_click" else 1
             await asyncio.to_thread(backend.click, a.x or 0, a.y or 0, button=button, count=count)
         elif a.action == "type":
-            await asyncio.to_thread(backend.type_text, a.text, session.stop)
-            if a.press_enter:
-                await asyncio.to_thread(backend.press_keys, [["enter"]])
+            # The Enter goes in with the text, so it too reaches only the window that was checked.
+            text = a.text + ("\n" if a.press_enter else "")
+            return bool(await asyncio.to_thread(backend.type_text, text, session.stop))
         elif a.action == "press_keys":
-            await asyncio.to_thread(backend.press_keys, parse_keys(a.keys))
+            return bool(await asyncio.to_thread(backend.press_keys, parse_keys(a.keys)))
         elif a.action == "scroll":
             await asyncio.to_thread(backend.scroll, a.x, a.y, a.direction, a.amount)
         elif a.action == "drag":
             await asyncio.to_thread(backend.drag, a.x or 0, a.y or 0, a.to_x or 0, a.to_y or 0)
+        return True
 
     def _summary(self, params: ComputerActParams, target: Target, ctx: ToolContext) -> str:
         where = policy.window_label(target, ctx.lang)

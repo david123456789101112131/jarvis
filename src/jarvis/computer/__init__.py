@@ -6,7 +6,7 @@ the tool executor (kill switch, permissions, risk rules, approval, audit), judge
 finds under the pointer or in the focused window (`policy`), never by the model's own description alone.
 
     service.py   one session at a time, the model server, hiding JARVIS's windows while it works
-    session.py   the look → think → act loop, with Esc twice and "the user moved the mouse" as stops
+    session.py   the look → think → act loop, with Esc twice (and the kill switch) as the stop
     model.py     the model's tools, prompt and conversation (OpenAI-compatible chat API)
     server.py    starts and stops llama-server for the model
     policy.py    what an action may do: refused, asked first, or just done

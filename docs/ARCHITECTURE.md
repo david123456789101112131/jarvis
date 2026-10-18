@@ -169,7 +169,9 @@ Plans are persisted after every state change, which is what makes resume possibl
   `computer_act` call through the whole gate above, and its risk is judged from what Windows
   itself reports under the pointer (UI Automation + window), never from the model's words.
   Own windows, password fields, system/credential windows and `Ctrl+Alt+Del` are refused;
-  a session also stops the instant the user presses Esc twice or touches the mouse/keyboard.
+  a session stops the instant the user presses Esc twice (or engages a kill switch). Touching
+  the mouse/keyboard does not stop it unless `computer.stop_on_user_input` is on; keystrokes
+  stop as soon as the focused window is no longer the one that was checked.
 - **Secrets**: OS keyring (Windows Credential Manager) or environment; never sent to the UI,
   never logged (redaction filter on every log record, bus payload and UI event); child
   processes get an environment with secret variables stripped; outgoing HTTP payloads are

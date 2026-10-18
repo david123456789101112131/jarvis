@@ -148,10 +148,11 @@ class FakeWatch:
 
 class FakeBackend:
     def __init__(self, states: list[tuple[int, int, int]] | None = None,
-                 target: Target | None = None) -> None:
+                 target: Target | None = None, keys_reach: bool = True) -> None:
         self._states = states or [(1, 0, 0)]
         self._i = 0
         self.target = target or _target()
+        self.keys_reach = keys_reach         # False: the focus moved away while typing
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.watch: FakeWatch | None = None
 
@@ -188,12 +189,13 @@ class FakeBackend:
     def drag(self, x: int, y: int, to_x: int, to_y: int) -> None:
         self.calls.append(("drag", (x, y, to_x, to_y)))
 
-    def type_text(self, text: str, stop: Any = None) -> int:
+    def type_text(self, text: str, stop: Any = None) -> bool:
         self.calls.append(("type", (text,)))
-        return len(text)
+        return self.keys_reach
 
-    def press_keys(self, combos: Any) -> None:
+    def press_keys(self, combos: Any) -> bool:
         self.calls.append(("press_keys", (tuple(map(tuple, combos)),)))
+        return self.keys_reach
 
     def watch_escape(self, on_double: Any) -> FakeWatch:
         self.watch = FakeWatch(on_double)
@@ -264,7 +266,7 @@ def _session(backend: FakeBackend, client: FakeClient, ctx: FakeCtx, **kw: Any) 
     service = FakeService(backend)
     s = ComputerSession("goal", client=client, backend=backend, ctx=ctx, service=service,  # type: ignore[arg-type]
                         max_steps=kw.get("max_steps", 10), max_minutes=kw.get("max_minutes", 5.0),
-                        settle_s=0.0, lang="en")
+                        settle_s=0.0, lang="en", stop_on_input=kw.get("stop_on_input", False))
     service.active = s
     return s
 
@@ -279,11 +281,30 @@ class TestSession:
         assert ("computer_act", {"action": "click", "x": 960, "y": 540, "session_id": "sub_1",
                                  "element": "thing"}) in [(t, p) for t, p in ctx.calls]
 
-    async def test_takeover_stops(self) -> None:
+    async def test_touching_the_mouse_does_not_stop_it(self) -> None:
+        # The user moves the mouse between JARVIS's actions: by default only Esc twice stops a session.
+        backend = FakeBackend(states=[(1, 0, 0), (2, 400, 400), (3, 10, 10), (4, 800, 90)])
+        session = _session(backend, FakeClient([_click(), _click(), _answer("finished")]), FakeCtx())
+        out = await session.run()
+        assert out.reason == "answer" and out.content == "finished"
+        assert backend._i == 0                     # the input state is not even read
+
+    async def test_takeover_stops_when_turned_on(self) -> None:
         # baseline, step0 check (same), step0 re-baseline, step1 check (changed -> takeover)
         backend = FakeBackend(states=[(1, 0, 0), (1, 0, 0), (1, 0, 0), (2, 400, 400)])
-        out = await _session(backend, FakeClient([_click(), _click(), _answer()]), FakeCtx()).run()
-        assert out.reason == "takeover"
+        out = await _session(backend, FakeClient([_click(), _click(), _answer()]), FakeCtx(),
+                             stop_on_input=True).run()
+        assert out.reason == "takeover" and out.stopped_by_user
+
+    async def test_ending_the_session_stops_typing_under_way(self) -> None:
+        # A cancelled task (the kill switch) ends the loop; the stop flag then halts a typing thread at once.
+        session = _session(FakeBackend(), FakeClient([_click()]), FakeCtx())
+        task = asyncio.ensure_future(session.run())
+        await asyncio.sleep(0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert session.stop.is_set()
 
     async def test_escape_twice_stops(self) -> None:
         backend = FakeBackend()
@@ -316,6 +337,65 @@ class TestSession:
         await _session(FakeBackend(), FakeClient(steps), ctx).run()
         tools = [t for t, _ in ctx.calls]
         assert "open_app" in tools and "open_url" in tools
+
+
+# ============================================================================ keys reach only the checked window
+class _FakeUser32:
+    def __init__(self, windows: list[int]) -> None:
+        self.windows = windows
+        self.i = 0
+
+    def GetForegroundWindow(self) -> int:
+        value = self.windows[min(self.i, len(self.windows) - 1)]
+        self.i += 1
+        return value
+
+    def MapVirtualKeyW(self, code: int, kind: int) -> int:
+        return 0
+
+
+class TestWindowsKeyGuard:
+    """The Win32 typing loop with a scripted foreground window (no real input is sent)."""
+
+    def _backend(self, monkeypatch: pytest.MonkeyPatch, windows: list[int]) -> tuple[Any, list[int]]:
+        from types import SimpleNamespace
+
+        from jarvis.computer import windows as win
+
+        monkeypatch.setattr(win, "_api", lambda: SimpleNamespace(user32=_FakeUser32(windows)))
+        backend = win.WindowsBackend()
+        sent: list[int] = []
+        monkeypatch.setattr(backend, "_send", lambda inputs, count: sent.append(count))
+        return backend, sent
+
+    def test_types_everything_while_the_focus_stays(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend, sent = self._backend(monkeypatch, [7])
+        assert backend.type_text("abc") is True
+        assert sent == [6]                                   # 3 characters, each down + up
+
+    def test_stops_when_the_focus_moves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend, sent = self._backend(monkeypatch, [7, 7, 9])   # start, first batch, then another window
+        assert backend.type_text("a" * 40) is False
+        assert sent == [32]                                  # only the first 16 characters went out
+
+    def test_no_enter_after_the_focus_moved(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend, sent = self._backend(monkeypatch, [7, 7, 9])
+        assert backend.type_text("hi\nnext") is False
+        assert sent == [4]                                   # "hi" only: no Enter, nothing after it
+
+    def test_esc_stops_typing(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import threading
+
+        backend, sent = self._backend(monkeypatch, [7])
+        stop = threading.Event()
+        stop.set()
+        assert backend.type_text("hello", stop) is False
+        assert sent == []
+
+    def test_key_combos_stop_when_the_focus_moves(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend, sent = self._backend(monkeypatch, [7, 9])     # the first combination switched windows
+        assert backend.press_keys([["alt", "tab"], ["ctrl", "w"]]) is False
+        assert sent == [2, 2]                                # alt+tab down/up; ctrl+w never sent
 
 
 # ============================================================================ the tools through the gate
@@ -432,6 +512,47 @@ class TestToolsThroughGate:
                                          agent_id="system", task_id="task_1")
         assert not res.ok and res.denied == "permission"
         assert ("type", ("secret",)) not in backend.calls
+
+    async def test_enter_is_typed_with_the_text(self, kit: Any) -> None:
+        # One keystroke stream, so the Enter too reaches only the window that was checked.
+        backend = FakeBackend(target=_target(process="notepad.exe", title="Untitled - Notepad", control="edit"))
+        svc = _SvcForGate(backend, [])
+        self._wire(kit, svc)
+        svc.active = _StubSession()
+        res = await kit.executor.execute("computer_act", {"action": "type", "text": "hello", "press_enter": True,
+                                                          "session_id": svc.active.id},
+                                         agent_id="system", task_id="task_1")
+        assert res.ok, res.error
+        assert backend.calls == [("type", ("hello\n",))]
+
+    async def test_focus_moving_away_stops_typing(self, kit: Any) -> None:
+        backend = FakeBackend(target=_target(process="notepad.exe", title="Untitled - Notepad", control="edit"),
+                              keys_reach=False)
+        svc = _SvcForGate(backend, [])
+        self._wire(kit, svc)
+        svc.active = _StubSession()
+        res = await kit.executor.execute("computer_act", {"action": "type", "text": "hello",
+                                                          "session_id": svc.active.id},
+                                         agent_id="system", task_id="task_1")
+        assert not res.ok and "window changed" in (res.error or res.summary)
+
+    async def test_cut_short_on_a_command_line_keeps_all_of_it_pending(self, kit: Any) -> None:
+        # The Enter never went, so a later Enter there is judged against everything that may be on the line.
+        term = _target(process="powershell.exe", title="Windows PowerShell", class_name="ConsoleWindowClass")
+        backend = FakeBackend(target=term, keys_reach=False)
+        svc = _SvcForGate(backend, [])
+        self._wire(kit, svc)
+        svc.active = _StubSession()
+        svc.active.pending[term.hwnd] = "Remove-Item"
+        approver = asyncio.ensure_future(_approve_all(kit))
+        try:
+            res = await kit.executor.execute("computer_act", {"action": "type", "text": " -Recurse C:\\data",
+                                                              "press_enter": True, "session_id": svc.active.id},
+                                             agent_id="system", task_id="task_1")
+        finally:
+            approver.cancel()
+        assert not res.ok
+        assert svc.active.pending[term.hwnd] == "Remove-Item -Recurse C:\\data"
 
 
 # ============================================================================ intent + card

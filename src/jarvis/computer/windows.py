@@ -458,8 +458,12 @@ class WindowsBackend:
         self._key(inputs[1], vk, up=True)
         self._send(inputs, 2)
 
-    def press_keys(self, combos: Sequence[Sequence[str]]) -> None:
+    def press_keys(self, combos: Sequence[Sequence[str]]) -> bool:
+        user32 = _api().user32
+        window = user32.GetForegroundWindow()
         for n, combo in enumerate(combos):
+            if n and user32.GetForegroundWindow() != window:
+                return False          # the rest was checked for the window that had the focus, not this one
             codes = [VK[k][0] for k in combo]
             if VK_ESCAPE in codes:
                 self.own_escape_until = time.monotonic() + 0.4
@@ -474,14 +478,18 @@ class WindowsBackend:
             self._send(reversed_ups, len(codes))
             if n + 1 < len(combos):
                 time.sleep(0.06)
+        return True
 
-    def type_text(self, text: str, stop: threading.Event | None = None) -> int:
-        typed = 0
+    def type_text(self, text: str, stop: threading.Event | None = None) -> bool:
+        user32 = _api().user32
+        window = user32.GetForegroundWindow()
         units: list[int] = []
 
-        def flush() -> None:
+        def flush() -> bool:
             if not units:
-                return
+                return True
+            if user32.GetForegroundWindow() != window:
+                return False          # the focus moved: not one more key goes to a window nobody checked
             inputs = (INPUT * (2 * len(units)))()
             for i, unit in enumerate(units):
                 for j, up in ((2 * i, False), (2 * i + 1, True)):
@@ -492,21 +500,21 @@ class WindowsBackend:
             self._send(inputs, len(inputs))
             units.clear()
             time.sleep(0.012)
+            return True
 
         for ch in text.replace("\r\n", "\n").replace("\r", "\n"):
             if stop is not None and stop.is_set():
-                break
+                return False
             if ch in ("\n", "\t"):
-                flush()
+                if not flush() or user32.GetForegroundWindow() != window:
+                    return False
                 self._tap(0x0D if ch == "\n" else 0x09)
             else:
                 data = ch.encode("utf-16-le")
                 units.extend(int.from_bytes(data[i:i + 2], "little") for i in range(0, len(data), 2))
-                if len(units) >= 16:
-                    flush()
-            typed += 1
-        flush()
-        return typed
+                if len(units) >= 16 and not flush():
+                    return False
+        return flush()
 
     def watch_escape(self, on_double: Callable[[], None]) -> _EscapeWatch:
         return _EscapeWatch(self, on_double)

@@ -74,7 +74,8 @@ class ComputerService:
         async with self._lock:
             session = ComputerSession(goal, client=client, backend=self.backend, ctx=ctx, service=self,
                                       max_steps=max_steps, max_minutes=self.settings.max_minutes,
-                                      settle_s=self.settings.settle_s, lang=lang)
+                                      settle_s=self.settings.settle_s, lang=lang,
+                                      stop_on_input=self.settings.stop_on_user_input)
             self._active = session
             try:
                 await self.window("computer_on")
