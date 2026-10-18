@@ -166,17 +166,24 @@ class TestConversation:
 
     def test_evicts_old_images(self) -> None:
         conv = Conversation("do a thing")
-        for _ in range(5):
-            conv.observe(self._shot())
-        images = [m for m in conv.messages if isinstance(m.get("content"), list)]
-        assert len(images) == 2                   # the 4th picture dropped the first three; the 5th was added
-        evicted = [m for m in conv.messages if m.get("content") == "[screenshot evicted]"]
-        assert len(evicted) == 3
 
-    def test_each_step_resends_only_its_new_picture(self) -> None:
+        def count() -> tuple[int, int]:
+            images = [m for m in conv.messages if isinstance(m.get("content"), list)]
+            return len(images), len([m for m in conv.messages if m.get("content") == "[screenshot evicted]"])
+
+        for _ in range(4):
+            conv.observe(self._shot())
+        assert count() == (4, 0)
+        conv.observe(self._shot())
+        assert count() == (2, 3)                  # the 5th dropped the first three; the one before it stays
+        conv.observe(self._shot())
+        assert count() == (3, 3)
+
+    def test_steps_resend_few_pictures_and_keep_the_one_before(self) -> None:
         # The model server reuses its cache up to the first message that differs from the last request, so
         # everything after that point is read again. Dropping one old picture per step made that three
-        # pictures a step (about 2.5 s of each step in the first live trial).
+        # pictures a step (about 2.5 s of each step in the first live trial). Keeping only the newest one
+        # after a drop was cheaper, but then the model forgot what it had done and started the task over.
         import copy
         import itertools
 
@@ -188,10 +195,32 @@ class TestConversation:
             step = Step(content=f"step {n}", tool="click", arguments={"x": 1, "y": 2}, call_id=f"c{n}")
             conv.record(step)
             conv.result(step, "done")
+        read_again = []
         for before, now in itertools.pairwise(sent):
             same = next((i for i, (a, b) in enumerate(zip(before, now, strict=False)) if a != b), len(before))
-            assert len([m for m in now[same:] if isinstance(m.get("content"), list)]) == 1
-            assert 1 <= len([m for m in now if isinstance(m.get("content"), list)]) <= 3
+            read_again.append(len([m for m in now[same:] if isinstance(m.get("content"), list)]))
+            assert 2 <= len([m for m in now if isinstance(m.get("content"), list)]) <= 4
+        assert set(read_again) == {1, 2}          # the new picture, plus the one before it when old ones go
+        assert sum(read_again) <= len(read_again) * 4 / 3 + 1
+
+    async def test_thinking_is_off_unless_turned_on(self) -> None:
+        from jarvis.computer.model import HoloClient
+
+        sent: list[dict[str, Any]] = []
+
+        async def post(payload: dict[str, Any]) -> dict[str, Any]:
+            sent.append(payload)
+            call = {"id": "c1", "function": {"name": "answer", "arguments": '{"content": "84"}'}}
+            return {"choices": [{"message": {"content": "", "tool_calls": [call]}}]}
+
+        for client in (HoloClient("http://127.0.0.1:9"), HoloClient("http://127.0.0.1:9", thinking=True)):
+            client._post = post                   # type: ignore[method-assign]
+            try:
+                step = await client.step(Conversation("compute 12 x 7"))
+            finally:
+                await client.aclose()
+            assert step.is_answer and step.arguments == {"content": "84"}
+        assert [p["chat_template_kwargs"]["enable_thinking"] for p in sent] == [False, True]
 
     def test_record_drops_reasoning(self) -> None:
         conv = Conversation("x")
@@ -799,6 +828,25 @@ class TestWarmUp:
             assert service.server.starts == 0    # and nothing is sent anywhere before the approval
         finally:
             await service.aclose()
+
+    async def test_the_thinking_setting_reaches_the_model(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jarvis.computer import service as svc
+
+        made: list[dict[str, Any]] = []
+
+        def client(*a: Any, **k: Any) -> FakeClient:
+            made.append(k)
+            return FakeClient([_answer()])
+
+        service = self._service(tmp_path, monkeypatch)
+        monkeypatch.setattr(svc, "HoloClient", client)
+        try:
+            await service.run("goal", FakeCtx(), max_steps=3)
+            service.settings.thinking = True
+            await service.run("goal", FakeCtx(), max_steps=3)
+        finally:
+            await service.aclose()
+        assert [k["thinking"] for k in made] == [False, True]
 
     def test_server_asks_for_enough_picture_detail(self, tmp_path: Any) -> None:
         from jarvis.computer.server import ModelServer

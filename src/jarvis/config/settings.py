@@ -295,6 +295,8 @@ class ComputerSettings(_Section):
     max_steps: int = 40                   # actions per task
     max_minutes: float = 15.0             # time per task
     settle_s: float = 0.5                 # wait after each action before looking at the screen again
+    # The model reasons privately before each action. Off is about twice as fast, and was steadier in tests.
+    thinking: bool = False
     # Off: only Esc twice (or "stop everything") stops a task, so you can use the mouse while JARVIS works.
     # On: a task also stops the moment you touch the mouse or keyboard.
     stop_on_user_input: bool = False

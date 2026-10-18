@@ -6,11 +6,14 @@ its own permission gate. The model ends the task by calling `answer`.
 
 Conventions that matter (H Company's Holo format):
 * coordinates are integers in [0, 1000] relative to the image sent, origin top-left;
-* every step sends the current screenshot in an `<observation>` wrapper; at most three images are kept
+* every step sends the current screenshot in an `<observation>` wrapper; at most four images are kept
   (older ones become "[screenshot evicted]") so the context stays small. They are dropped all but the
-  newest at once, never one per step: the server reuses its prompt cache only up to the first change, so a
-  conversation that only grows costs one new picture per step instead of re-reading every kept one;
-* thinking is on, but the reasoning is *not* fed back — anything to remember goes in the reply text;
+  newest two at once, never one per step: the server reuses its prompt cache only up to the first change,
+  so most steps cost one new picture instead of re-reading every kept one, and the model can still compare
+  the screen with the one before its last action;
+* thinking is off unless `computer.thinking` turns it on: in tests it made each step slower and the model
+  doubt steps it had already done (clearing a calculator and starting over). When on, the reasoning is
+  *not* fed back — anything to remember goes in the reply text;
 * `tool_choice` is "required", so every step is an action.
 """
 
@@ -30,7 +33,8 @@ from jarvis.computer.backend import Shot
 log = logging.getLogger(__name__)
 
 COORD_MAX = 1000               # the model's coordinate space (both axes), per the Holo convention
-KEEP_IMAGES = 3                # at most this many screenshots in the conversation (see _evict)
+KEEP_IMAGES = 4                # at most this many screenshots in the conversation (see _evict)
+KEEP_AFTER_EVICTION = 2        # how many of the newest stay when older ones are dropped
 EVICTED = "[screenshot evicted]"
 
 
@@ -138,15 +142,18 @@ class Conversation:
         self._evict()
 
     def _evict(self) -> None:
-        """Past KEEP_IMAGES pictures, drop all but the newest in one go (the model then sees 1 to 3).
+        """Past KEEP_IMAGES pictures, drop all but the newest KEEP_AFTER_EVICTION in one go (the model then
+        sees 2 to 4, so the screen from before its last action is always there to compare with).
 
         Dropping only the oldest each step would change the conversation right before the pictures still
         kept, so the server would re-read all of them every step (about 2.5 s of each step in the first
-        live trial); this way every message before the new picture stays as the server has it cached."""
+        live trial); this way most steps only add their new picture to what the server has cached, and
+        every third step reads one more. Keeping just the newest was cheaper still, but right after the
+        drop the model lost track of what it had already done and started the task over."""
         images = [m for m in self.messages if isinstance(m.get("content"), list)
                   and any(p.get("type") == "image_url" for p in m["content"])]
         if len(images) > KEEP_IMAGES:
-            for msg in images[:-1]:
+            for msg in images[:-KEEP_AFTER_EVICTION]:
                 msg["content"] = EVICTED          # keep the turn, drop the picture
 
     def record(self, step: Step) -> None:
@@ -166,10 +173,11 @@ class Conversation:
 class HoloClient:
     """A thin OpenAI-compatible chat client for the local Holo server (its own httpx client, no proxy)."""
 
-    def __init__(self, base_url: str, *, model: str = "holo", api_key: str = "",
+    def __init__(self, base_url: str, *, model: str = "holo", api_key: str = "", thinking: bool = False,
                  temperature: float = 0.8, max_tokens: int = 4096, timeout_s: float = 120.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.thinking = thinking
         self.temperature = temperature
         self.max_tokens = max_tokens
         # trust_env=False: never a proxy and never the network guard — this is 127.0.0.1 only.
@@ -182,7 +190,7 @@ class HoloClient:
             "model": self.model, "messages": conv.messages, "tools": TOOLBOX,
             "tool_choice": "required", "parallel_tool_calls": False,
             "temperature": self.temperature, "max_tokens": self.max_tokens,
-            "chat_template_kwargs": {"enable_thinking": True},
+            "chat_template_kwargs": {"enable_thinking": self.thinking},
         }
         data = await self._post(payload)
         try:

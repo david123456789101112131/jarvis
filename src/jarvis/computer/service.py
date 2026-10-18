@@ -102,7 +102,8 @@ class ComputerService:
             await self.server.ensure_running()
             base_url, api_key = self.server.base_url, self.server.api_key
         self.start()
-        client = HoloClient(base_url, api_key=api_key, timeout_s=max(60.0, self.settings.max_minutes * 60))
+        client = HoloClient(base_url, api_key=api_key, thinking=self.settings.thinking,
+                            timeout_s=max(60.0, self.settings.max_minutes * 60))
         async with self._lock:
             session = ComputerSession(goal, client=client, backend=self.backend, ctx=ctx, service=self,
                                       max_steps=max_steps, max_minutes=self.settings.max_minutes,
