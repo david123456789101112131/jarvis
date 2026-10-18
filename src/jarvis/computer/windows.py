@@ -6,7 +6,9 @@
 * input: SendInput with normalized absolute coordinates on the primary monitor (they do not depend on DPI
   scaling), text as Unicode key events (any language, whatever the keyboard layout);
 * "a person is here": GetLastInputInfo and the cursor position; Esc twice, watched with GetAsyncKeyState
-  (a polling thread Windows cannot silently unhook, unlike a low-level keyboard hook).
+  (a polling thread Windows cannot silently unhook, unlike a low-level keyboard hook);
+* the user's window: the frontmost one Alt+Tab would offer that is not JARVIS's (EnumWindows goes front to
+  back), put in front again with SetForegroundWindow when a task starts.
 
 Programs running as administrator do not take input from JARVIS (Windows' UIPI), and the UAC prompt is on a
 desktop JARVIS cannot reach at all.
@@ -59,6 +61,12 @@ MOUSEEVENTF_ABSOLUTE = 0x8000
 KEYEVENTF_UNICODE = 0x0004
 WHEEL_DELTA = 120
 GA_ROOT = 2
+GWL_EXSTYLE = -20
+WS_EX_TOOLWINDOW = 0x00000080
+WS_EX_NOACTIVATE = 0x08000000
+DWMWA_CLOAKED = 14
+SHELL_CLASSES = frozenset({"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd",
+                           "Windows.UI.Core.CoreWindow"})        # the desktop, the taskbars, Start and search
 SM_CXSCREEN, SM_CYSCREEN = 0, 1
 MAPVK_VK_TO_VSC = 0
 VK_ESCAPE = 0x1B
@@ -108,6 +116,7 @@ class _Api:
     def __init__(self) -> None:
         dll = ctypes.WinDLL  # type: ignore[attr-defined]
         self.user32 = u = dll("user32", use_last_error=True)
+        self.kernel32 = k = dll("kernel32", use_last_error=True)
         self.ole32 = o = dll("ole32", use_last_error=True)
         self.oleaut32 = dll("oleaut32", use_last_error=True)
         self.WNDENUMPROC = ctypes.WINFUNCTYPE(w.BOOL, w.HWND, w.LPARAM)  # type: ignore[attr-defined]
@@ -128,6 +137,17 @@ class _Api:
         _proto(u.IsIconic, w.BOOL, w.HWND)
         _proto(u.EnumWindows, w.BOOL, self.WNDENUMPROC, w.LPARAM)
         _proto(u.EnumChildWindows, w.BOOL, w.HWND, self.WNDENUMPROC, w.LPARAM)
+        _proto(u.IsWindow, w.BOOL, w.HWND)
+        _proto(u.GetWindowLongW, w.LONG, w.HWND, ctypes.c_int)
+        _proto(u.SetForegroundWindow, w.BOOL, w.HWND)
+        _proto(u.BringWindowToTop, w.BOOL, w.HWND)
+        _proto(u.AttachThreadInput, w.BOOL, w.DWORD, w.DWORD, w.BOOL)
+        _proto(k.GetCurrentThreadId, w.DWORD)
+        try:
+            self.dwm_attribute: Any = dll("dwmapi").DwmGetWindowAttribute
+            _proto(self.dwm_attribute, ctypes.c_long, w.HWND, w.DWORD, ctypes.c_void_p, w.DWORD)
+        except (OSError, AttributeError):
+            self.dwm_attribute = None
         self.set_dpi_context = getattr(u, "SetThreadDpiAwarenessContext", None)   # Windows 10 1607 and later
         if self.set_dpi_context is not None:
             _proto(self.set_dpi_context, ctypes.c_void_p, ctypes.c_void_p)
@@ -199,6 +219,25 @@ def _app_pid(api: _Api, hwnd: int, pid: int) -> int:
 
     api.user32.EnumChildWindows(hwnd, api.WNDENUMPROC(visit), 0)
     return found[0]
+
+
+def _cloaked(api: _Api, hwnd: int) -> bool:
+    """Shown as far as the window APIs tell, but not drawn: on another virtual desktop, or a suspended Store app."""
+    get = api.dwm_attribute
+    if get is None:
+        return False
+    value = w.DWORD(0)
+    return get(hwnd, DWMWA_CLOAKED, ctypes.byref(value), ctypes.sizeof(value)) == S_OK and value.value != 0
+
+
+def _switchable(api: _Api, hwnd: int) -> bool:
+    """A window Alt+Tab would offer: on screen, not minimized, with a title; no tool palette or shell surface."""
+    u = api.user32
+    if not u.IsWindowVisible(hwnd) or u.IsIconic(hwnd) or u.GetWindowTextLengthW(hwnd) <= 0:
+        return False
+    if u.GetWindowLongW(hwnd, GWL_EXSTYLE) & (WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE):
+        return False
+    return _class(api, hwnd) not in SHELL_CLASSES and not _cloaked(api, hwnd)
 
 
 def _process_name(pid: int) -> str:
@@ -385,6 +424,43 @@ class WindowsBackend:
 
         api.user32.EnumWindows(api.WNDENUMPROC(visit), 0)
         return found[0]
+
+    def working_window(self) -> int:
+        api = _api()
+        me = os.getpid()
+        found = [0]
+
+        def visit(hwnd: int | None, _lparam: int) -> bool:   # top-level windows, front to back
+            try:
+                if hwnd and _switchable(api, hwnd) and _pid(api, hwnd) != me \
+                        and not is_jarvis_title(_text(api, hwnd)):
+                    found[0] = int(hwnd)
+                    return False
+            except Exception:                # never let an exception cross the C callback
+                pass
+            return True
+
+        api.user32.EnumWindows(api.WNDENUMPROC(visit), 0)
+        return found[0]
+
+    def bring_to_front(self, hwnd: int) -> bool:
+        api = _api()
+        u = api.user32
+        if not hwnd or not u.IsWindow(hwnd) or not u.IsWindowVisible(hwnd) or u.IsIconic(hwnd):
+            return False                     # closed or minimized since: leave it be
+        if not u.SetForegroundWindow(hwnd):
+            # Windows lets only the program used last move the focus. Sharing the input state of the window
+            # in front for a moment lifts that, the way task switchers do it.
+            front = u.GetForegroundWindow()
+            theirs = int(u.GetWindowThreadProcessId(front, None)) if front else 0
+            mine = int(api.kernel32.GetCurrentThreadId())
+            if theirs and theirs != mine and u.AttachThreadInput(mine, theirs, True):
+                try:
+                    u.BringWindowToTop(hwnd)
+                    u.SetForegroundWindow(hwnd)
+                finally:
+                    u.AttachThreadInput(mine, theirs, False)
+        return int(u.GetForegroundWindow() or 0) == int(hwnd)
 
     # ------------------------------------------------------------------ mouse
     def _send(self, inputs: Any, count: int) -> None:

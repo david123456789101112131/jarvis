@@ -63,6 +63,13 @@ class ComputerBackend(Protocol):
         """(last input time, cursor x, cursor y): when it changes between actions, a person used the computer."""
 
     def own_windows_visible(self) -> bool: ...
+
+    def working_window(self) -> int:
+        """The window the user is working in: the frontmost app window that is not JARVIS's own (0: none)."""
+
+    def bring_to_front(self, hwnd: int) -> bool:
+        """Put that window in front again, as Alt+Tab would. False when it is gone, minimized, or Windows refused."""
+
     def move(self, x: int, y: int) -> None: ...
     def click(self, x: int, y: int, *, button: str = "left", count: int = 1) -> None: ...
     def scroll(self, x: int | None, y: int | None, direction: str, amount: int) -> None: ...
@@ -168,6 +175,12 @@ class UnsupportedBackend:
     move = click = scroll = drag = type_text = press_keys = watch_escape = _no  # type: ignore[assignment]
 
     def own_windows_visible(self) -> bool:
+        return False
+
+    def working_window(self) -> int:
+        return 0
+
+    def bring_to_front(self, hwnd: int) -> bool:
         return False
 
 

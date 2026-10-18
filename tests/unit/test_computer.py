@@ -5,6 +5,7 @@ scripted model stand in, so these run on any platform."""
 from __future__ import annotations
 
 import asyncio
+import sys
 from typing import Any
 
 import pytest
@@ -203,6 +204,8 @@ class FakeBackend:
         self._i = 0
         self.target = target or _target()
         self.keys_reach = keys_reach         # False: the focus moved away while typing
+        self.front = 0                       # what working_window() reports
+        self.brings = True                   # what bring_to_front() answers
         self.calls: list[tuple[str, tuple[Any, ...]]] = []
         self.watch: FakeWatch | None = None
 
@@ -213,6 +216,7 @@ class FakeBackend:
         return (1920, 1080)
 
     def capture(self, max_width: int) -> Shot:
+        self.calls.append(("capture", ()))
         return Shot(png=b"img", width=1280, height=720, screen_width=1920, screen_height=1080)
 
     def target_at(self, x: int, y: int) -> Target:
@@ -228,6 +232,13 @@ class FakeBackend:
 
     def own_windows_visible(self) -> bool:
         return False
+
+    def working_window(self) -> int:
+        return self.front
+
+    def bring_to_front(self, hwnd: int) -> bool:
+        self.calls.append(("front", (hwnd,)))
+        return self.brings
 
     def move(self, x: int, y: int) -> None: ...
     def click(self, x: int, y: int, *, button: str = "left", count: int = 1) -> None:
@@ -448,6 +459,224 @@ class TestWindowsKeyGuard:
         assert sent == [2, 2]                                # alt+tab down/up; ctrl+w never sent
 
 
+# ============================================================================ the user's window comes back first
+class _Win:
+    def __init__(self, hwnd: int, title: str, *, pid: int = 500, cls: str = "Notepad", iconic: bool = False,
+                 exstyle: int = 0, cloaked: bool = False, thread: int = 77) -> None:
+        self.hwnd, self.title, self.pid, self.cls, self.iconic = hwnd, title, pid, cls, iconic
+        self.exstyle, self.cloaked, self.thread = exstyle, cloaked, thread
+
+
+class _ZOrderUser32:
+    """user32 over a list of top-level windows, front to back. `locked`: SetForegroundWindow is refused
+    unless this thread shares the input state of the window in front (AttachThreadInput)."""
+
+    def __init__(self, windows: list[_Win], foreground: int = 0, locked: bool = False) -> None:
+        self.by_id = {x.hwnd: x for x in windows}
+        self.foreground = foreground
+        self.locked = locked
+        self.attached: list[tuple[int, int, bool]] = []
+
+    def EnumWindows(self, callback: Any, _lparam: int) -> bool:
+        for hwnd in self.by_id:
+            if not callback(hwnd, 0):
+                break
+        return True
+
+    def IsWindow(self, hwnd: int) -> bool:
+        return hwnd in self.by_id
+
+    def IsWindowVisible(self, hwnd: int) -> bool:
+        return hwnd in self.by_id
+
+    def IsIconic(self, hwnd: int) -> bool:
+        return self.by_id[hwnd].iconic
+
+    def GetWindowTextLengthW(self, hwnd: int) -> int:
+        return len(self.by_id[hwnd].title)
+
+    def GetWindowTextW(self, hwnd: int, buf: Any, size: int) -> int:
+        buf.value = self.by_id[hwnd].title
+        return len(buf.value)
+
+    def GetClassNameW(self, hwnd: int, buf: Any, size: int) -> int:
+        buf.value = self.by_id[hwnd].cls
+        return len(buf.value)
+
+    def GetWindowLongW(self, hwnd: int, index: int) -> int:
+        return self.by_id[hwnd].exstyle
+
+    def GetWindowThreadProcessId(self, hwnd: int, pid: Any) -> int:
+        if pid is not None:
+            pid._obj.value = self.by_id[hwnd].pid
+        return self.by_id[hwnd].thread
+
+    def GetForegroundWindow(self) -> int:
+        return self.foreground
+
+    def SetForegroundWindow(self, hwnd: int) -> bool:
+        sharing = bool(self.attached) and self.attached[-1][2]
+        if self.locked and not sharing:
+            return False
+        self.foreground = hwnd
+        return True
+
+    def BringWindowToTop(self, hwnd: int) -> bool:
+        return True
+
+    def AttachThreadInput(self, mine: int, theirs: int, attach: bool) -> bool:
+        self.attached.append((mine, theirs, attach))
+        return True
+
+
+def _zorder_api(user32: _ZOrderUser32) -> Any:
+    from types import SimpleNamespace
+
+    def cloaked(hwnd: int, attribute: int, value: Any, size: int) -> int:
+        value._obj.value = int(user32.by_id[hwnd].cloaked)
+        return 0
+
+    return SimpleNamespace(user32=user32, kernel32=SimpleNamespace(GetCurrentThreadId=lambda: 11),
+                           dwm_attribute=cloaked, WNDENUMPROC=lambda fn: fn)
+
+
+class TestWorkingWindow:
+    """The window a task was asked from is put back in front for the model's first look. In the live trial
+    (2026-10-18) a chat window came up over Calculator while the model loaded, and the first clicks landed in it."""
+
+    def _service(self, backend: FakeBackend, tmp_path: Any, monkeypatch: pytest.MonkeyPatch,
+                 steps: list[Step]) -> tuple[Any, list[str]]:
+        from types import SimpleNamespace
+
+        from jarvis.computer import service as svc
+        from jarvis.config.settings import ComputerSettings
+        from jarvis.security.process import ProcessRegistry
+
+        shell: list[str] = []
+
+        async def window(action: str) -> bool:
+            shell.append(action)
+            return True
+
+        monkeypatch.setattr(svc, "HoloClient", lambda *a, **k: FakeClient(steps))
+        settings = ComputerSettings(server_url="http://127.0.0.1:9", settle_s=0.0)   # no model server to start
+        paths = SimpleNamespace(models=tmp_path, logs=tmp_path)
+        return svc.ComputerService(settings, paths, ProcessRegistry(), window, backend=backend), shell  # type: ignore[arg-type]
+
+    async def test_the_window_noted_when_planning_is_in_front_for_the_first_look(
+            self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FakeBackend()
+        backend.front = 4242                     # Calculator, in front when the task was asked for
+        service, shell = self._service(backend, tmp_path, monkeypatch, [_answer("84")])
+        try:
+            await service.note_working_window()  # what use_computer's plan does, before the approval
+            backend.front = 77                   # then a chat window came up over it
+            out = await service.run("compute 12 x 7", FakeCtx(), max_steps=5)
+        finally:
+            await service.aclose()
+        assert out.reason == "answer" and out.content == "84"
+        assert shell[0] == "computer_on"
+        assert backend.calls[:2] == [("front", (4242,)), ("capture", ())]
+
+    async def test_once_per_task(self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FakeBackend()
+        backend.front = 4242
+        service, _ = self._service(backend, tmp_path, monkeypatch, [_answer()])
+        try:
+            await service.note_working_window()
+            await service.run("one", FakeCtx(), max_steps=5)
+            await service.run("two", FakeCtx(), max_steps=5)     # not planned again: nothing to bring back
+        finally:
+            await service.aclose()
+        assert [c for c in backend.calls if c[0] == "front"] == [("front", (4242,))]
+
+    async def test_a_window_that_cannot_come_back_does_not_stop_the_task(
+            self, tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        backend = FakeBackend()
+        backend.front, backend.brings = 4242, False             # closed or minimized meanwhile
+        service, _ = self._service(backend, tmp_path, monkeypatch, [_answer("done")])
+        try:
+            await service.note_working_window()
+            out = await service.run("goal", FakeCtx(), max_steps=5)
+        finally:
+            await service.aclose()
+        assert out.reason == "answer" and ("capture", ()) in backend.calls
+
+    def test_no_window_where_computer_control_does_not_run(self) -> None:
+        from jarvis.computer.backend import UnsupportedBackend
+
+        backend = UnsupportedBackend()
+        assert backend.working_window() == 0 and backend.bring_to_front(5) is False
+
+    # -- the Win32 side, over a scripted window list (no real window is touched)
+    def test_picks_the_frontmost_app_window_that_is_not_jarvis(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import os
+
+        from jarvis.computer import windows as win
+
+        user32 = _ZOrderUser32([
+            _Win(1, "JARVIS", pid=os.getpid(), cls="WinFormsWindow"),            # JARVIS's own window
+            _Win(2, "JARVIS Orb", pid=900),                                      # a JARVIS window, by its title
+            _Win(3, "", cls="tooltips_class32"),                                 # no title
+            _Win(4, "Colors", exstyle=win.WS_EX_TOOLWINDOW),                     # a tool palette
+            _Win(5, "Settings", cls="ApplicationFrameWindow", cloaked=True),     # a suspended Store app
+            _Win(6, "Untitled - Notepad", iconic=True),                          # minimized
+            _Win(7, "Taskbar", cls="Shell_TrayWnd"),                             # the shell
+            _Win(8, "‫מחשבון‬", cls="ApplicationFrameWindow"),          # Calculator
+            _Win(9, "Claude", cls="Chrome_WidgetWin_1"),
+        ])
+        monkeypatch.setattr(win, "_api", lambda: _zorder_api(user32))
+        assert win.WindowsBackend().working_window() == 8
+
+    def test_no_working_window_when_none_qualifies(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jarvis.computer import windows as win
+
+        user32 = _ZOrderUser32([_Win(7, "Taskbar", cls="Shell_TrayWnd"), _Win(6, "Notepad", iconic=True)])
+        monkeypatch.setattr(win, "_api", lambda: _zorder_api(user32))
+        assert win.WindowsBackend().working_window() == 0
+
+    def test_brings_the_window_back_when_windows_allows(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jarvis.computer import windows as win
+
+        user32 = _ZOrderUser32([_Win(9, "Claude"), _Win(8, "מחשבון")], foreground=9)
+        monkeypatch.setattr(win, "_api", lambda: _zorder_api(user32))
+        assert win.WindowsBackend().bring_to_front(8) is True
+        assert user32.foreground == 8 and user32.attached == []
+
+    def test_shares_the_input_state_when_the_focus_is_locked(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # The user clicked in another program after approving, so Windows first refuses JARVIS the focus.
+        from jarvis.computer import windows as win
+
+        user32 = _ZOrderUser32([_Win(9, "Claude", thread=77), _Win(8, "מחשבון")], foreground=9, locked=True)
+        monkeypatch.setattr(win, "_api", lambda: _zorder_api(user32))
+        assert win.WindowsBackend().bring_to_front(8) is True
+        assert user32.foreground == 8
+        assert user32.attached == [(11, 77, True), (11, 77, False)]          # for a moment, then let go
+
+    def test_leaves_closed_and_minimized_windows_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from jarvis.computer import windows as win
+
+        user32 = _ZOrderUser32([_Win(9, "Claude"), _Win(5, "Notepad", iconic=True)], foreground=9)
+        monkeypatch.setattr(win, "_api", lambda: _zorder_api(user32))
+        backend = win.WindowsBackend()
+        assert backend.bring_to_front(5) is False        # minimized since
+        assert backend.bring_to_front(1234) is False     # closed since
+        assert backend.bring_to_front(0) is False
+        assert user32.foreground == 9
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="the real Win32 window list")
+    def test_real_window_list(self) -> None:
+        import os
+
+        from jarvis.computer import windows as win
+
+        backend = win.WindowsBackend()
+        hwnd = backend.working_window()
+        if hwnd:
+            assert win._pid(win._api(), hwnd) != os.getpid()
+        assert backend.bring_to_front(0) is False
+
+
 # ============================================================================ the tools through the gate
 from jarvis.tools.computer import ComputerActTool, UseComputerTool  # noqa: E402
 
@@ -459,6 +688,7 @@ class _SvcForGate:
         self.backend = backend
         self.steps = steps
         self.active: Any = None
+        self.noted = 0
 
     def problem(self) -> str | None:
         return None
@@ -468,6 +698,9 @@ class _SvcForGate:
 
     def start(self) -> None: ...
     async def ensure_covered(self) -> None: ...
+
+    async def note_working_window(self) -> None:
+        self.noted += 1
 
     async def run(self, goal: str, ctx: ToolContext, *, max_steps: int, lang: str = "en") -> Outcome:
         session = ComputerSession(goal, client=FakeClient(self.steps), backend=self.backend, ctx=ctx,
@@ -544,6 +777,7 @@ class TestToolsThroughGate:
         assert res.ok, res.error
         assert res.summary == "message sent"
         assert ("click", (960, 540, "left", 1)) in backend.calls     # the approved click ran
+        assert svc.noted == 1                  # the user's window was noted when the task was planned
 
     async def test_computer_act_refused_without_a_session(self, kit: Any) -> None:
         svc = _SvcForGate(FakeBackend(), [])

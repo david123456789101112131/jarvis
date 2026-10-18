@@ -66,6 +66,7 @@ class UseComputerTool(Tool):
             raise ToolError(ctx.t(f"שליטה במחשב לא זמינה: {problem}", f"Computer control is unavailable: {problem}"))
         if service.busy():
             raise ToolError(ctx.t("כבר רצה משימת שליטה במחשב אחת", "a computer-control session is already running"))
+        await service.note_working_window()          # before the approval comes up in front of it
         goal = params.goal.strip()
         summary = ctx.t(f"שליטה במחשב: {goal}", f"Use the computer: {goal}")
         plan = ActionPlan(summary=summary[:160], risk=RiskLevel.HIGH, always_confirm=True,

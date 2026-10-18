@@ -2,7 +2,8 @@
 
 It is built once by the composition root. `use_computer` runs a session through it; `computer_act` (one
 action) reads the live backend and the active session from it. It also hides JARVIS's windows while a
-session runs — and shows them just long enough to display an approval — through the desktop shell.
+session runs — and shows them just long enough to display an approval — through the desktop shell, and
+puts the window the user asked from back in front, so the model's first look is at what they meant.
 """
 
 from __future__ import annotations
@@ -41,6 +42,7 @@ class ComputerService:
         self._active: ComputerSession | None = None
         self._lock = asyncio.Lock()
         self._idle_task: asyncio.Task[None] | None = None
+        self._working = 0                  # the user's window when the last task was asked for (0: none)
 
     def root(self) -> Path:
         return Path(self.settings.models_dir) if self.settings.models_dir else self.paths.models / "computer"
@@ -79,6 +81,7 @@ class ComputerService:
             self._active = session
             try:
                 await self.window("computer_on")
+                await self._bring_back_working_window()
                 return await session.run()
             finally:
                 self._active = None
@@ -87,6 +90,30 @@ class ComputerService:
                 with contextlib.suppress(Exception):
                     await client.aclose()
                 self.server.touch()
+
+    # ------------------------------------------------------------------ the user's window
+    async def note_working_window(self) -> None:
+        """Before the approval: remember the window the user is working in.
+
+        It has to be now: by the time the session starts, the approval, and whatever the user opened while
+        the model loaded (a chat, say), may be in front of it."""
+        self._working = 0
+        with contextlib.suppress(Exception):
+            self._working = int(await asyncio.to_thread(self.backend.working_window) or 0)
+
+    async def _bring_back_working_window(self) -> None:
+        """JARVIS is out of the way: put that window in front for the model's first look (once per task)."""
+        hwnd, self._working = self._working, 0
+        if not hwnd:
+            return
+        await self.ensure_covered()
+        brought = False
+        with contextlib.suppress(Exception):
+            brought = bool(await asyncio.to_thread(self.backend.bring_to_front, hwnd))
+        if brought:
+            await asyncio.sleep(self.settings.settle_s)        # let it draw before the screenshot
+        else:
+            log.info("The window the task was asked from could not be put back in front (closed or minimized)")
 
     # ------------------------------------------------------------------ JARVIS's windows
     async def ensure_covered(self) -> None:
