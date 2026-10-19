@@ -10,6 +10,7 @@ have: JARVIS_TEST_MEDIA_PYTHON=<that python>. Skipped otherwise. Nothing is down
 
 from __future__ import annotations
 
+import json
 import os
 import struct
 import subprocess
@@ -72,7 +73,7 @@ async def test_images_and_videos_from_the_real_pipelines(tiny_root: Path, tmp_pa
         result = await eng.request("image", {"prompt": "a fox", "width": 96, "height": 64, "out": [str(first)],
                                              "steps": 2, "seed": 1}, progress=progress)
         assert png_size(first) == (96, 64) and result["mode"] == ("cpu8" if offload == "gpu8" else "cpu")
-        assert result["ram_peak"] > 0 and result["ram_usable_min"] >= result["ram_free_min"] > 0
+        assert result["ram_peak"] > 0 and result["ram_free_min"] > 0
         assert [m["phase"] for m in seen][:1] == ["load"] and any(m["phase"] == "generate" for m in seen)
 
         changed = tmp_path / "out" / "b.png"
@@ -106,3 +107,31 @@ async def test_a_bad_request_is_refused_and_the_worker_goes_on(tiny_root: Path, 
     finally:
         await eng.aclose()
 
+
+
+SAME_WEIGHTS = """
+import json, sys, torch
+sys.path.insert(0, sys.argv[2])
+import worker, safetensors.torch
+from diffusers import WanTransformer3DModel as cls
+folder = sys.argv[1]
+plain = cls.from_pretrained(folder, dtype=torch.bfloat16).state_dict()
+safetensors.torch.load_file = worker.read_safetensors
+worker._READ.update(dtype=torch.bfloat16, keep=cls._keep_in_fp32_modules)
+read = cls.from_pretrained(folder, dtype=torch.bfloat16).state_dict()
+print(json.dumps({"same": plain.keys() == read.keys() and all(
+    plain[k].dtype == read[k].dtype and torch.equal(plain[k], read[k]) for k in plain),
+    "fp32": sorted({k for k in read if read[k].dtype == torch.float32})}))
+"""
+
+
+def test_reading_without_a_memory_map_gives_the_same_weights(tiny_root: Path, tmp_path: Path) -> None:
+    folder = tmp_path / "transformer"
+    convert = ("import sys, torch; from diffusers import WanTransformer3DModel as c; "
+               "c.from_pretrained(sys.argv[1]).to(torch.float32).save_pretrained(sys.argv[2])")
+    subprocess.run([MEDIA_PYTHON, "-I", "-c", convert, str(tiny_root / "Wan2.2-TI2V-5B" / "transformer"), str(folder)],
+                   check=True, capture_output=True, timeout=300)          # an fp32 checkpoint, as Wan ships
+    done = subprocess.run([MEDIA_PYTHON, "-I", "-c", SAME_WEIGHTS, str(folder), str(Path(worker_module.__file__).parent)],
+                          check=True, capture_output=True, text=True, timeout=300)
+    answer = json.loads(done.stdout.strip().splitlines()[-1])
+    assert answer["same"] is True and answer["fp32"]                  # the modules Wan keeps in fp32 stay fp32

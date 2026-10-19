@@ -19,8 +19,9 @@ what is made is written only to the paths JARVIS names, inside its own media fol
 Memory: before a model loads, the worker works out from the files' headers how much RAM and graphics memory each
 mode would take (`plan` shows it) and picks the fastest that fits what is free; when none fits it refuses
 ("low_memory") instead of pushing the computer into swapping, and a watch ends the process if free RAM still falls
-below RAM_FLOOR while it works. Both count as free what Windows can take back from this process at once (the model
-files' pages while they are read), which Task Manager shows as in use.
+below RAM_FLOOR while it works. The weights are read a tensor at a time, never through a memory map: on Windows a
+mapped file is charged in full against RAM plus the paging file, and the fp32 checkpoints these models ship (25 GB
+for Z-Image's transformer) would hold all of it while they load.
 
 Only the standard library is imported at the top, so JARVIS's tests can drive the protocol (`serve`) with a
 stand-in backend. The folder names below are the ones `jarvis.media.local` installs to (a test keeps them equal).
@@ -60,7 +61,7 @@ MODES = ("gpu", "gpu8", "model", "model8", "group8")
 GIB = 1 << 30
 HEADROOM = {"image": int(2.5 * GIB), "video": 4 * GIB}     # graphics memory for the work itself, beyond the weights
 RAM_SPARE = 3 * GIB               # RAM left free for Windows and the programs already open
-RAM_FLOOR = 3 * GIB // 2          # below this much free RAM the worker ends itself rather than let the computer stall
+RAM_FLOOR = 2 * GIB               # below this much free RAM the worker ends itself rather than let the computer stall
 LOW_MEMORY_EXIT = 75              # its exit code then, which JARVIS words as "low_memory"
 # How running out of RAM reads: PyTorch's allocator, and Windows when the commit limit (RAM plus the paging file) is
 # reached, which can come before the RAM itself runs out.
@@ -179,11 +180,8 @@ def serve(make_backend: Callable[[], Backend], lines: Iterable[str], out: IO[str
 
 # ============================================================================ memory
 def memory() -> dict[str, int]:
-    """This computer's RAM: free and total bytes. On Windows also how much more it can commit at all, and how much of
-    what this process holds is shared pages ("reclaimable"): mostly the model files read through a memory map while
-    they load. Task Manager counts those as in use, but they are clean copies of files on disk, so Windows takes them
-    back the moment another program needs the room, without writing anything. (On Linux, MemAvailable already counts
-    them as free.)"""
+    """This computer's RAM: free ("available", as Task Manager shows it) and total bytes, and on Windows how much
+    more can be committed at all (RAM and paging file together)."""
     if sys.platform == "win32":
         import ctypes
 
@@ -196,16 +194,13 @@ def memory() -> dict[str, int]:
         status.length = ctypes.sizeof(Status)
         if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             raise OSError("GlobalMemoryStatusEx failed")
-        own = process_memory()
-        reclaimable = max(0, own["set"] - own["private_set"]) if own["private_set"] else 0
-        return {"ram_free": int(status.free), "ram_total": int(status.total), "commit_free": int(status.commit_free),
-                "ram_reclaimable": reclaimable}
+        return {"ram_free": int(status.free), "ram_total": int(status.total), "commit_free": int(status.commit_free)}
     values: dict[str, int] = {}
     with open("/proc/meminfo", encoding="ascii") as fh:
         for line in fh:
             name, _, rest = line.partition(":")
             values[name] = int(rest.split()[0]) * 1024
-    return {"ram_free": values["MemAvailable"], "ram_total": values["MemTotal"], "ram_reclaimable": 0}
+    return {"ram_free": values["MemAvailable"], "ram_total": values["MemTotal"]}
 
 
 @functools.cache
@@ -253,11 +248,6 @@ def process_memory() -> dict[str, int]:
     return {"peak_set": rss.get("VmHWM", 0), "set": rss.get("VmRSS", 0), "private_set": rss.get("RssAnon", 0)}
 
 
-def usable(now: dict[str, int]) -> int:
-    """The RAM another program could have right now: what is free, and what Windows can take back from this one."""
-    return now["ram_free"] + now.get("ram_reclaimable", 0)
-
-
 def ram_peak() -> int:
     """The most RAM this process has held so far (bytes)."""
     return process_memory()["peak_set"]
@@ -265,20 +255,15 @@ def ram_peak() -> int:
 
 class MemoryWatch:
     """Looks at the free RAM twice a second. Remembers the lowest it saw (for the measurements), and if the computer
-    is about to run out, ends this process: whatever it was making is lost, but the computer does not stall.
-
-    "About to run out" counts what Windows can take back from this process at once (the model files' pages, see
-    `memory`) as free: loading reads gigabytes of them, and Task Manager's "available" falls by that much for a
-    while without anything being short."""
+    is about to run out, ends this process: whatever it was making is lost, but the computer does not stall."""
 
     def __init__(self, floor: int = RAM_FLOOR, every: float = 0.5,
                  measure: Callable[[], dict[str, int]] | None = None) -> None:
         self.floor = floor
         self.every = every
         self.measure = measure or memory
-        self.lowest: int | None = None             # the least RAM free, as Task Manager shows it
-        self.lowest_usable: int | None = None      # ... counting what Windows can take back from this process
-        self.usable = 0
+        self.lowest: int | None = None
+        self.free = 0
         self._low = 0
 
     def start(self) -> MemoryWatch:
@@ -286,15 +271,13 @@ class MemoryWatch:
         return self
 
     def reset(self) -> None:
-        self.lowest = self.lowest_usable = None
+        self.lowest = None
 
     def check(self) -> bool:
         """One look. True when free RAM has been below the floor twice running: time to stop."""
-        now = self.measure()
-        free, self.usable = now["ram_free"], usable(now)
-        self.lowest = free if self.lowest is None else min(self.lowest, free)
-        self.lowest_usable = self.usable if self.lowest_usable is None else min(self.lowest_usable, self.usable)
-        self._low = self._low + 1 if self.usable < self.floor else 0
+        self.free = self.measure()["ram_free"]
+        self.lowest = self.free if self.lowest is None else min(self.lowest, self.free)
+        self._low = self._low + 1 if self.free < self.floor else 0
         return self._low >= 2
 
     def _loop(self) -> None:
@@ -304,10 +287,33 @@ class MemoryWatch:
             except Exception:
                 return
             if stop:
-                sys.stderr.write(f"stopping: the computer has only {self.usable / GIB:.1f} GB of RAM free\n")
+                sys.stderr.write(f"stopping: the computer has only {self.free / GIB:.1f} GB of RAM free\n")
                 sys.stderr.flush()
                 os._exit(LOW_MEMORY_EXIT)
             time.sleep(self.every)
+
+
+# What the next weights read turns floating-point tensors into: set around each part's load (see `_build`).
+_READ: dict[str, Any] = {}
+
+
+def read_safetensors(filename: Any, device: Any = "cpu", **_: Any) -> dict[str, Any]:
+    """safetensors.torch.load_file, as diffusers calls it, without the memory map: each tensor is read on its own
+    (pread) and made the dtype the part loads in right away, except in the modules the model keeps in fp32 (the same
+    test diffusers applies). So loading a part holds that part once, in its final dtype, plus one tensor: not the
+    file mapped beside it (on Windows charged in full, and kept alive by any fp32 tensor still pointing into it)."""
+    from safetensors import safe_open
+
+    dtype, keep = _READ.get("dtype"), tuple(_READ.get("keep") or ())
+    out: dict[str, Any] = {}
+    with safe_open(str(filename), framework="pt", device="cpu", backend="pread") as fh:
+        for name in fh.keys():
+            tensor = fh.get_tensor(name)
+            if (dtype is not None and tensor.is_floating_point() and tensor.dtype != dtype
+                    and not any(m in name.split(".") for m in keep)):
+                tensor = tensor.to(dtype)
+            out[name] = tensor if str(device) == "cpu" else tensor.to(device)
+    return out
 
 
 def safetensors_header(path: Path) -> dict[str, Any]:
@@ -445,6 +451,10 @@ class Diffusion:
         self.pipe: Any = None
         self._floor: dict[str, int] = {}          # a mode that ran out of memory is not tried again for that family
         self._translator: tuple[Any, Any] | None = None
+        import safetensors.torch
+
+        safetensors.torch.load_file = read_safetensors    # what diffusers reads checkpoints with (transformers
+                                                          # already reads a tensor at a time on Windows)
 
     # ------------------------------------------------------------------ facts
     def info(self) -> dict[str, Any]:
@@ -480,10 +490,10 @@ class Diffusion:
             raise WorkerError(f"the {family} model is not installed (expected in {folder})", "missing")
         parts = weights(folder)
         now = memory()
-        ram_free, vram_free = usable(now), self._free()
+        ram_free, vram_free = now["ram_free"], self._free()
         plan: dict[str, Any] = {
             "family": family, "loaded": self.family, "ram_free": ram_free, "vram_free": vram_free,
-            "ram_reclaimable": now.get("ram_reclaimable", 0), "commit_free": now.get("commit_free"),
+            "commit_free": now.get("commit_free"),
             "parts": {name: {"numbers": total, "kept_bf16": kept} for name, (total, kept) in parts.items()},
             "needs": {mode: dict(zip(("ram", "vram"), needs(family, parts, mode), strict=True)) for mode in MODES},
             "ram_spare": RAM_SPARE}
@@ -534,7 +544,7 @@ class Diffusion:
         progress("load", 0.0)
         parts = weights(folder)
         if self.cuda:
-            mode = choose(family, parts, ram_free=usable(memory()), vram_free=self._free(),
+            mode = choose(family, parts, ram_free=memory()["ram_free"], vram_free=self._free(),
                           offload=self.offload, floor=self._floor.get(family, 0))
         else:
             mode = "cpu8" if self.offload.endswith("8") else "cpu"          # tests: the same code, on the processor
@@ -560,8 +570,11 @@ class Diffusion:
             module_cls = getattr(importlib.import_module(library), class_name)
             # Wan's video decoder is kept in full precision, as its makers advise.
             dtype = torch.float32 if (family == "video" and name == "vae") else self.dtype
-            module = module_cls.from_pretrained(str(folder / name),
-                                                dtype=dtype)
+            _READ.update(dtype=dtype, keep=getattr(module_cls, "_keep_in_fp32_modules", None))
+            try:
+                module = module_cls.from_pretrained(str(folder / name), dtype=dtype)
+            finally:
+                _READ.clear()
             if eight and name in EIGHT_BIT_PARTS:
                 self._eight_bit(module)
             if on_card:
@@ -634,7 +647,6 @@ class Diffusion:
             result["ram_peak"] = ram_peak()
             if self.watch is not None and self.watch.lowest is not None:
                 result["ram_free_min"] = self.watch.lowest
-                result["ram_usable_min"] = self.watch.lowest_usable
             return result
 
     def _generator(self, seed: int) -> Any:

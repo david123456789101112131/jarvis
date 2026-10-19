@@ -257,27 +257,25 @@ class TestMemory:
         assert choose("video", WAN, ram_free=int(19.2 * GIB), vram_free=int(14.8 * GIB)) == "model8"
         assert choose("image", Z_IMAGE, ram_free=int(19.2 * GIB), vram_free=int(14.8 * GIB)) == "gpu8"
 
-    def test_the_watch_counts_the_model_files_windows_can_take_back(self) -> None:
-        readings = iter([{"ram_free": 1 * GIB, "ram_reclaimable": 5 * GIB},     # loading: the files' pages
-                         {"ram_free": 1 * GIB, "ram_reclaimable": 5 * GIB},
-                         {"ram_free": 4 * GIB, "ram_reclaimable": 0},
-                         {"ram_free": RAM_FLOOR - 1, "ram_reclaimable": 0},       # really short, once ...
-                         {"ram_free": RAM_FLOOR + GIB, "ram_reclaimable": 0},     # ... then not
-                         {"ram_free": RAM_FLOOR - 1, "ram_reclaimable": 0},
-                         {"ram_free": RAM_FLOOR - 2, "ram_reclaimable": 0}])      # twice running: stop
+    def test_the_watch_stops_the_worker_when_ram_stays_short(self) -> None:
+        readings = iter([{"ram_free": 6 * GIB}, {"ram_free": 4 * GIB},
+                         {"ram_free": RAM_FLOOR - 1},           # short once ...
+                         {"ram_free": RAM_FLOOR + GIB},         # ... then not
+                         {"ram_free": RAM_FLOOR - 1},
+                         {"ram_free": RAM_FLOOR - 2}])          # twice running: stop
         watch = MemoryWatch(measure=lambda: next(readings))
-        assert [watch.check() for _ in range(6)] == [False] * 6
-        assert watch.lowest == 1 * GIB and watch.lowest_usable == RAM_FLOOR - 1    # as Task Manager shows it, and not
-        assert watch.check() is True
+        assert [watch.check() for _ in range(5)] == [False] * 5
+        assert watch.lowest == RAM_FLOOR - 1
+        assert watch.check() is True and watch.lowest == RAM_FLOOR - 2
         watch.reset()
-        assert watch.lowest is None and watch.lowest_usable is None
+        assert watch.lowest is None
 
     def test_this_process_memory_is_measured(self) -> None:
         own = process_memory()
         assert own["peak_set"] >= own["set"] > 0 and 0 < own["private_set"] <= own["set"]
         assert worker_module.ram_peak() >= own["set"]
         now = worker_module.memory()
-        assert now["ram_free"] > 0 and worker_module.usable(now) >= now["ram_free"]
+        assert 0 < now["ram_free"] <= now["ram_total"]
 
     def test_the_refusal_in_the_users_words(self) -> None:
         exc = LocalMediaError("x", "low_memory", {"need_ram": 18 * GIB, "free_ram": int(9.6 * GIB),
