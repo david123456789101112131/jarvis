@@ -1,9 +1,10 @@
 """Turns on the graphics card for JARVIS's big local models.
 
-Computer control (the Holo model, about 12 GB) and image and video creation (Z-Image-Turbo or Wan 2.2, up to about
-14 GB) do not fit on a 16 GB card together, so before one loads, the others let go of the card: each idle one stops
-its model. A model that is in the middle of work is never stopped for another; `take` names it instead and the
-caller says the card is busy. Speech recognition is small (about 1 GB) and stays.
+Computer control (the Holo model, about 12 GB), image and video creation (Z-Image-Turbo or Wan 2.2, up to about
+14 GB) and the chat model (Gemma 4 12B, about 8 GB) do not fit on a 16 GB card together, so before one loads, the
+others let go of the card: each idle one stops its model. A model that is in the middle of work is never stopped for
+another; `take` names it instead and the caller says the card is busy. Speech recognition is small (about 1 GB) and
+stays.
 """
 
 from __future__ import annotations
@@ -14,6 +15,13 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 log = logging.getLogger(__name__)
+
+# What each user is doing while it holds the card, for "the graphics card is busy ...".
+DOING = {"computer": "using the computer", "media": "making an image or a video", "chat": "answering"}
+
+
+def busy_text(name: str) -> str:
+    return f"the graphics card is busy {DOING.get(name, f'({name})')}; try again when it is done."
 
 
 @dataclass
@@ -43,4 +51,4 @@ class GpuTurns:
         return None
 
 
-__all__ = ["GpuTurns"]
+__all__ = ["DOING", "GpuTurns", "busy_text"]

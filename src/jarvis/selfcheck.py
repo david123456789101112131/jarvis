@@ -73,7 +73,7 @@ async def run_checks(settings: Settings, paths: AppPaths, *, full: bool = False,
         ("interface", _interface(report)),
         ("desktop", _desktop(report)),
         ("keys", _keys(report, secrets)),
-        ("ai", _ai(report, settings, secrets)),
+        ("ai", _ai(report, settings, paths, secrets)),
         ("tools", _tools(report)),
         ("internet", _internet(report, settings)),
         ("voice", _voice(report, settings, paths, secrets, run_all=voice)),
@@ -252,10 +252,13 @@ async def _keys(report: CheckReport, secrets: SecretStore) -> None:
     report.add("keys", "ok", detail, configured=configured)
 
 
-async def _ai(report: CheckReport, settings: Settings, secrets: SecretStore) -> None:
+async def _ai(report: CheckReport, settings: Settings, paths: AppPaths, secrets: SecretStore) -> None:
+    from jarvis.ai.local_server import attach
     from jarvis.ai.router import ProviderRouter
+    from jarvis.security.process import ProcessRegistry
 
     router = ProviderRouter.from_settings(settings.ai, secrets)
+    attach(router, settings, paths.models, ProcessRegistry(), paths.logs)        # its files only: nothing starts
     try:
         st = router.status()
     finally:
@@ -267,10 +270,11 @@ async def _ai(report: CheckReport, settings: Settings, secrets: SecretStore) -> 
                   + ("; Anthropic server-side fallbacks on" if st.get("fallbacks") else ""))
         report.add("ai", "ok", detail, **st)
     else:
-        report.add("ai", "warn", "no AI provider: commands, projects and plans work; open conversation and "
+        report.add("ai", "warn", "no AI model: commands, projects and plans work; open conversation and "
                    "AI-written code do not",
-                   hints=["Add an xAI (Grok) or Anthropic API key: `jarvis keys set XAI_API_KEY` or "
-                          "`jarvis keys set ANTHROPIC_API_KEY`, or in JARVIS: Settings > API keys."], **st)
+                   hints=["Install the free model that runs on this computer: `jarvis chat install` (about "
+                          "7 GB). A paid one (Grok, Claude) is used only when you ask for it, with its key in "
+                          "Settings > API keys."], **st)
 
 
 async def _tools(report: CheckReport) -> None:
@@ -400,7 +404,7 @@ async def _media(report: CheckReport, settings: Settings, paths: AppPaths) -> No
         return
     free = ""
     with contextlib.suppress(Exception):
-        free = f"; {memory()['ram_free'] / 2**30:.1f} GB of RAM free now (a model needs about 15 GB free to load)"
+        free = f"; {memory()['ram_free'] / 2**30:.1f} GB of RAM free now (a model needs about 6 GB free to load)"
     report.add("media", "ok", f"images and videos are made on this computer, for free (models in {root}"
                               f"{'' if have['translate'] else ', without the Hebrew translator'}){free}")
 

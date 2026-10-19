@@ -98,10 +98,23 @@ class XaiSettings(_Section):
 
 
 class LocalModelSettings(_Section):
-    enabled: bool = False
-    base_url: str = "http://127.0.0.1:11434/v1"
-    model: str = "llama3.1"
+    """The model JARVIS talks, plans and works with on this computer: free, and nothing leaves the computer. By
+    default JARVIS runs its own (Gemma 4 12B through llama.cpp, installed with `jarvis chat install`); with
+    `base_url` set it uses an OpenAI-compatible server that already runs (Ollama, LM Studio, another llama-server)."""
+
+    enabled: bool = True
+    # "" = JARVIS's own server; otherwise an OpenAI-compatible endpoint, e.g. http://127.0.0.1:11434/v1 (Ollama).
+    base_url: str = ""
+    model: str = "gemma-4-12b"
     timeout_s: float = 300.0
+    # Where the model lives ("" = a "chat" folder beside computer control's models, else <cache>/models/chat).
+    models_dir: str = ""
+    port: int = 0                         # for JARVIS's own server (0 = any free port)
+    gpu_layers: int = -1                  # model layers on the graphics card (-1 = as many as fit)
+    context: int = 32768                  # tokens, shared by the requests answered at once
+    parallel: int = 2                     # requests answered at once (the agents can ask together)
+    idle_minutes: float = 30.0            # the server stops after this long unused (frees the graphics card)
+    thinking: bool = False                # the model reasons privately before answering: better, much slower
 
 
 PROVIDER_NAMES = ("anthropic", "xai", "openai", "local")

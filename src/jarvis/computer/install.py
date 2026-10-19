@@ -124,16 +124,16 @@ def pick_asset(assets: list[dict], *must: str) -> dict | None:
     return None
 
 
-def hf_tree(client: httpx.Client, revision: str) -> list[dict]:
-    resp = client.get(f"https://huggingface.co/api/models/{HF_REPO}/tree/{revision}?recursive=1")
+def hf_tree(client: httpx.Client, revision: str, repo: str = HF_REPO) -> list[dict]:
+    resp = client.get(f"https://huggingface.co/api/models/{repo}/tree/{revision}?recursive=1")
     resp.raise_for_status()
     return [e for e in resp.json() if e.get("type") == "file"]
 
 
 # ------------------------------------------------------------------------------------- the steps
-def install_llama(client: httpx.Client, root: Path, progress: Progress) -> list[str]:
-    """Download and extract the pinned Windows CUDA build of llama.cpp and its CUDA runtime, plus the source
-    (its `convert_hf_to_gguf.py` does the conversion)."""
+def install_llama(client: httpx.Client, root: Path, progress: Progress, *, source: bool = True) -> list[str]:
+    """Download and extract the pinned Windows CUDA build of llama.cpp and its CUDA runtime, plus (`source`) the
+    source, whose `convert_hf_to_gguf.py` does the conversion."""
     got: list[str] = []
     assets = github_release(client, LLAMA_TAG)
     build = pick_asset(assets, "bin-win-cuda", "x64") or pick_asset(assets, "bin-win-cuda")
@@ -147,6 +147,8 @@ def install_llama(client: httpx.Client, root: Path, progress: Progress) -> list[
                  progress=progress)
         _extract(zip_path, dest, progress)
         got.append(str(asset["name"]))
+    if not source:
+        return got
     src_zip = dest / f"source-{LLAMA_TAG}.zip"
     download(client, f"https://github.com/{LLAMA_REPO}/archive/refs/tags/{LLAMA_TAG}.zip", src_zip, progress=progress)
     _extract(src_zip, root / "llama.cpp" / f"src-{LLAMA_TAG}", progress)

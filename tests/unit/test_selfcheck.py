@@ -96,8 +96,21 @@ async def test_without_an_ai_key_it_says_what_still_works(setup) -> None:
     settings, paths = setup
     report = await run_checks(settings, paths)
     ai = next(c for c in report["checks"] if c["name"] == "ai")
-    assert ai["status"] == "warn" and "jarvis keys set ANTHROPIC_API_KEY" in " ".join(ai["data"]["hints"])
+    assert ai["status"] == "warn" and "jarvis chat install" in " ".join(ai["data"]["hints"])
     assert report["ok"] is (not any(c["status"] == "fail" for c in report["checks"]))
+
+
+async def test_the_free_chat_model_answers_once_installed(setup, tmp_path) -> None:
+    from jarvis.computer.server import EXE_NAME
+
+    settings, paths = setup
+    settings.computer.models_dir = str(tmp_path / "JARVIS-models")
+    (tmp_path / "JARVIS-models" / "llama.cpp").mkdir(parents=True)          # computer control's runtime ...
+    (tmp_path / "JARVIS-models" / "llama.cpp" / EXE_NAME).write_bytes(b"")
+    (tmp_path / "JARVIS-models" / "chat" / "gguf").mkdir(parents=True)      # ... and the model beside it
+    (tmp_path / "JARVIS-models" / "chat" / "gguf" / "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf").write_bytes(b"")
+    ai = next(c for c in (await run_checks(settings, paths))["checks"] if c["name"] == "ai")
+    assert ai["status"] == "ok" and "answers with: local" in ai["detail"], ai
 
 
 async def test_a_crashing_check_is_a_failed_line_not_a_crash() -> None:

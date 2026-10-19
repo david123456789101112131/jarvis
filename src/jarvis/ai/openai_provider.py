@@ -9,13 +9,16 @@ import hashlib
 import json
 import logging
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jarvis.ai.base import AIProvider
 from jarvis.ai.types import AIMessage, AIResponse, CompletionRequest, Refusal, ToolCall, Usage, strict_schema
 from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable
 from jarvis.config.settings import LocalModelSettings, OpenAISettings, XaiSettings
 from jarvis.security.redaction import default_redactor
+
+if TYPE_CHECKING:
+    from jarvis.ai.local_server import ChatServer
 
 log = logging.getLogger(__name__)
 
@@ -321,20 +324,80 @@ class XaiProvider(OpenAICompatibleProvider):
 
 
 class LocalModelProvider(OpenAICompatibleProvider):
-    """A model served on this computer through an OpenAI-compatible endpoint (e.g. Ollama)."""
+    """A model on this computer: JARVIS's own llama-server (`server`, see `jarvis.ai.local_server`), started for
+    the first request; or, with `base_url` set, an OpenAI-compatible server that already runs (e.g. Ollama).
+
+    Free, so the router uses it without asking. JARVIS's own server constrains a JSON reply to the schema itself
+    (llama.cpp grammars); another server gets JSON mode with the schema in the prompt."""
 
     name = "local"
     json_mode = "json_object"
     max_tokens_param = "max_tokens"
 
-    def __init__(self, settings: LocalModelSettings, *, client_factory: Callable[[str], Any] | None = None) -> None:
+    def __init__(self, settings: LocalModelSettings, *, client_factory: Callable[[str], Any] | None = None,
+                 server: ChatServer | None = None) -> None:
         self.settings = settings
-        super().__init__(model=settings.model, base_url=settings.base_url, api_key=self._local_key,
+        self.server = server
+        self.in_flight = 0                    # requests under way: the graphics card is not taken from them
+        self._loose_json = False              # the own server refused a schema once: JSON mode from then on
+        super().__init__(model=settings.model, base_url=settings.base_url or None, api_key=self._local_key,
                          timeout_s=settings.timeout_s, max_retries=1, client_factory=client_factory)
 
+    @property
+    def own(self) -> bool:
+        """JARVIS runs the server itself (no `base_url`)."""
+        return not self.settings.base_url and self.server is not None
+
     def _local_key(self) -> str | None:
-        # Local servers ignore the key, but the client library requires one.
-        return "local" if self.settings.enabled else None
+        if not self.settings.enabled:
+            return None
+        if self.own:
+            assert self.server is not None
+            return self.server.api_key or None
+        return "local"        # other local servers ignore the key, but the client library requires one
 
     def available(self) -> bool:
-        return bool(self.settings.enabled and self.settings.base_url)
+        if not self.settings.enabled:
+            return False
+        if self.settings.base_url:
+            return True
+        return self.server is not None and self.server.problem() is None
+
+    def json_mode_for(self, model: str) -> str:
+        return "strict" if self.own and not self._loose_json else self.json_mode
+
+    def busy(self) -> bool:
+        return self.in_flight > 0
+
+    async def release_gpu(self) -> None:
+        """Another local model needs the graphics card: stop the idle server (the next request starts it)."""
+        if self.server is not None and not self.busy():
+            await self.server.stop()
+
+    async def complete(self, request: CompletionRequest) -> AIResponse:
+        if not self.own:
+            return await super().complete(request)
+        assert self.server is not None
+        self.in_flight += 1
+        try:
+            try:
+                await self.server.ensure_running()
+            except RuntimeError as exc:
+                raise ProviderUnavailable(f"The local model could not start: {exc}",
+                                          details={"code": "local_down"}) from exc
+            self._base_url = f"{self.server.base_url}/v1"
+            try:
+                return await super().complete(request)
+            except ProviderError as exc:
+                schema_refused = (request.json_schema is not None and not self._loose_json
+                                  and exc.details.get("status") in (400, 500)
+                                  and any(w in exc.message.lower() for w in ("schema", "grammar")))
+                if not schema_refused:
+                    raise
+                self._loose_json = True
+                self.errors -= 1
+                log.info("The local model refused a JSON schema; using JSON mode instead")
+                return await super().complete(request)
+        finally:
+            self.in_flight -= 1
+            self.server.touch()

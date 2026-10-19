@@ -58,6 +58,7 @@ from jarvis.tools.fs import RUNS_CODE_EXT
 
 if TYPE_CHECKING:
     from jarvis.agents.base import BaseAgent
+    from jarvis.ai.local_server import ChatServer
     from jarvis.host.base import HostAdapter
     from jarvis.orchestration.task import JarvisTask
     from jarvis.permissions.confirm import ConfirmationRequest
@@ -197,6 +198,7 @@ class JarvisApp:
         self.media = MediaService(self)
         self.gpu.register("computer", busy=self.computer.busy, release=self.computer.release_gpu)
         self.gpu.register("media", busy=self.media.engine.busy, release=self.media.engine.stop)
+        self.chat_server = self._chat_server()
         self.apps = AppsService(self)
         self.privacy = PrivacyService(self)
 
@@ -225,6 +227,27 @@ class JarvisApp:
         self._started = False
         self._stopping = False
         self._loop: asyncio.AbstractEventLoop | None = None
+
+    def _chat_server(self) -> ChatServer | None:
+        """JARVIS's own chat model (`ai.local`), when the router has the local provider and no other server is
+        named: it takes its turn on the graphics card like computer control and image and video creation."""
+        from jarvis.ai.local_server import attach
+
+        server = attach(self.router, self.settings, self.paths.models, self.services.processes, self.paths.logs)
+        if server is not None:
+            local = self.router.providers["local"]
+            server.gpu = self.gpu
+            self.gpu.register("chat", busy=local.busy, release=local.release_gpu)   # type: ignore[attr-defined]
+        return server
+
+    async def _chat_idle_loop(self) -> None:
+        """Stop the chat model after `ai.local.idle_minutes` unused: it frees about 9 GB of the graphics card."""
+        local = self.router.providers.get("local")
+        while self.chat_server is not None:
+            await asyncio.sleep(60)
+            if not (local is not None and local.busy()):     # type: ignore[attr-defined]
+                with contextlib.suppress(Exception):
+                    await self.chat_server.stop_if_idle()
 
     # ================================================================== properties
     def _mode(self) -> Mode:
@@ -272,6 +295,8 @@ class JarvisApp:
         if self.serve_api:
             await self._start_server()
         self.spawn(self._monitor_loop(), "system-monitor")
+        if self.chat_server is not None:
+            self.spawn(self._chat_idle_loop(), "chat-idle")
         self.metrics.record("app.start", (time.monotonic() - self.started_at) * 1000)
         await self.activity.log(t(self.lang, f"JARVIS {__version__} פעיל", f"JARVIS {__version__} is online")
                                 + (f" ({self.url})" if self.server else ""), source="JARVIS", level="success",
@@ -292,6 +317,9 @@ class JarvisApp:
                 await service.aclose()
         with contextlib.suppress(Exception):
             await self.computer.aclose()
+        if self.chat_server is not None:
+            with contextlib.suppress(Exception):
+                await self.chat_server.stop()
         with contextlib.suppress(Exception):
             await self.core.shutdown()
         with contextlib.suppress(Exception):

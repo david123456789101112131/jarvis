@@ -10,11 +10,11 @@ command center.
 ## התחלה מהירה
 
 **מה צריך:** Windows 10 או 11 (64 ביט), אינטרנט בזמן ההתקנה, ובערך 3GB פנויים בדיסק (כולל מודלי הדיבור).
-מפתח AI אינו חובה: בלעדיו פקודות, פרויקטים ותוכניות עובדים, ואיתו JARVIS מבין שיחה חופשית וכותב קוד
-מותאם. חמשת הסוכנים עובדים עם Grok של xAI כשיש מפתח שלו, ו-JARVIS עצמו עם Claude; כל אחד מהם ממשיך עם
-הספק השני כשהראשון לא זמין. כל בקשה ל-AI בענן עולה כסף, ולכן JARVIS משתמש בו רק כשאומרים לו: "תשתמש בגרוק"
-בתוך הבקשה (למשל "תשתמש בגרוק ותכתוב לי שיר"), או "כן" כשהוא שואל "להשתמש ב-Grok?". אחרי זה Grok נשאר
-בשיחה עד שקט של שתי דקות, ו"בלי גרוק" מפסיק אותו. אפשר לבטל את הכלל ב**הגדרות ← ספקי AI**.
+שיחה חופשית, תכנון וחמשת הסוכנים עובדים בחינם על המחשב עצמו, עם Gemma 4 של Google בכרטיס הגרפי:
+`jarvis chat install` (כ־7GB; כרטיס NVIDIA עם 12GB ומעלה). שום דבר לא יוצא מהמחשב. בלי מודל מקומי ובלי
+מפתח, פקודות, פרויקטים ותוכניות עדיין עובדים. AI בענן (Grok, Claude) עולה כסף על כל בקשה, ולכן JARVIS
+משתמש בו רק כשאומרים לו: "תשתמש בגרוק" בתוך הבקשה (למשל "תשתמש בגרוק ותכתוב לי שיר"), או "כן" כשהוא שואל
+"להשתמש ב-Grok?". אחרי זה Grok נשאר בשיחה עד שקט של שתי דקות, ו"בלי גרוק" מפסיק אותו.
 
 ### התקנה מתיקיית הקוד
 
@@ -243,6 +243,8 @@ The installed app has the same commands in `jarvis-cli.exe`.
 | `jarvis voice-test` | Microphone, speakers, wake word and speech recognition |
 | `jarvis computer install [--dir D] [--adopt D] [--no-convert]` | Download/convert the local computer-control model (Holo3.1-9B), or adopt a folder already downloaded |
 | `jarvis computer status` | Is the computer-control model installed, and where |
+| `jarvis chat install [--dir D]` | Download the free local chat model (Gemma 4 12B, about 7 GB) JARVIS talks, plans and works with |
+| `jarvis chat status` | Is the chat model installed, and where |
 | `jarvis paths` | Where JARVIS keeps its data, logs, workspace and projects |
 | `jarvis autostart` | Does JARVIS start with Windows? The setting and the sign-in entry |
 
@@ -262,8 +264,12 @@ Options: `--no-voice`, `--port N` (default 8765, the next free port if busy), `-
 - Any setting can be overridden with an environment variable `JARVIS__<SECTION>__<KEY>`, for example
   `JARVIS__VOICE__ENABLED=false` or `JARVIS__AI__PROVIDER=openai`.
 - `JARVIS_HOME=<folder>` keeps everything (data, logs, cache, workspace) under one folder: portable mode.
+- The local model (`ai.local`): JARVIS runs its own llama.cpp server with Gemma 4 12B (QAT, 4-bit) on
+  127.0.0.1 with a random key, started at the first request and stopped after `idle_minutes` unused or when
+  computer control or image/video creation needs the graphics card; `base_url` points it at another
+  OpenAI-compatible server (Ollama, LM Studio) instead. It is free, so it answers without asking.
 - AI providers: Anthropic Claude (default model `claude-opus-5-5`, with Anthropic's server-side fallbacks on),
-  xAI Grok (`grok-4.7`), OpenAI, or a local OpenAI-compatible server such as Ollama. The five agents ask the
+  xAI Grok (`grok-4.7`), OpenAI, or the local model. The five agents ask the
   provider set for them in `ai.agent_providers` first (Grok by default) and fall back to JARVIS's order,
   Anthropic → xAI → OpenAI → local, which JARVIS's own calls use. With `ai.cloud_only_when_told` (on by default)
   a cloud provider is used only when the user names it in the request ("use Grok ...", "תשתמש בגרוק ...") or says
@@ -299,7 +305,7 @@ src/jarvis/
   security/       path and network guards, secret store, redaction, code checks
   memory/         short-term, long-term and project memory (SQLite)
   voice/          wake word, speech recognition, speech synthesis
-  ai/             Anthropic, xAI, OpenAI and local providers
+  ai/             Anthropic, xAI, OpenAI and local providers; local_server/local_install: the own chat model
   devmode/        the code screen: project inspection, AI proposals, review, apply and undo, test runs
   media/          image and video creation on this computer (local/: the worker, its installer and bench), Grok
                   Imagine when chosen, and the marked demonstration

@@ -75,6 +75,9 @@ def build_parser() -> argparse.ArgumentParser:
     comp.add_argument("--dir", help="where to install (default: JARVIS's models folder)")
     comp.add_argument("--adopt", help="use a model folder that is already downloaded, without downloading")
     comp.add_argument("--no-convert", action="store_true", help="download only, skip the GGUF conversion")
+    chat = sub.add_parser("chat", help="the free model JARVIS talks, plans and works with on this computer")
+    chat.add_argument("action", nargs="?", choices=["install", "status"], default="status")
+    chat.add_argument("--dir", help="where to install (default: a chat folder beside the computer-control model)")
     med = sub.add_parser("media", help="the free models that make images and videos on this computer")
     med.add_argument("action", nargs="?", choices=["install", "status", "bench"], default="status")
     med.add_argument("--dir", help="where to install (default: JARVIS's models folder)")
@@ -123,6 +126,8 @@ def main(argv: list[str] | None = None) -> int:
         return check(settings, paths, full=args.full, voice=args.voice, as_json=args.json)
     if command == "computer":
         return _computer(settings, paths, args)
+    if command == "chat":
+        return _chat(settings, paths, args)
     if command == "media":
         return _media(settings, paths, args)
     if command in ("open", "say", "status", "stop"):
@@ -271,6 +276,45 @@ def _computer(settings: Any, paths: Any, args: argparse.Namespace) -> int:
         print("Done. JARVIS can now control the computer (it asks before each action; Esc twice stops it).")
         return EXIT_OK
     print("The model folder is still incomplete; see the messages above.", file=sys.stderr)
+    return EXIT_ERROR
+
+
+def _chat(settings: Any, paths: Any, args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from jarvis.ai import local_install as inst
+    from jarvis.ai.local_server import ChatFiles, chat_root
+    from jarvis.config.loader import save_settings, update_settings
+
+    local = settings.ai.local
+    computer = Path(settings.computer.models_dir) if settings.computer.models_dir else paths.models / "computer"
+    default_root = chat_root(settings, paths.models)
+    if args.action == "status":
+        print(f"Model folder: {default_root}")
+        if local.base_url:
+            print(f"In use: the server at {local.base_url} (model {local.model})")
+            return EXIT_OK
+        problem = ChatFiles(default_root, computer).problem()
+        print("Status: ready (free, on this computer)." if problem is None else f"Not installed yet: {problem}")
+        if not local.enabled:
+            print("It is turned off in the settings (ai.local.enabled).")
+        return EXIT_OK
+
+    root = Path(args.dir).expanduser() if args.dir else default_root
+    try:
+        result = inst.install(root, runtimes=(computer,), progress=lambda m: print(m, flush=True))
+    except (OSError, RuntimeError) as exc:
+        print(f"Install failed: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    if args.dir:                                       # remember where the model lives, for every launch
+        save_settings(update_settings(settings, {"ai": {"local": {"models_dir": str(root)}}}))
+        print(f"JARVIS will use the model in {root}.")
+    for note in result.notes:
+        print(f"Note: {note}")
+    if result.ok:
+        print("Done. JARVIS now talks, plans and works with this model, for free; Grok only when you ask for it.")
+        return EXIT_OK
+    print("The chat model folder is still incomplete; see the messages above.", file=sys.stderr)
     return EXIT_ERROR
 
 
