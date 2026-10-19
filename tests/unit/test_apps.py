@@ -23,7 +23,7 @@ from jarvis.integrations.apps import AppsRequestError, AppsService
 from jarvis.jobs import Job, JobManager
 from jarvis.tools.apps import OpenAppTool, OpenUrlTool, RunningAppsTool
 from jarvis.tools.computer import ComputerActTool
-from jarvis.tools.step_tools import STEP_TOOLS, ScreenStepParams, changed, matches
+from jarvis.tools.step_tools import STEP_TOOLS, ScreenStepParams, changed, describe_action, matches
 
 PNG = b"\x89PNG-fake-pixels-of-the-screen"
 INPUT = ("click", "type", "press_keys", "scroll", "drag")
@@ -627,6 +627,16 @@ class TestStep:
         assert changed(params, _target(element="Delete", control="button")) == "element"
         assert changed(params, _target(hwnd=101, element="Save", control="button")) == "window"
         assert changed(params, _target(element="Save", control="button", password=True)) == "element"
+
+    def test_the_step_in_hebrew_names_the_window_the_way_hebrew_does(self) -> None:
+        click = {"action": "click", "x": 1, "y": 1}
+        assert describe_action(click, _target(element="Save"), "he") == "ללחוץ על 'Save' ב-Untitled - Notepad"
+        assert describe_action(click, _target(title="מסמך1 - Word"), "he") == "ללחוץ על המקום הזה במסמך1 - Word"
+        assert describe_action({"action": "scroll"}, _target(title="", process="", class_name="Progman"),
+                               "he") == "לגלול למטה בשולחן העבודה"
+        assert describe_action({"action": "press_keys", "keys": "ctrl+s"}, _target(title="", process=""),
+                               "he") == "ללחוץ ctrl+s במסך"
+        assert describe_action(click, _target(element="Save"), "en") == "Click 'Save' in Untitled - Notepad"
 
     async def test_a_no_does_nothing(self, make: Any) -> None:
         env = make(holo=FakeHolo(steps=[_click()]))

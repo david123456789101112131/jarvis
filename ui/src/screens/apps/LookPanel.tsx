@@ -118,8 +118,8 @@ export function Seen({ look }: { look: ScreenLook }) {
       {look.description ? (
         <div className="apps-seen__desc">
           <span className="job__label">{t('apps.look.description')}</span>
-          <p data-testid="apps-seen-description">
-            <BidiText text={look.description} />
+          <p dir="auto" data-testid="apps-seen-description">
+            {look.description}
           </p>
         </div>
       ) : null}

@@ -365,29 +365,37 @@ def preview(verdict: policy.Verdict, words: str, lang: str) -> str | None:
     return line
 
 
+def _in_he(where: str) -> str:
+    """Hebrew "in <window>": בשולחן העבודה, במסך, ב-Untitled - Notepad (a hyphen before a non-Hebrew name)."""
+    if where == "המסך":
+        return "במסך"
+    return f"ב{where}" if "\u0590" <= where[:1] <= "\u05ff" else f"ב-{where}"
+
+
 def describe_action(action: dict[str, Any], target: Target, lang: str) -> str:
     """One proposed action in words, from what Windows reports is there (the model's words only as a fallback)."""
     a = action.get("action", "")
     where = policy.window_label(target, lang)
+    within = _in_he(where)
     what = plain(target.element) or str(action.get("element", "")).strip()
     thing = f" '{what}'" if what else ""
     if a in ("click", "double_click", "right_click"):
         he = {"click": "ללחוץ על", "double_click": "ללחוץ פעמיים על", "right_click": "ללחוץ לחיצה ימנית על"}[a]
         en = {"click": "Click", "double_click": "Double-click", "right_click": "Right-click"}[a]
-        return t(lang, f"{he}{thing or ' המקום הזה'} ב{where}", f"{en}{thing or ' that spot'} in {where}")
+        return t(lang, f"{he}{thing or ' המקום הזה'} {within}", f"{en}{thing or ' that spot'} in {where}")
     if a == "type":
         text = default_redactor().redact_text(str(action.get("text", "")))
         shown = text if len(text) <= 80 else text[:79] + "…"
         tail = t(lang, " וללחוץ Enter", " and press Enter") if action.get("press_enter") else ""
-        return t(lang, f"להקליד \"{shown}\" ב{where}{tail}", f"Type \"{shown}\" in {where}{tail}")
+        return t(lang, f"להקליד \"{shown}\" {within}{tail}", f"Type \"{shown}\" in {where}{tail}")
     if a == "press_keys":
-        return t(lang, f"ללחוץ {action.get('keys', '')} ב{where}", f"Press {action.get('keys', '')} in {where}")
+        return t(lang, f"ללחוץ {action.get('keys', '')} {within}", f"Press {action.get('keys', '')} in {where}")
     if a == "scroll":
         d = str(action.get("direction", "down"))
         he_dir = {"up": "למעלה", "down": "למטה", "left": "שמאלה", "right": "ימינה"}.get(d, d)
-        return t(lang, f"לגלול {he_dir} ב{where}", f"Scroll {d} in {where}")
+        return t(lang, f"לגלול {he_dir} {within}", f"Scroll {d} in {where}")
     if a == "drag":
-        return t(lang, f"לגרור{thing} ב{where}", f"Drag{thing} in {where}")
+        return t(lang, f"לגרור{thing} {within}", f"Drag{thing} in {where}")
     if a == "open_app":
         return t(lang, f"לפתוח את {action.get('name', '')}", f"Open {action.get('name', '')}")
     if a == "goto":

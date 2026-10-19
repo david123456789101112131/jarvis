@@ -166,8 +166,8 @@ export function SuggestionCard({ id, proposal, step, gates, onDo, doing, onDismi
       ) : (
         <div className="apps-suggestion__answer">
           <span className="job__label">{t('apps.suggestion.answer')}</span>
-          <p data-testid="apps-suggestion-answer">
-            <BidiText text={proposal.answer ?? ''} />
+          <p dir="auto" data-testid="apps-suggestion-answer">
+            {proposal.answer ?? ''}
           </p>
         </div>
       )}
