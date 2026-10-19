@@ -1,0 +1,470 @@
+/* The work areas (code, images, video, apps) and the hub: layout, the job card, the file picker,
+   the "not available" note and the speed table. */
+
+/* ------------------------------------------------------------------ area layout */
+.area {
+  display: grid;
+  gap: var(--s4);
+  align-content: start;
+  min-height: 0;
+}
+
+.area__cols {
+  display: grid;
+  grid-template-columns: minmax(320px, 440px) minmax(0, 1fr);
+  gap: var(--s4);
+  align-items: start;
+  min-height: 0;
+}
+
+@media (max-width: 1280px) {
+  .area__cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.area__stack {
+  display: grid;
+  gap: var(--s3);
+  align-content: start;
+  min-width: 0;
+}
+
+.field {
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.field__label {
+  font-size: 12px;
+  color: var(--text-2);
+  letter-spacing: 0.02em;
+}
+
+.field__hint {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  align-items: end;
+}
+
+.textarea {
+  width: 100%;
+  min-height: 96px;
+  resize: vertical;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: var(--surface-0);
+  color: var(--text-0);
+  font: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.textarea:focus {
+  outline: none;
+  border-color: var(--line-strong);
+  box-shadow: var(--glow-sm);
+}
+
+.select {
+  padding: 7px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: var(--surface-solid);
+  color: var(--text-0);
+  font: inherit;
+  font-size: 13px;
+}
+
+.actions-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.mono-block {
+  margin: 0;
+  padding: 10px 12px;
+  max-height: 420px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.28);
+  color: var(--text-1);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  direction: ltr;
+  text-align: left;
+}
+
+/* ------------------------------------------------------------------ hub */
+.hub {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: var(--s3);
+  min-height: 0;
+  height: 100%;
+}
+
+.hub__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  padding: 4px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface-0);
+  width: fit-content;
+}
+
+.hub__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--text-2);
+  font-size: 13px;
+  text-decoration: none;
+  border: 1px solid transparent;
+}
+
+.hub__tab:hover {
+  color: var(--text-0);
+  background: rgba(var(--accent-rgb), 0.06);
+}
+
+.hub__tab[aria-selected='true'] {
+  color: var(--text-0);
+  background: rgba(var(--accent-rgb), 0.14);
+  border-color: var(--line-2);
+}
+
+.hub__badge {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: var(--radius-pill);
+  background: rgb(var(--tone-warn));
+  color: #1b1200;
+  font-size: 11px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.hub__body {
+  min-height: 0;
+  overflow: auto;
+}
+
+/* ------------------------------------------------------------------ job card */
+.job {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface-1);
+  min-width: 0;
+}
+
+.job[data-status='running'] {
+  border-color: rgba(var(--tone-work), 0.4);
+  box-shadow: 0 0 18px rgba(var(--tone-work), 0.08);
+}
+
+.job[data-status='failed'] {
+  border-color: rgba(var(--tone-danger), 0.4);
+}
+
+.job__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.job__title {
+  flex: 1 1 240px;
+  margin: 0;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text-0);
+  min-width: 0;
+}
+
+.job__label {
+  color: var(--text-2);
+  font-size: 12px;
+  font-weight: 400;
+}
+
+.job__time {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.job__plan ol {
+  margin: 4px 0 0;
+  padding-inline-start: 20px;
+  display: grid;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.job__sends {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.job__cost {
+  margin-inline-start: auto;
+  color: rgb(var(--tone-warn));
+}
+
+.job__progress {
+  display: grid;
+  gap: 6px;
+}
+
+.job__message {
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.job__steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+}
+
+.job__step {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-2);
+}
+
+.job__step[data-status='running'] {
+  color: rgb(var(--tone-work));
+}
+
+.job__step[data-status='done'] {
+  color: var(--text-1);
+}
+
+.job__step[data-status='done'] svg {
+  color: rgb(var(--tone-ok));
+}
+
+.job__step[data-status='failed'] {
+  color: rgb(var(--tone-danger));
+}
+
+.job__step-detail {
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.job__step-status {
+  margin-inline-start: auto;
+  color: var(--text-3);
+}
+
+.job__step-ms {
+  min-width: 52px;
+  text-align: end;
+  color: var(--text-2);
+}
+
+.job__error,
+.job__note {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+
+.job__error {
+  border: 1px solid rgba(var(--tone-danger), 0.35);
+  background: rgba(var(--tone-danger), 0.08);
+  color: #ffd2d7;
+}
+
+.job__note {
+  border: 1px solid var(--line);
+  background: var(--surface-0);
+  color: var(--text-1);
+}
+
+.job__result {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.job__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.job__retry-of {
+  color: var(--text-2);
+}
+
+.job__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-inline-start: auto;
+}
+
+.job--compact {
+  padding: 8px 12px;
+  gap: 6px;
+}
+
+.job-list {
+  display: grid;
+  gap: var(--s2);
+}
+
+/* ------------------------------------------------------------------ path picker */
+.picker {
+  display: grid;
+  gap: 8px;
+}
+
+.picker__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.picker__value {
+  font-size: 12px;
+  color: var(--text-1);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+.picker__none {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+.picker__typed {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px 8px;
+  align-items: center;
+}
+
+.picker__typed-label {
+  grid-column: 1 / -1;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+/* ------------------------------------------------------------------ not available */
+.unavailable {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px dashed rgba(var(--tone-warn), 0.45);
+  background: rgba(var(--tone-warn), 0.06);
+  color: var(--text-1);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.unavailable > svg {
+  color: rgb(var(--tone-warn));
+  flex: none;
+  margin-top: 2px;
+}
+
+.unavailable__body {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+
+.unavailable__needs ul {
+  margin: 4px 0 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 2px;
+}
+
+/* ------------------------------------------------------------------ speed table */
+.speed-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.speed-table th,
+.speed-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  text-align: start;
+}
+
+.speed-table th {
+  color: var(--text-2);
+  font-weight: 500;
+}
+
+.speed-table td.num {
+  font-family: var(--font-mono);
+  color: var(--text-1);
+}
+
+.speed-table .speed-better {
+  color: rgb(var(--tone-ok));
+}
+
+.speed-table .speed-worse {
+  color: rgb(var(--tone-danger));
+}
+
+/* A filter row of a few words: each option gets the room its label needs. */
+.segmented--fit .segmented__item {
+  flex: none;
+  padding: 0 10px;
+  overflow: visible;
+}

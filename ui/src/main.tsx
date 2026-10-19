@@ -21,6 +21,11 @@ import './styles/core.css';
 import './styles/layout.css';
 import './styles/panels.css';
 import './styles/screens.css';
+import './styles/work.css';
+import './styles/code.css';
+import './styles/images.css';
+import './styles/video.css';
+import './styles/apps.css';
 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

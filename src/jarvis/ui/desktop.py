@@ -171,6 +171,7 @@ class DesktopShell:
         self.main.events.minimized += self._on_minimized
         self.orb.events.closing += self._on_orb_closing
         self.app.window_handler = self.handle
+        self.app.dialog_handler = self.dialog
         self.app.ui_visible = not self.background
 
     def _orb_position(self) -> tuple[int | None, int | None]:
@@ -227,6 +228,23 @@ class DesktopShell:
             return False
         self._later(fn)
         return True
+
+    def dialog(self, request: dict[str, Any]) -> list[str] | None:
+        """The native Open / Folder / Save dialog over the main window (called from a worker thread; it blocks
+        until the user picks or cancels). The paths picked, or None."""
+        if not self.app.ui_visible:
+            self.to_full()                     # the dialog belongs to a window the user can see
+        kinds = getattr(self.webview, "FileDialog", None)
+        dialog_type = {"open": getattr(kinds, "OPEN", 10), "folder": getattr(kinds, "FOLDER", 20),
+                       "save": getattr(kinds, "SAVE", 30)}[request["kind"]]
+        result = self.main.create_file_dialog(
+            dialog_type, directory=request.get("directory") or "", allow_multiple=bool(request.get("multiple")),
+            save_filename=request.get("save_name") or "", file_types=tuple(request.get("file_types") or ()))
+        if not result:
+            return None
+        if isinstance(result, str):
+            return [result]
+        return [str(p) for p in result]
 
     def to_full(self) -> None:
         with self._lock:
@@ -291,6 +309,7 @@ class DesktopShell:
                 return
             self._quitting = True
         self.app.window_handler = None
+        self.app.dialog_handler = None
         self.core.stop()                       # JARVIS shuts down cleanly (tasks saved as interrupted)
         for window in (self.orb, self.main):
             with contextlib.suppress(Exception):

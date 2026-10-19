@@ -95,6 +95,8 @@ export interface JarvisApi {
   speak(text: string): Promise<{ ok: boolean }>;
   getQuickTools(lang?: Lang): Promise<QuickTool[]>;
   windowAction(action: WindowAction): Promise<{ ok: boolean }>;
+  /** Any other route (the work screens' APIs in `api/work.ts` and the area modules). */
+  request<T>(method: string, path: string, body?: unknown): Promise<T>;
 }
 
 type Query = Record<string, string | number | undefined | null>;

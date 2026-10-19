@@ -55,6 +55,15 @@ export function formatDuration(seconds: number | null | undefined, lang: Lang): 
   return `${secs}${u.s}`;
 }
 
+/** A measured time with the precision it deserves: "0.35s", "4.2s", "3m 12s" (Hebrew: "0.35 שנ׳"). */
+export function formatMs(ms: number | null | undefined, lang: Lang): string {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || ms < 0) return '—';
+  const seconds = ms / 1000;
+  if (seconds >= 60) return formatDuration(seconds, lang);
+  const digits = seconds < 1 ? 2 : seconds < 10 ? 1 : 0;
+  return `${seconds.toFixed(digits)}${UNITS[lang].s}`;
+}
+
 export function durationBetween(start: string | null | undefined, end: string | null | undefined, now = Date.now()): number | null {
   if (!start) return null;
   const a = Date.parse(start);

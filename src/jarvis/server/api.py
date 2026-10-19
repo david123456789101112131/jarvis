@@ -563,6 +563,15 @@ def create_api(app: JarvisApp) -> FastAPI:
             return
         await app.hub.serve(socket, snapshot=app.state_snapshot, version=__version__, on_message=on_message)
 
+    # ---------------------------------------------------------------------------- the work screens
+    from jarvis.server.routes_apps import apps_routes
+    from jarvis.server.routes_dev import dev_routes
+    from jarvis.server.routes_media import media_routes
+    from jarvis.server.routes_work import work_routes
+
+    for router in (work_routes(app), dev_routes(app), media_routes(app), apps_routes(app)):
+        api.include_router(router)
+
     # ---------------------------------------------------------------------------- the page
     @api.get("/", include_in_schema=False)
     async def index(request: Request, launch: str | None = None, view: str | None = None) -> Response:

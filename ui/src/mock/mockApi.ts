@@ -196,4 +196,10 @@ export class MockApi implements JarvisApi {
       throw new ApiError(409, 'conflict', 'JARVIS runs without a desktop window.');
     });
   }
+  /** The work screens need the real core: the simulation answers every other route with "not here". */
+  request<T>(_method: string, path: string): Promise<T> {
+    return this.call<T>(() => {
+      throw new ApiError(501, 'simulation', `${path} is not available in the simulation`);
+    });
+  }
 }

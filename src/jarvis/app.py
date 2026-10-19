@@ -36,9 +36,11 @@ from jarvis.config.loader import load_settings, save_settings, update_settings
 from jarvis.config.paths import AppPaths, default_config_file, resolve_paths
 from jarvis.config.settings import Settings
 from jarvis.core.core import JarvisCore
+from jarvis.jobs import JobManager
 from jarvis.logs.activity import ActivityLog
 from jarvis.logs.audit import AuditLog
 from jarvis.memory import create_memory
+from jarvis.metrics import Metrics
 from jarvis.orchestration.orchestrator import TaskOrchestrator
 from jarvis.permissions import ConfirmationBroker, PermissionManager
 from jarvis.security import KillSwitch, PathGuard
@@ -87,6 +89,9 @@ QUICK_TOOLS = (
 
 AgentFactory = Callable[[AgentRuntime], "list[BaseAgent]"]
 WindowHandler = Callable[[str], "Awaitable[bool] | bool"]
+# The desktop shell's native Open / Save / Folder dialog (blocking: it runs in a worker thread).
+DialogHandler = Callable[[dict[str, Any]], "list[str] | None"]
+DIALOG_KINDS = ("open", "folder", "save")
 
 
 def app_protected_roots() -> list[Path]:
@@ -129,6 +134,8 @@ class JarvisApp:
 
         self.bus = MessageBus(sanitizer=self._sanitize)
         self.activity = ActivityLog(self.paths.logs, redactor=self.redactor)
+        self.metrics = Metrics(self.paths.data / "metrics.json")
+        self.jobs = JobManager(self.bus, self.paths.data / "jobs.jsonl", metrics=self.metrics)
         self.audit = AuditLog(self.paths.logs, redactor=self.redactor)
         extra_denied = [normalize_path(p) for p in s.security.protected_paths]
         self.guard = PathGuard(
@@ -172,6 +179,15 @@ class JarvisApp:
                                bus=self.bus, broker=self.broker, kill_switch=self.kill_switch, activity=self.activity,
                                router=lambda: self.runtime.router, window=self.window_action)
 
+        from jarvis.devmode.service import DevService
+        from jarvis.integrations.apps import AppsService
+        from jarvis.media.service import MediaService
+
+        # The work screens' services (code, images and video, apps): their actions run as jobs.
+        self.dev = DevService(self)
+        self.media = MediaService(self)
+        self.apps = AppsService(self)
+
         self.voice: VoiceService | None = None
         self.voice_wanted = s.voice.enabled if voice is None else voice
         self._level_listeners: list[Callable[[float], None]] = []
@@ -187,6 +203,8 @@ class JarvisApp:
         self.last_stats: dict[str, Any] | None = None
         self._monitor: Any = None
         self.window_handler: WindowHandler | None = None
+        self.dialog_handler: DialogHandler | None = None
+        self._dialog_lock = asyncio.Lock()
         self.ui_visible = False
         # Only the windowed app keeps the "start with Windows" entry in step with the setting.
         self.manage_autostart = False
@@ -255,6 +273,11 @@ class JarvisApp:
             with contextlib.suppress(Exception):
                 await self.voice.stop()
         with contextlib.suppress(Exception):
+            await self.jobs.aclose()
+        for service in (self.dev, self.media, self.apps):
+            with contextlib.suppress(Exception):
+                await service.aclose()
+        with contextlib.suppress(Exception):
             await self.computer.aclose()
         with contextlib.suppress(Exception):
             await self.core.shutdown()
@@ -280,6 +303,7 @@ class JarvisApp:
             await self.router.aclose()
         with contextlib.suppress(Exception):
             await self.memory.close()
+        self.metrics.flush()
         self._remove_runtime_file()
         log.info("JARVIS stopped")
 
@@ -396,6 +420,7 @@ class JarvisApp:
             "system": self.last_stats,
             "providers": self.router.status(),
             "files": {"workspace": str(self.paths.workspace), "projects": str(self.paths.projects)},
+            "jobs": self.jobs.views(50),
         }
 
     def ui_settings(self) -> dict[str, Any]:
@@ -563,6 +588,22 @@ class JarvisApp:
         if asyncio.iscoroutine(result) or isinstance(result, asyncio.Future):
             result = await result
         return bool(result)
+
+    async def file_dialog(self, kind: str, *, title: str = "", directory: str = "", save_name: str = "",
+                          file_types: list[str] | tuple[str, ...] = (), multiple: bool = False) -> list[str] | None:
+        """The window's native Open / Folder / Save dialog: the paths the user picked, None when they cancelled.
+
+        One dialog at a time; it waits for the user as long as they take (nothing else waits on it)."""
+        handler = self.dialog_handler
+        if handler is None:
+            raise RuntimeError("no window to open a dialog in")
+        if kind not in DIALOG_KINDS:
+            raise ValueError(f"unknown dialog kind: {kind}")
+        request = {"kind": kind, "title": title, "directory": directory, "save_name": save_name,
+                   "file_types": list(file_types), "multiple": bool(multiple) and kind == "open"}
+        async with self._dialog_lock:
+            picked = await asyncio.to_thread(handler, request)
+        return [str(p) for p in picked] if picked else None
 
     async def notify(self, level: str, title: str, message: str, *, toast: bool | None = None) -> None:
         """A toast in the UI; a Windows notification too when the window is not on screen."""

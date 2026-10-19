@@ -53,6 +53,10 @@ class FakeWindow:
         self.destroyed = True
         self.visible = False
 
+    def create_file_dialog(self, dialog_type: int, **kw: Any) -> Any:
+        self.dialogs = [*getattr(self, "dialogs", []), (dialog_type, kw)]
+        return getattr(self, "picks", None)
+
 
 class FakeWebview:
     def __init__(self) -> None:
@@ -76,6 +80,7 @@ class FakeApp:
         self.paths = SimpleNamespace(cache=tmp)
         self.launch_url = "http://127.0.0.1:9999/?launch=t"
         self.window_handler = None
+        self.dialog_handler = None
         self.ui_visible = False
         self.started = self.stopped = False
 
@@ -134,6 +139,24 @@ def test_windows_and_orb_position(tmp_path: Path) -> None:
     assert (orb.kw["x"], orb.kw["y"]) == (1920 - 260 - 40, 1080 - 260 - 80)
     assert web.start_kw["private_mode"] is False and Path(web.start_kw["storage_path"]).is_dir()
     assert app.window_handler is not None and app.ui_visible
+    core.stop()
+
+
+def test_file_dialogs_open_over_the_main_window(tmp_path: Path) -> None:
+    shell, web, core, app = make_shell(tmp_path)
+    main = web.windows[0]
+    assert app.dialog_handler == shell.dialog
+    assert shell.dialog({"kind": "open", "file_types": ["Images (*.png)"], "multiple": True}) is None   # cancelled
+    main.picks = ("C:\\Users\\me\\a.png", "C:\\Users\\me\\b.png")
+    assert shell.dialog({"kind": "open", "multiple": True}) == ["C:\\Users\\me\\a.png", "C:\\Users\\me\\b.png"]
+    main.picks = "C:\\Users\\me\\out.png"                 # the save dialog returns one path
+    app.ui_visible = False
+    main.hide()
+    assert shell.dialog({"kind": "save", "save_name": "out.png"}) == ["C:\\Users\\me\\out.png"]
+    eventually(lambda: main.visible)                         # brought up first: a dialog needs its window
+    kinds = [kind for kind, _ in main.dialogs]
+    assert kinds == [10, 10, 30]
+    assert main.dialogs[0][1]["file_types"] == ("Images (*.png)",) and main.dialogs[2][1]["save_filename"] == "out.png"
     core.stop()
 
 

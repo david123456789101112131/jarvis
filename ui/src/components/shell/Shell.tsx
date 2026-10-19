@@ -2,20 +2,25 @@ import { useEffect, type ReactNode } from 'react';
 import type { Lang } from '../../api/types';
 import { useI18n, type MessageKey } from '../../i18n';
 import { formatClock } from '../../lib/format';
-import { SCREENS, type ScreenId } from '../../lib/router';
+import { lastHubTab, RAIL, railOf, type RailId, type ScreenId } from '../../lib/router';
 import { useApi, useAppState, useNow, useRunner, useServices } from '../../state/context';
 import { Icon } from '../Icon';
 import { VOICE_TONE } from '../tones';
 import { Chip, StatusChip } from '../ui';
 
-const NAV_ICONS: Record<ScreenId, string> = {
+const NAV_ICONS: Record<RailId, string> = {
   command: 'core',
-  agents: 'agents',
-  tasks: 'tasks',
-  memory: 'memory',
-  security: 'security',
-  settings: 'settings',
+  code: 'code',
+  images: 'image',
+  video: 'film',
+  apps: 'grid',
+  hub: 'history',
 };
+
+/** Where a rail item leads: the hub opens the tab the user was on last. */
+function railTarget(item: RailId): ScreenId {
+  return item === 'hub' ? lastHubTab() : item;
+}
 
 /** The JARVIS mark: a small arc reactor drawn in SVG. */
 export function Logo({ size = 34 }: { size?: number }) {
@@ -33,27 +38,36 @@ export function Rail({ current, onNavigate, approvals }: { current: ScreenId; on
   const { t } = useI18n();
   const { boot } = useServices();
   const version = useAppState((s) => s.version || s.serverVersion || '');
+  const active = railOf(current);
   return (
     <nav className="rail" aria-label={t('nav.main')} data-testid="rail">
       <a className="rail__logo" href="#/" onClick={() => onNavigate('command')} aria-label="JARVIS">
         <Logo />
       </a>
       <ul className="rail__nav">
-        {SCREENS.map((screen, index) => (
-          <li key={screen}>
-            <a
-              href={screen === 'command' ? '#/' : `#/${screen}`}
-              className="rail__item"
-              aria-current={current === screen ? 'page' : undefined}
-              data-testid={`nav-${screen}`}
-              title={`${t(`nav.${screen}` as MessageKey)} (Alt+${index + 1})`}
-            >
-              <Icon name={NAV_ICONS[screen]} size={20} />
-              <span className="rail__label">{t(`nav.short.${screen}` as MessageKey)}</span>
-              {screen === 'security' && approvals > 0 ? <span className="rail__badge">{approvals}</span> : null}
-            </a>
-          </li>
-        ))}
+        {RAIL.map((item, index) => {
+          const target = railTarget(item);
+          return (
+            <li key={item}>
+              <a
+                href={target === 'command' ? '#/' : `#/${target}`}
+                className="rail__item"
+                aria-current={active === item ? 'page' : undefined}
+                data-testid={`nav-${item}`}
+                title={`${t(`nav.${item}` as MessageKey)} (Alt+${index + 1})`}
+                onClick={(e) => {
+                  if (item !== 'hub') return;
+                  e.preventDefault();
+                  onNavigate(railTarget('hub'));
+                }}
+              >
+                <Icon name={NAV_ICONS[item]} size={20} />
+                <span className="rail__label">{t(`nav.short.${item}` as MessageKey)}</span>
+                {item === 'hub' && approvals > 0 ? <span className="rail__badge">{approvals}</span> : null}
+              </a>
+            </li>
+          );
+        })}
       </ul>
       <div className="rail__foot">
         {boot.mock ? <span className="rail__sim" title={t('app.simulationHint')}>SIM</span> : null}
@@ -209,15 +223,15 @@ export function TopBar({ approvals, onOpenApprovals }: { approvals: number; onOp
   );
 }
 
-/** Alt+1…6 switches screens. */
+/** Alt+1…6 switches between the rail's areas. */
 export function useScreenShortcuts(onNavigate: (screen: ScreenId) => void) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!e.altKey || e.ctrlKey || e.metaKey) return;
       const index = Number(e.key) - 1;
-      if (Number.isInteger(index) && index >= 0 && index < SCREENS.length) {
+      if (Number.isInteger(index) && index >= 0 && index < RAIL.length) {
         e.preventDefault();
-        onNavigate(SCREENS[index]);
+        onNavigate(railTarget(RAIL[index]));
       }
     };
     window.addEventListener('keydown', onKey);

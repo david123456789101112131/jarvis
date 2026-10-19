@@ -1,8 +1,51 @@
 import { useCallback, useSyncExternalStore } from 'react';
 
-export type ScreenId = 'command' | 'agents' | 'tasks' | 'memory' | 'security' | 'settings';
+/** Every screen the address can name. The work areas have their own rail item; the others live in the hub
+ *  ("history & settings") as its tabs. */
+export type ScreenId =
+  | 'command'
+  | 'code'
+  | 'images'
+  | 'video'
+  | 'apps'
+  | 'tasks'
+  | 'jobs'
+  | 'agents'
+  | 'memory'
+  | 'security'
+  | 'settings'
+  | 'privacy';
 
-export const SCREENS: readonly ScreenId[] = ['command', 'agents', 'tasks', 'memory', 'security', 'settings'];
+export const SCREENS: readonly ScreenId[] = [
+  'command',
+  'code',
+  'images',
+  'video',
+  'apps',
+  'tasks',
+  'jobs',
+  'agents',
+  'memory',
+  'security',
+  'settings',
+  'privacy',
+];
+
+/** The hub's tabs, in order: the task history first, then the settings-like screens. */
+export const HUB_TABS: readonly ScreenId[] = ['tasks', 'jobs', 'agents', 'memory', 'security', 'settings', 'privacy'];
+
+/** What the rail shows (Alt+1…6): the command center, the four work areas, and the hub. */
+export type RailId = 'command' | 'code' | 'images' | 'video' | 'apps' | 'hub';
+export const RAIL: readonly RailId[] = ['command', 'code', 'images', 'video', 'apps', 'hub'];
+
+export function isHubTab(screen: ScreenId): boolean {
+  return HUB_TABS.includes(screen);
+}
+
+/** The rail item a screen belongs to. */
+export function railOf(screen: ScreenId): RailId {
+  return isHubTab(screen) ? 'hub' : (screen as RailId);
+}
 
 export interface Route {
   screen: ScreenId;
@@ -40,4 +83,25 @@ export function useRoute(): [Route, (screen: ScreenId, param?: string | null) =>
     if (window.location.hash !== next) window.location.hash = next;
   }, []);
   return [route, navigate];
+}
+
+const HUB_KEY = 'jarvis.hubTab';
+
+/** The hub tab the user was on last (the rail's hub item opens it again). */
+export function lastHubTab(): ScreenId {
+  try {
+    const value = window.localStorage.getItem(HUB_KEY) as ScreenId | null;
+    return value && HUB_TABS.includes(value) ? value : 'tasks';
+  } catch {
+    return 'tasks';
+  }
+}
+
+export function rememberHubTab(screen: ScreenId): void {
+  if (!isHubTab(screen)) return;
+  try {
+    window.localStorage.setItem(HUB_KEY, screen);
+  } catch {
+    /* storage may be unavailable */
+  }
 }

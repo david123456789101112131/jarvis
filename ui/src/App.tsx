@@ -5,14 +5,21 @@ import { ConfirmModal } from './components/ConfirmModal';
 import { Rail, TopBar, useScreenShortcuts } from './components/shell/Shell';
 import { Toasts } from './components/Toasts';
 import { I18nProvider, useI18n } from './i18n';
-import { SCREENS, useRoute, type Route, type ScreenId } from './lib/router';
+import { isHubTab, SCREENS, useRoute, type Route, type ScreenId } from './lib/router';
 import { AgentsScreen } from './screens/AgentsScreen';
+import { AppsScreen } from './screens/apps/AppsScreen';
+import { CodeScreen } from './screens/code/CodeScreen';
 import { CommandCenter } from './screens/command/CommandCenter';
+import { HubScreen } from './screens/hub/HubScreen';
+import { JobsScreen } from './screens/hub/JobsScreen';
+import { PrivacyScreen } from './screens/hub/PrivacyScreen';
+import { ImagesScreen } from './screens/images/ImagesScreen';
 import { MemoryScreen } from './screens/MemoryScreen';
 import { OrbView } from './screens/OrbView';
 import { SecurityScreen } from './screens/SecurityScreen';
 import { SettingsScreen } from './screens/SettingsScreen';
 import { TasksScreen } from './screens/TasksScreen';
+import { VideoScreen } from './screens/video/VideoScreen';
 import { ServicesProvider, useAppState, type AppServices } from './state/context';
 
 /** Mirrors the theme color onto <html data-theme> (CSS accents) — the orb reads it from the store. */
@@ -34,6 +41,18 @@ function LangSync({ onChange }: { onChange?: (lang: Lang) => void }) {
 
 function ScreenSwitch({ route, navigate }: { route: Route; navigate: (screen: ScreenId, param?: string | null) => void }) {
   switch (route.screen) {
+    case 'code':
+      return <CodeScreen />;
+    case 'images':
+      return <ImagesScreen />;
+    case 'video':
+      return <VideoScreen />;
+    case 'apps':
+      return <AppsScreen />;
+    case 'jobs':
+      return <JobsScreen />;
+    case 'privacy':
+      return <PrivacyScreen />;
     case 'agents':
       return <AgentsScreen selected={route.param} onSelect={(id: string) => navigate('agents', id)} onNavigate={navigate} />;
     case 'tasks':
@@ -80,7 +99,13 @@ function AppShell() {
       <Rail current={route.screen} onNavigate={navigate} approvals={pending.length} />
       <TopBar approvals={pending.length} onOpenApprovals={() => setDeferred(new Set())} />
       <main id="main" tabIndex={-1} className={`main main--${route.screen}`} data-testid={`screen-${route.screen}`}>
-        <ScreenSwitch route={route} navigate={navigate} />
+        {isHubTab(route.screen) ? (
+          <HubScreen current={route.screen} approvals={pending.length}>
+            <ScreenSwitch route={route} navigate={navigate} />
+          </HubScreen>
+        ) : (
+          <ScreenSwitch route={route} navigate={navigate} />
+        )}
       </main>
       {current ? <ConfirmModal key={current.id} request={current} waiting={pending.length - 1} onLater={() => setDeferred((prev) => new Set(prev).add(current.id))} /> : null}
       <Toasts />

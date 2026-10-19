@@ -17,6 +17,7 @@ import {
   type VoiceInfo,
   type VoiceState,
 } from '../api/types';
+import type { Job } from '../api/work';
 import type { Action, AppState, OverlayState, PipelineStepState, SystemSample, Toast, ToastLevel } from './types';
 
 export const CHAT_CAP = 300;
@@ -25,6 +26,7 @@ export const AUDIT_CAP = 500;
 export const RECENT_TASKS_CAP = 60;
 export const HISTORY_CAP = 120;
 export const TOAST_CAP = 4;
+export const JOBS_CAP = 100;
 
 export const PIPELINE_ORDER: readonly PipelineStep[] = [
   'transcribing',
@@ -89,6 +91,7 @@ export function createInitialState(): AppState {
     overlay: emptyOverlay(),
     toasts: [],
     navigation: null,
+    jobs: [],
   };
 }
 
@@ -303,7 +306,13 @@ function applySnapshot(state: AppState, snap: StateSnapshot, at: number): AppSta
     providers: snap.providers ?? state.providers,
     files: snap.files ?? state.files,
     overlay: voiceChanged ? emptyOverlay(at) : state.overlay,
+    jobs: snap.jobs ? cap(snap.jobs.slice(), JOBS_CAP, 'first') : state.jobs,
   };
+}
+
+/** A job's newest state; a new job goes first (the list is newest first). */
+function applyJob(state: AppState, job: Job): AppState {
+  return { ...state, jobs: cap(upsert(state.jobs, job, 'front'), JOBS_CAP, 'first') };
 }
 
 function applyChat(state: AppState, message: ChatMessage): AppState {
@@ -429,6 +438,8 @@ export function applyEvent(state: AppState, event: ServerEvent, at: number): App
         ...state,
         navigation: { screen: String(event.data?.screen ?? ''), param: event.data?.task_id ?? null, seq: (state.navigation?.seq ?? 0) + 1 },
       };
+    case 'job':
+      return applyJob(state, event.data);
     case 'pong':
       return state;
     default:

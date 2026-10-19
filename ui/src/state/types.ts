@@ -17,6 +17,7 @@ import type {
   UISettings,
   VoiceInfo,
 } from '../api/types';
+import type { Job } from '../api/work';
 import type { ConnectionInfo } from '../api/ws';
 
 export interface PipelineStepState {
@@ -101,6 +102,8 @@ export interface AppState {
   overlay: OverlayState;
   toasts: Toast[];
   navigation: NavigationRequest | null;
+  /** The work screens' actions, newest first (live over `job` events). */
+  jobs: Job[];
 }
 
 export type Action =

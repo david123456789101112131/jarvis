@@ -1,5 +1,7 @@
 // Data shapes of the JARVIS local API (docs/API.md). Keep in sync with the core.
 
+import type { Job } from './work';
+
 export type AgentId = 'research' | 'system' | 'development' | 'creative' | 'planner';
 export type AgentStatus = 'offline' | 'idle' | 'thinking' | 'working' | 'waiting' | 'completed' | 'error';
 export type TaskStatus =
@@ -251,6 +253,8 @@ export interface StateSnapshot {
   system: SystemStats | null;
   providers: ProvidersInfo;
   files: { workspace: string; projects: string };
+  /** The work screens' recent actions, newest first. */
+  jobs?: Job[];
 }
 
 export interface AuditEntry {
@@ -514,6 +518,7 @@ export type ServerEvent =
   | { type: 'settings'; data: { ui: UISettings }; ts?: string }
   | { type: 'providers'; data: ProvidersInfo; ts?: string }
   | { type: 'ui.navigate'; data: NavigateEvent; ts?: string }
+  | { type: 'job'; data: Job; ts?: string }
   | { type: 'pong'; data?: unknown; ts?: string };
 
 export type ServerEventType = ServerEvent['type'];
@@ -549,6 +554,7 @@ export const SERVER_EVENT_TYPES: readonly ServerEventType[] = [
   'settings',
   'providers',
   'ui.navigate',
+  'job',
   'pong',
 ];
 

@@ -1,6 +1,14 @@
 // UI strings. `en` defines the keys; `he` must translate every one of them (checked by the type).
+// The work areas keep their strings in their own files (merged below), each with the same rule.
 
-export const en = {
+import { appsEn, appsHe } from './apps';
+import { codeEn, codeHe } from './code';
+import { imagesEn, imagesHe } from './images';
+import { privacyEn, privacyHe } from './privacy';
+import { videoEn, videoHe } from './video';
+import { workEn, workHe } from './work';
+
+const baseEn = {
   'app.tagline': 'AI command center',
   'app.simulation': 'Simulation',
   'app.simulationHint': 'Not connected to the core — showing simulated data.',
@@ -595,9 +603,11 @@ export const en = {
   'settings.unsaved': 'Unsaved changes',
 } as const;
 
+export const en = { ...baseEn, ...workEn, ...codeEn, ...imagesEn, ...videoEn, ...appsEn, ...privacyEn } as const;
+
 export type MessageKey = keyof typeof en;
 
-export const he: Record<MessageKey, string> = {
+const baseHe: Record<keyof typeof baseEn, string> = {
   'app.tagline': 'מרכז פיקוד מבוסס AI',
   'app.simulation': 'הדמיה',
   'app.simulationHint': 'אין חיבור לליבה — מוצגים נתוני הדמיה.',
@@ -1191,5 +1201,7 @@ export const he: Record<MessageKey, string> = {
   'settings.riskyChange': 'השינוי הזה מוריד את רמת ההגנה',
   'settings.unsaved': 'יש שינויים שלא נשמרו',
 };
+
+export const he: Record<MessageKey, string> = { ...baseHe, ...workHe, ...codeHe, ...imagesHe, ...videoHe, ...appsHe, ...privacyHe };
 
 export const dictionaries = { en: en as Record<MessageKey, string>, he } as const;

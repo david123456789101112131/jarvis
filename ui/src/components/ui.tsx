@@ -126,7 +126,7 @@ export function Slider({ value, min, max, step, onChange, label, format, testId 
   );
 }
 
-export function Segmented<T extends string>({ value, options, onChange, label, testId, disabled }: { value: T; options: { value: T; label: string; title?: string }[]; onChange: (v: T) => void; label: string; testId?: string; disabled?: boolean }) {
+export function Segmented<T extends string>({ value, options, onChange, label, testId, disabled, fit }: { value: T; options: { value: T; label: string; title?: string }[]; onChange: (v: T) => void; label: string; testId?: string; disabled?: boolean; fit?: boolean }) {
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   const index = options.findIndex((o) => o.value === value);
   const move = (delta: number) => {
@@ -135,7 +135,7 @@ export function Segmented<T extends string>({ value, options, onChange, label, t
     refs.current[next]?.focus();
   };
   return (
-    <div className="segmented" role="radiogroup" aria-label={label} data-testid={testId}>
+    <div className={`segmented ${fit ? 'segmented--fit' : ''}`} role="radiogroup" aria-label={label} data-testid={testId}>
       {options.map((o, i) => (
         <button
           key={o.value}
