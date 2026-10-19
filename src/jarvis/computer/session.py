@@ -172,6 +172,20 @@ class ComputerSession:
         await self.ctx.progress(fraction, note)
 
 
+class OneStep:
+    """Stands in for a session while one previewed step runs on its own (the "Apps & tools" screen).
+
+    It carries what `computer_act` reads of the active session (its id, the Esc-twice flag, the text typed on
+    command lines), so that one action passes the same gate a session's actions do, and nothing else does
+    once it is over."""
+
+    def __init__(self, ctx: ToolContext) -> None:
+        self.id = ctx.subtask_id or ctx.task_id or "step"
+        self.task_id = ctx.task_id
+        self.stop = threading.Event()        # set by the Esc-twice watcher, read while typing
+        self.pending: dict[int, str] = {}    # per command-line window: text typed but not yet run (Enter)
+
+
 def _feedback(result: ToolResult) -> str:
     """What the model is told happened, so it can plan the next step (or give up)."""
     if result.ok:
@@ -181,4 +195,4 @@ def _feedback(result: ToolResult) -> str:
     return f"failed: {result.error or result.summary}"
 
 
-__all__ = ["ComputerSession", "Outcome"]
+__all__ = ["ComputerSession", "OneStep", "Outcome"]

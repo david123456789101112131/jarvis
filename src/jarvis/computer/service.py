@@ -11,14 +11,17 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import threading
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from pathlib import Path
 
+from jarvis.common.errors import ToolError
+from jarvis.common.i18n import t
 from jarvis.computer.backend import ComputerBackend, get_backend
 from jarvis.computer.model import HoloClient
 from jarvis.computer.server import ModelServer
-from jarvis.computer.session import ComputerSession, Outcome
+from jarvis.computer.session import ComputerSession, OneStep, Outcome
 from jarvis.config.paths import AppPaths
 from jarvis.config.settings import ComputerSettings
 from jarvis.security.process import ProcessRegistry
@@ -40,7 +43,7 @@ class ComputerService:
         self.window = window
         self.backend = backend or get_backend()
         self.server = ModelServer(settings, self.root(), processes, paths.logs)
-        self._active: ComputerSession | None = None
+        self._active: ComputerSession | OneStep | None = None
         self._lock = asyncio.Lock()
         self._idle_task: asyncio.Task[None] | None = None
         self._warm_task: asyncio.Task[None] | None = None
@@ -54,7 +57,7 @@ class ComputerService:
         return Path(self.settings.models_dir) if self.settings.models_dir else self.paths.models / "computer"
 
     @property
-    def active(self) -> ComputerSession | None:
+    def active(self) -> ComputerSession | OneStep | None:
         return self._active
 
     def problem(self) -> str | None:
@@ -125,6 +128,69 @@ class ComputerService:
                 with contextlib.suppress(Exception):
                     await client.aclose()
                 self.server.touch()
+
+    # ------------------------------------------------------------------ one look or one step, outside a session
+    @contextlib.asynccontextmanager
+    async def model_client(self) -> AsyncIterator[HoloClient]:
+        """The model for one look at the screen or one proposed step (the "Apps & tools" screen). It is started
+        first if it is not up yet, while JARVIS is still on screen showing that it loads."""
+        self._runs += 1
+        if self.settings.server_url:
+            base_url, api_key = self.settings.server_url.rstrip("/"), ""
+        else:
+            await self.server.ensure_running()
+            base_url, api_key = self.server.base_url, self.server.api_key
+        self.start()
+        client = HoloClient(base_url, api_key=api_key, thinking=self.settings.thinking, timeout_s=120.0)
+        try:
+            yield client
+        finally:
+            with contextlib.suppress(Exception):
+                await client.aclose()
+            self.server.touch()
+
+    @contextlib.asynccontextmanager
+    async def screen_turn(self, ctx: ToolContext, *, window: int = 0, act: bool = False) -> AsyncIterator[OneStep | None]:
+        """The screen for one look, or for one approved step (`act`), outside a session: JARVIS's windows are out
+        of the way and the window it is about (`window`, else the one noted for the task) is in front. Esc twice
+        stops the job meanwhile. Afterwards JARVIS comes back the way it was.
+
+        With `act`, a `OneStep` is the active session while it lasts, so that step's `computer_act` passes the
+        gate and the approvals it asks for are shown."""
+        if self.busy() or self._lock.locked():
+            raise ToolError(t(ctx.lang, "שליטה במחשב כבר רצה כרגע (Esc פעמיים עוצר אותה)",
+                              "computer control is already running (Esc twice stops it)"))
+        loop = asyncio.get_running_loop()
+        async with self._lock:
+            step = OneStep(ctx) if act else None
+            stop = step.stop if step is not None else threading.Event()
+
+            def escape() -> None:                  # called from the watcher's thread
+                stop.set()
+                with contextlib.suppress(RuntimeError):
+                    loop.call_soon_threadsafe(ctx.cancel.cancel, "Esc")
+
+            watch = self.backend.watch_escape(escape)
+            self._active = step
+            try:
+                await self.window("computer_on")
+                if window:
+                    await self.ensure_covered()
+                    if not await asyncio.to_thread(self.backend.bring_to_front, window, restore=True):
+                        raise ToolError(t(ctx.lang, "לא הצלחתי להביא את החלון הזה לחזית (אולי הוא נסגר)",
+                                          "could not bring that window to the front (it may have closed)"))
+                    await asyncio.sleep(self.settings.settle_s)        # let it draw
+                else:
+                    await self._bring_back_working_window()
+                await self.ensure_covered()
+                yield step
+            finally:
+                self._active = None
+                stop.set()                         # typing still under way stops
+                with contextlib.suppress(Exception):
+                    watch.stop()
+                with contextlib.suppress(Exception):
+                    await self.window("computer_off")
 
     # ------------------------------------------------------------------ the task's window
     async def note_working_window(self, window: str = "") -> bool:
