@@ -22,7 +22,8 @@ IMAGE_PROMPT = ("A friendly helper robot at a desk with a glowing blue holograph
                 "detailed, photographic")
 VIDEO_PROMPT = "A cup of hot coffee on a wooden table, steam rising slowly, soft morning light from the window"
 SEED = 42
-MEASURED = ("vram_peak", "ram_peak", "ram_free_min")
+MEASURED = ("vram_peak", "ram_peak", "ram_free_min", "vram_peak_frames", "vram_peak_decode", "tiled_decode",
+            "frames_s", "decode_s", "vram_cap")
 GB = 2**30
 
 
@@ -62,7 +63,7 @@ async def run(make_engine: Callable[[str], LocalEngine], *, modes: list[str], ki
                                   _video(engine, mode, out, video_steps, seconds, resolution)):
                     rows.append(row)
                     say("  " + summary(row))
-                await engine.request("unload")
+                await engine.stop()                  # the next kind starts in a fresh worker, as in use
         except LocalMediaError as exc:
             rows.append({"mode": mode, "error": f"{exc.kind}: {exc}"})
             say(f"  failed ({exc.kind}): {exc}")
@@ -109,7 +110,11 @@ def summary(row: dict[str, Any]) -> str:
     return (f"{row['kind']} {row['number']} ({row['size']}, {row['steps']} steps, ran as {row['ran_as']}): "
             f"{row['total_s']} s in all, {row['load_s']} s loading, {row['make_s']} s making; card peak "
             f"{_gb(row.get('vram_peak'))} GB, worker RAM peak {_gb(row.get('ram_peak'))} GB, least RAM free "
-            f"{_gb(row.get('ram_free_min'))} GB")
+            f"{_gb(row.get('ram_free_min'))} GB"
+            + (f"; frames {row.get('frames_s')} s, card {_gb(row.get('vram_peak_frames'))} GB; decoding "
+               f"{row.get('decode_s')} s, card {_gb(row.get('vram_peak_decode'))} GB"
+               f"{' (tiled)' if row.get('tiled_decode') else ''}; card cap {_gb(row.get('vram_cap'))} GB"
+               if row.get("vram_peak_decode") else ""))
 
 
 __all__ = ["IMAGE_PROMPT", "VIDEO_PROMPT", "describe_plan", "run", "summary"]

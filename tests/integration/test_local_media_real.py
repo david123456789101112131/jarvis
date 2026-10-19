@@ -136,3 +136,48 @@ def test_reading_without_a_memory_map_gives_the_same_weights(tiny_root: Path, tm
                           check=True, capture_output=True, text=True, timeout=300)
     answer = json.loads(done.stdout.strip().splitlines()[-1])
     assert answer["same"] is True and answer["fp32"]                  # the modules Wan keeps in fp32 stay fp32
+
+
+DECODE = """
+import json, sys, torch
+sys.path.insert(0, sys.argv[1])
+import worker
+from diffusers.video_processor import VideoProcessor
+
+class Vae(torch.nn.Module):
+    class config:
+        z_dim, latents_mean, latents_std = 2, [0.5, 0.5], [2.0, 2.0]
+
+    dtype = torch.float32
+
+    def __init__(self):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.zeros(1))
+        self.use_tiling, self.seen = False, []
+
+    def enable_tiling(self):
+        self.use_tiling = True
+
+    def decode(self, z, return_dict=False):
+        self.seen.append(float(z.mean()))
+        if not self.use_tiling:                 # the whole frame does not fit on the card
+            raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 6.00 GiB")
+        return (torch.zeros(1, 3, 5, 8, 8),)
+
+class Pipe:
+    vae, video_processor = Vae(), VideoProcessor(vae_scale_factor=8)
+
+d = object.__new__(worker.Diffusion)
+d.torch, d.cuda = torch, False
+video, tiled = d._decode_video(Pipe(), torch.zeros(1, 2, 2, 1, 1))
+print(json.dumps({"tiled": tiled, "shape": list(video.shape), "seen": Pipe.vae.seen}))
+"""
+
+
+def test_a_video_too_big_to_decode_whole_is_decoded_in_tiles(tmp_path: Path) -> None:
+    done = subprocess.run([MEDIA_PYTHON, "-I", "-c", DECODE, str(Path(worker_module.__file__).parent)],
+                          capture_output=True, text=True, timeout=300, check=True)
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["tiled"] is True and out["shape"] == [5, 8, 8, 3]
+    assert out["seen"] == [0.5, 0.5]           # un-normalized as the pipeline does (z * std + mean), twice
+

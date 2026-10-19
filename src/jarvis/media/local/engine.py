@@ -107,6 +107,7 @@ class LocalEngine:
         self._last_used = 0.0
         self._seq = 0
         self._working = False
+        self._family: str | None = None          # what the worker last made ("image" or "video")
         self._idle_task: asyncio.Task[None] | None = None
         self.info: dict[str, Any] = {}
 
@@ -205,6 +206,7 @@ class LocalEngine:
     async def stop(self) -> None:
         """End the worker: whatever it was doing stops, and the graphics card is free at once."""
         proc, self._proc = self._proc, None
+        self._family = None
         if proc is not None:
             if proc.returncode is None:
                 await asyncio.to_thread(kill_tree, proc.pid)
@@ -247,6 +249,10 @@ class LocalEngine:
             heavy = op in ("image", "video")
             self._working = heavy
             try:
+                if heavy and self.running and self._family not in (None, op):
+                    # The other model goes with its worker: a fresh process leaves nothing of it on the card
+                    # (in one process some of it stayed: about 6 GB of the image model, measured on the PC).
+                    await self.stop()
                 if not self.running:
                     await self._start()
                 elif heavy and self.gpu is not None:
@@ -254,6 +260,8 @@ class LocalEngine:
                     if other is not None:
                         raise LocalMediaError(f"the graphics card is busy ({other})", "gpu_busy")
                 self.start_idle_watch()
+                if heavy:
+                    self._family = op
                 return await self._exchange(op, payload or {}, progress)
             finally:
                 self._working = False

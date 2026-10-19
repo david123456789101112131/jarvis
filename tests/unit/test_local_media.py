@@ -254,8 +254,13 @@ class TestMemory:
             choose("image", Z_IMAGE, ram_free=int(9.6 * GIB), vram_free=int(9.7 * GIB))
         assert err.value.kind == "low_memory"
         d = err.value.details
-        assert d["free_ram"] == int(9.6 * GIB) and d["need_ram"] == needs("image", Z_IMAGE, "group8")[0] + RAM_SPARE
-        assert d["need_ram"] > d["free_ram"] and "GB of RAM" in str(err.value)
+        # The RAM would do for streaming the model onto the card; the card is what is short, and that is said.
+        assert d["free_ram"] == int(9.6 * GIB) and d["need_ram"] == STREAM_RAM + RAM_SPARE
+        assert d["need_vram"] == needs("image", Z_IMAGE, "seq8")[1] > d["free_vram"]
+        assert "11.5 GB on the graphics card" in str(err.value)
+        with pytest.raises(WorkerError) as err:                     # short of RAM too: the least RAM is named
+            choose("image", Z_IMAGE, ram_free=4 * GIB, vram_free=int(9.7 * GIB))
+        assert err.value.details["need_ram"] == STREAM_RAM + RAM_SPARE > 4 * GIB
 
     def test_the_part_that_shrinks_most_loads_first(self) -> None:
         # Wan's text encoder has more numbers, but its transformer shrinks more in 8 bits, so the transformer goes
@@ -348,6 +353,25 @@ class TestEngine:
         finally:
             await engine.aclose()
         assert not engine.running and processes.list() == []
+
+    async def test_the_other_model_starts_in_a_fresh_worker(self, tmp_path: Path) -> None:
+        # In one process part of the image model stayed on the card after it was let go (about 6 GB, measured on
+        # the PC), and the video then did not fit: switching models starts a fresh worker.
+        engine, log, _processes = engine_for(tmp_path)
+        picture = {"prompt": "fox", "width": 1024, "height": 1024, "out": [str(tmp_path / "a.png")], "steps": 1}
+        try:
+            await engine.request("image", picture)
+            assert engine._proc is not None
+            first = engine._proc.pid
+            await engine.request("image", picture)
+            await engine.request("translate", {"text": "hi"})
+            assert engine._proc.pid == first                                # the same model: the same worker
+            await engine.request("video", {"prompt": "steam", "width": 832, "height": 480, "frames": 9,
+                                           "out": str(tmp_path / "v.mp4"), "steps": 1})
+            assert engine._proc.pid != first
+            assert [r.get("op") for r in lines_of(log)] == ["image", "image", "translate", "video"]
+        finally:
+            await engine.aclose()
 
     async def test_stopping_midway_ends_the_worker(self, tmp_path: Path) -> None:
         engine, _log, processes = engine_for(tmp_path)

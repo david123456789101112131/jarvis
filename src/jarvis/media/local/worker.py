@@ -67,6 +67,7 @@ HEADROOM = {"image": int(2.5 * GIB), "video": 4 * GIB}     # graphics memory for
 STREAM_RAM = 5 * GIB // 2         # RAM for reading weights straight to the card: one tensor at a time (the biggest,
                                   # Wan's 2.1 GB word table) and its converted copy
 ENCODE_ROOM = GIB                 # graphics memory for reading a description, beyond the text encoder
+CARD_MARGIN = 300 << 20           # graphics memory left to Windows and the other programs (see `_cap`)
 RAM_SPARE = 3 * GIB               # RAM left free for Windows and the programs already open
 RAM_FLOOR = 2 * GIB               # below this much free RAM the worker ends itself rather than let the computer stall
 LOW_MEMORY_EXIT = 75              # its exit code then, which JARVIS words as "low_memory"
@@ -422,10 +423,15 @@ def choose(family: str, parts: dict[str, tuple[int, int]], *, ram_free: int, vra
         ram, vram = needs(family, parts, mode)
         if ram + RAM_SPARE <= ram_free and vram <= vram_free:
             return mode
-    ram, vram = needs(family, parts, candidates[-1])
+    # Say what is missing for the mode that comes closest: the one needing the least of the card among those the
+    # RAM would take, else the one needing the least RAM.
+    asks = {m: needs(family, parts, m) for m in candidates}
+    in_ram = [m for m in candidates if asks[m][0] + RAM_SPARE <= ram_free]
+    near = min(in_ram, key=lambda m: asks[m][1]) if in_ram else min(candidates, key=lambda m: asks[m][0])
+    ram, vram = asks[near]
     ram += RAM_SPARE
-    raise WorkerError(f"not enough free memory to load the {family} model: it needs about {ram / GIB:.0f} GB of RAM "
-                      f"and {vram / GIB:.0f} GB on the graphics card, and {ram_free / GIB:.1f} GB and "
+    raise WorkerError(f"not enough free memory to load the {family} model: it needs about {ram / GIB:.1f} GB of RAM "
+                      f"and {vram / GIB:.1f} GB on the graphics card, and {ram_free / GIB:.1f} GB and "
                       f"{vram_free / GIB:.1f} GB are free", "low_memory", need_ram=ram, free_ram=ram_free,
                       need_vram=vram, free_vram=vram_free)
 
@@ -501,8 +507,25 @@ class Diffusion:
             pass
         return info
 
-    def _free(self) -> int:
-        return int(self.torch.cuda.mem_get_info()[0]) if self.cuda else 0
+    def _free(self, family: str | None = None) -> int:
+        """Graphics memory free now; for `family`, also whatever this worker holds that is not `family`'s (it is let
+        go before `family` loads; the engine starts a fresh worker for the other model)."""
+        if not self.cuda:
+            return 0
+        free = int(self.torch.cuda.mem_get_info()[0])
+        if family is not None and self.family != family:
+            free += int(self.torch.cuda.memory_reserved())
+        return free
+
+    def _cap(self) -> int:
+        """Keep this worker within the graphics memory that is really free. Past it, Windows lends RAM to the card
+        ("shared GPU memory") and the model runs many times slower; capped, it runs out of memory instead, and
+        `_retrying` moves to a thriftier mode. Returns the cap in bytes."""
+        torch = self.torch
+        free, total = torch.cuda.mem_get_info()
+        limit = int(free) + int(torch.cuda.memory_reserved()) - CARD_MARGIN
+        torch.cuda.set_per_process_memory_fraction(min(1.0, max(0.05, limit / int(total))))
+        return limit
 
     # ------------------------------------------------------------------ loading
     def plan(self, family: str) -> dict[str, Any]:
@@ -514,7 +537,7 @@ class Diffusion:
             raise WorkerError(f"the {family} model is not installed (expected in {folder})", "missing")
         parts = weights(folder)
         now = memory()
-        ram_free, vram_free = now["ram_free"], self._free()
+        ram_free, vram_free = now["ram_free"], self._free(family)
         plan: dict[str, Any] = {
             "family": family, "loaded": self.family, "ram_free": ram_free, "vram_free": vram_free,
             "commit_free": now.get("commit_free"),
@@ -565,8 +588,8 @@ class Diffusion:
             return self.mode
         if not self.cuda:                                   # tests: the same code, on the processor
             return "cpuseq8" if self.offload == "seq8" else "cpu8" if self.offload.endswith("8") else "cpu"
-        return choose(family, parts, ram_free=memory()["ram_free"], vram_free=self._free(), offload=self.offload,
-                      floor=self._floor.get(family, 0))
+        return choose(family, parts, ram_free=memory()["ram_free"], vram_free=self._free(family),
+                      offload=self.offload, floor=self._floor.get(family, 0))
 
     def _load(self, folder: Path, family: str, variant: str, mode: str, parts: dict[str, tuple[int, int]],
               progress: Progress) -> Any:
@@ -715,6 +738,7 @@ class Diffusion:
                 self.watch.reset()                     # before loading: the load is when RAM runs lowest
             parts = weights(folder)
             mode = self._mode(family, parts)
+            cap = self._cap() if self.cuda else 0
             try:
                 embeds = self._embeds(folder, family, mode, parts, texts, progress) if mode in SEQUENTIAL else None
                 pipe = self._load(folder, family, variant, mode, parts, progress)
@@ -732,7 +756,9 @@ class Diffusion:
                 continue
             result["mode"] = self.mode
             if self.cuda:
-                result["vram_peak"] = int(self.torch.cuda.max_memory_allocated())
+                result["vram_peak"] = max(int(result.get("vram_peak") or 0),
+                                          int(self.torch.cuda.max_memory_allocated()))
+                result["vram_cap"] = cap
             result["ram_peak"] = ram_peak()
             if self.watch is not None and self.watch.lowest is not None:
                 result["ram_free_min"] = self.watch.lowest
@@ -826,18 +852,58 @@ class Diffusion:
                 text = {"prompt": None, "negative_prompt": None, **embeds}
             common = {**text, "height": height, "width": width, "num_frames": frames, "num_inference_steps": steps,
                       "guidance_scale": guidance, "generator": self._generator(seed),
-                      "callback_on_step_end": self._stepper(progress, steps, 0.0, 0.95), "output_type": "np"}
+                      "callback_on_step_end": self._stepper(progress, steps, 0.0, 0.9), "output_type": "latent"}
             began = time.perf_counter()
-            video = (pipe(image=picture, **common) if picture is not None else pipe(**common)).frames[0]
+            latents = (pipe(image=picture, **common) if picture is not None else pipe(**common)).frames
+            frames_s = time.perf_counter() - began
+            peaks = {"vram_peak_frames": int(self.torch.cuda.max_memory_allocated())} if self.cuda else {}
+            progress("decode", 0.92)
+            video, tiled = self._decode_video(pipe, latents)
+            if self.cuda:
+                peaks["vram_peak_decode"] = int(self.torch.cuda.max_memory_allocated())
+                peaks["vram_peak"] = max(peaks.values())
             made_s = time.perf_counter() - began
             progress("save", 0.97)
             write_mp4(video, out, fps)
             return {"files": [{"path": str(out), "width": width, "height": height, "frames": frames, "fps": fps,
                                "seconds": round(frames / fps, 3)}],
-                    "seed": seed, "steps": steps, "generate_s": round(made_s, 3)}
+                    "seed": seed, "steps": steps, "generate_s": round(made_s, 3), "frames_s": round(frames_s, 3),
+                    "decode_s": round(made_s - frames_s, 3), "tiled_decode": tiled, **peaks}
 
         return self._retrying("video", "picture" if picture is not None else "text", progress, run,
                               (prompt, negative, guidance > 1.0))
+
+    def _decode_video(self, pipe: Any, latents: Any) -> tuple[Any, bool]:
+        """Wan's decoder, as the pipeline runs it, measured on its own. Decoding the whole frame at once is the
+        hungriest moment of a video; when it does not fit, the frames are decoded in overlapping tiles (blended,
+        so no seams) instead of starting over. True = tiled."""
+        from diffusers.utils.torch_utils import get_module_execution_device
+
+        torch, vae = self.torch, pipe.vae
+        if self.cuda:
+            torch.cuda.reset_peak_memory_stats()
+        z = latents.to(device=get_module_execution_device(vae), dtype=vae.dtype)
+        shape = (1, vae.config.z_dim, 1, 1, 1)
+        mean = torch.tensor(vae.config.latents_mean).view(shape).to(z.device, z.dtype)
+        std = torch.tensor(vae.config.latents_std).view(shape).to(z.device, z.dtype)
+        z = z * std + mean
+        tiled = bool(getattr(vae, "use_tiling", False))
+        with torch.no_grad():
+            try:
+                frames = vae.decode(z, return_dict=False)[0]
+            except torch.cuda.OutOfMemoryError:
+                if tiled:
+                    raise
+                gc.collect()
+                torch.cuda.empty_cache()
+                vae.enable_tiling()                       # stays on for this model: the next video tiles at once
+                tiled = True
+                frames = vae.decode(z, return_dict=False)[0]
+        video = pipe.video_processor.postprocess_video(frames, output_type="np")[0]
+        del frames, z
+        if hasattr(pipe, "maybe_free_model_hooks"):
+            pipe.maybe_free_model_hooks()
+        return video, tiled
 
     # ------------------------------------------------------------------ translation
     def translate(self, text: str) -> str:

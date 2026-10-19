@@ -117,6 +117,9 @@ def _on_progress(ctx: ToolContext, start: float, end: float, *, kind: str) -> An
             else:
                 note = ctx.t(f"מכין את הסרטון (שלב {step} מתוך {steps})…", f"Making the video (step {step} of {steps})…")
             await ctx.progress(start + (end - start) * (0.1 + 0.85 * share), note)
+        elif phase == "decode":
+            await ctx.progress(start + (end - start) * 0.95, ctx.t("מרכיב את התמונות לסרטון…",
+                                                                  "Turning the result into video frames…"))
         elif phase == "save":
             await ctx.progress(start + (end - start) * 0.97, ctx.t("שומר…", "Saving…"))
 
