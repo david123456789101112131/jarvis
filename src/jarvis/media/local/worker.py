@@ -19,7 +19,8 @@ what is made is written only to the paths JARVIS names, inside its own media fol
 Memory: before a model loads, the worker works out from the files' headers how much RAM and graphics memory each
 mode would take (`plan` shows it) and picks the fastest that fits what is free; when none fits it refuses
 ("low_memory") instead of pushing the computer into swapping, and a watch ends the process if free RAM still falls
-below RAM_FLOOR while it works.
+below RAM_FLOOR while it works. Both count as free what Windows can take back from this process at once (the model
+files' pages while they are read), which Task Manager shows as in use.
 
 Only the standard library is imported at the top, so JARVIS's tests can drive the protocol (`serve`) with a
 stand-in backend. The folder names below are the ones `jarvis.media.local` installs to (a test keeps them equal).
@@ -28,6 +29,7 @@ stand-in backend. The folder names below are the ones `jarvis.media.local` insta
 from __future__ import annotations
 
 import argparse
+import functools
 import gc
 import io
 import json
@@ -170,7 +172,11 @@ def serve(make_backend: Callable[[], Backend], lines: Iterable[str], out: IO[str
 
 # ============================================================================ memory
 def memory() -> dict[str, int]:
-    """This computer's RAM: free and total bytes (and on Windows, how much more it can commit at all)."""
+    """This computer's RAM: free and total bytes. On Windows also how much more it can commit at all, and how much of
+    what this process holds is shared pages ("reclaimable"): mostly the model files read through a memory map while
+    they load. Task Manager counts those as in use, but they are clean copies of files on disk, so Windows takes them
+    back the moment another program needs the room, without writing anything. (On Linux, MemAvailable already counts
+    them as free.)"""
     if sys.platform == "win32":
         import ctypes
 
@@ -181,66 +187,117 @@ def memory() -> dict[str, int]:
 
         status = Status()
         status.length = ctypes.sizeof(Status)
-        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):  # type: ignore[attr-defined]
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             raise OSError("GlobalMemoryStatusEx failed")
-        return {"ram_free": int(status.free), "ram_total": int(status.total), "commit_free": int(status.commit_free)}
+        own = process_memory()
+        reclaimable = max(0, own["set"] - own["private_set"]) if own["private_set"] else 0
+        return {"ram_free": int(status.free), "ram_total": int(status.total), "commit_free": int(status.commit_free),
+                "ram_reclaimable": reclaimable}
     values: dict[str, int] = {}
     with open("/proc/meminfo", encoding="ascii") as fh:
         for line in fh:
             name, _, rest = line.partition(":")
             values[name] = int(rest.split()[0]) * 1024
-    return {"ram_free": values["MemAvailable"], "ram_total": values["MemTotal"]}
+    return {"ram_free": values["MemAvailable"], "ram_total": values["MemTotal"], "ram_reclaimable": 0}
+
+
+@functools.cache
+def _windows_counters() -> tuple[Any, Any, Any]:
+    """GetProcessMemoryInfo with its real types. (Untyped, ctypes passes GetCurrentProcess's pseudo-handle as a 32-bit
+    int, the call fails, and every number reads 0.)"""
+    import ctypes
+    from ctypes import wintypes
+
+    class Counters(ctypes.Structure):                # PROCESS_MEMORY_COUNTERS_EX2
+        _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD),
+                    *((name, ctypes.c_size_t) for name in ("peak_set", "set", "peak_paged", "paged", "peak_nonpaged",
+                                                           "nonpaged", "commit", "peak_commit", "private",
+                                                           "private_set", "shared_commit"))]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.GetCurrentProcess.argtypes = ()
+    info = kernel32.K32GetProcessMemoryInfo
+    info.argtypes = (wintypes.HANDLE, ctypes.POINTER(Counters), wintypes.DWORD)
+    info.restype = wintypes.BOOL
+    return Counters, kernel32.GetCurrentProcess, info
+
+
+def process_memory() -> dict[str, int]:
+    """This process's RAM (bytes): the most it has held so far (peak_set), what it holds now (set), and how much of
+    that is its own rather than shared with files on disk (private_set; 0 where Windows cannot tell)."""
+    if sys.platform == "win32":
+        import ctypes
+
+        cls, current, info = _windows_counters()
+        counters = cls()
+        counters.cb = ctypes.sizeof(cls)
+        if not info(current(), ctypes.byref(counters), counters.cb):
+            counters.cb = cls.private_set.offset          # Windows before 10 1809: no private working set
+            if not info(current(), ctypes.byref(counters), counters.cb):
+                return {"peak_set": 0, "set": 0, "private_set": 0}
+        return {"peak_set": int(counters.peak_set), "set": int(counters.set), "private_set": int(counters.private_set)}
+    rss = {}
+    with open("/proc/self/status", encoding="ascii") as fh:
+        for line in fh:
+            name, _, rest = line.partition(":")
+            if name in ("VmHWM", "VmRSS", "RssAnon"):
+                rss[name] = int(rest.split()[0]) * 1024
+    return {"peak_set": rss.get("VmHWM", 0), "set": rss.get("VmRSS", 0), "private_set": rss.get("RssAnon", 0)}
+
+
+def usable(now: dict[str, int]) -> int:
+    """The RAM another program could have right now: what is free, and what Windows can take back from this one."""
+    return now["ram_free"] + now.get("ram_reclaimable", 0)
 
 
 def ram_peak() -> int:
     """The most RAM this process has held so far (bytes)."""
-    if sys.platform == "win32":
-        import ctypes
-        from ctypes import wintypes
-
-        class Counters(ctypes.Structure):
-            _fields_ = [("cb", wintypes.DWORD), ("faults", wintypes.DWORD),
-                        *((name, ctypes.c_size_t) for name in ("peak_set", "set", "peak_paged", "paged",
-                                                               "peak_nonpaged", "nonpaged", "commit", "peak_commit"))]
-
-        counters = Counters()
-        counters.cb = ctypes.sizeof(Counters)
-        process = ctypes.windll.kernel32.GetCurrentProcess()                         # type: ignore[attr-defined]
-        if not ctypes.windll.psapi.GetProcessMemoryInfo(process, ctypes.byref(counters), counters.cb):  # type: ignore[attr-defined]
-            return 0
-        return int(counters.peak_set)
-    import resource
-
-    return int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
+    return process_memory()["peak_set"]
 
 
 class MemoryWatch:
     """Looks at the free RAM twice a second. Remembers the lowest it saw (for the measurements), and if the computer
-    is about to run out, ends this process: whatever it was making is lost, but the computer does not stall."""
+    is about to run out, ends this process: whatever it was making is lost, but the computer does not stall.
 
-    def __init__(self, floor: int = RAM_FLOOR, every: float = 0.5) -> None:
+    "About to run out" counts what Windows can take back from this process at once (the model files' pages, see
+    `memory`) as free: loading reads gigabytes of them, and Task Manager's "available" falls by that much for a
+    while without anything being short."""
+
+    def __init__(self, floor: int = RAM_FLOOR, every: float = 0.5,
+                 measure: Callable[[], dict[str, int]] | None = None) -> None:
         self.floor = floor
         self.every = every
-        self.lowest: int | None = None
+        self.measure = measure or memory
+        self.lowest: int | None = None             # the least RAM free, as Task Manager shows it
+        self.lowest_usable: int | None = None      # ... counting what Windows can take back from this process
+        self.usable = 0
+        self._low = 0
 
     def start(self) -> MemoryWatch:
         threading.Thread(target=self._loop, name="memory-watch", daemon=True).start()
         return self
 
     def reset(self) -> None:
-        self.lowest = None
+        self.lowest = self.lowest_usable = None
+
+    def check(self) -> bool:
+        """One look. True when free RAM has been below the floor twice running: time to stop."""
+        now = self.measure()
+        free, self.usable = now["ram_free"], usable(now)
+        self.lowest = free if self.lowest is None else min(self.lowest, free)
+        self.lowest_usable = self.usable if self.lowest_usable is None else min(self.lowest_usable, self.usable)
+        self._low = self._low + 1 if self.usable < self.floor else 0
+        return self._low >= 2
 
     def _loop(self) -> None:
-        low = 0
         while True:
             try:
-                free = memory()["ram_free"]
+                stop = self.check()
             except Exception:
                 return
-            self.lowest = free if self.lowest is None else min(self.lowest, free)
-            low = low + 1 if free < self.floor else 0
-            if low >= 2:
-                sys.stderr.write(f"stopping: the computer has only {free / GIB:.1f} GB of RAM free\n")
+            if stop:
+                sys.stderr.write(f"stopping: the computer has only {self.usable / GIB:.1f} GB of RAM free\n")
                 sys.stderr.flush()
                 os._exit(LOW_MEMORY_EXIT)
             time.sleep(self.every)
@@ -288,9 +345,14 @@ def part_bytes(family: str, part: str, numbers: tuple[int, int], eight: bool) ->
     return total * 2
 
 
-def load_order(parts: dict[str, tuple[int, int]]) -> list[str]:
-    """Biggest first: each part is made 8-bit before the next one loads, so the peak is as low as it gets."""
-    return sorted(parts, key=lambda p: -parts[p][0])
+def load_order(family: str, parts: dict[str, tuple[int, int]], eight: bool) -> list[str]:
+    """The order that keeps the RAM peak lowest. Each part loads whole and then shrinks (made 8-bit) before the next
+    one loads; where the parts stay in RAM, the peak while a part loads is everything kept so far plus that part
+    whole, and it is lowest when the parts that shrink most come first (biggest first when none shrinks)."""
+    def shrink(p: str) -> int:
+        return part_bytes(family, p, parts[p], False) - part_bytes(family, p, parts[p], eight)
+
+    return sorted(parts, key=lambda p: (-shrink(p), -parts[p][0]))
 
 
 def needs(family: str, parts: dict[str, tuple[int, int]], mode: str) -> tuple[int, int]:
@@ -299,7 +361,7 @@ def needs(family: str, parts: dict[str, tuple[int, int]], mode: str) -> tuple[in
     final = {p: part_bytes(family, p, n, eight) for p, n in parts.items()}
     on_card = mode in ("gpu", "gpu8")
     ram = held = 0
-    for p in load_order(parts):
+    for p in load_order(family, parts, eight):
         ram = max(ram, held + part_bytes(family, p, parts[p], False))   # each part loads whole, then shrinks
         if not on_card:
             held += final[p]
@@ -410,9 +472,11 @@ class Diffusion:
         if not (folder / "model_index.json").is_file():
             raise WorkerError(f"the {family} model is not installed (expected in {folder})", "missing")
         parts = weights(folder)
-        ram_free, vram_free = memory()["ram_free"], self._free()
+        now = memory()
+        ram_free, vram_free = usable(now), self._free()
         plan: dict[str, Any] = {
             "family": family, "loaded": self.family, "ram_free": ram_free, "vram_free": vram_free,
+            "ram_reclaimable": now.get("ram_reclaimable", 0),
             "parts": {name: {"numbers": total, "kept_bf16": kept} for name, (total, kept) in parts.items()},
             "needs": {mode: dict(zip(("ram", "vram"), needs(family, parts, mode), strict=True)) for mode in MODES},
             "ram_spare": RAM_SPARE}
@@ -463,7 +527,7 @@ class Diffusion:
         progress("load", 0.0)
         parts = weights(folder)
         if self.cuda:
-            mode = choose(family, parts, ram_free=memory()["ram_free"], vram_free=self._free(),
+            mode = choose(family, parts, ram_free=usable(memory()), vram_free=self._free(),
                           offload=self.offload, floor=self._floor.get(family, 0))
         else:
             mode = "cpu8" if self.offload.endswith("8") else "cpu"          # tests: the same code, on the processor
@@ -474,7 +538,7 @@ class Diffusion:
 
     def _build(self, folder: Path, family: str, variant: str, mode: str, parts: dict[str, tuple[int, int]],
                progress: Progress) -> Any:
-        """Load the parts one at a time, biggest first, each made 8-bit (when the mode says so) and moved to where
+        """Load the parts one at a time (in `load_order`), each made 8-bit (when the mode says so) and moved to where
         it will run before the next one loads; then the pipeline around them."""
         import importlib
 
@@ -483,7 +547,7 @@ class Diffusion:
         eight = mode.endswith("8")
         on_card = mode in ("gpu", "gpu8")
         loaded: dict[str, Any] = {}
-        order = load_order(parts)
+        order = load_order(family, parts, eight)
         for number, name in enumerate(order):
             library, class_name = index[name]
             module_cls = getattr(importlib.import_module(library), class_name)
@@ -540,11 +604,11 @@ class Diffusion:
                   run: Callable[[Any], dict[str, Any]]) -> dict[str, Any]:
         """Run on the loaded model; out of graphics memory, reload in the next thriftier mode and try again."""
         while True:
+            if self.watch is not None:
+                self.watch.reset()                     # before loading: the load is when RAM runs lowest
             pipe = self._load(family, variant, progress)
             if self.cuda:
                 self.torch.cuda.reset_peak_memory_stats()
-            if self.watch is not None:
-                self.watch.reset()
             try:
                 result = run(pipe)
             except self.torch.cuda.OutOfMemoryError as exc:
@@ -563,6 +627,7 @@ class Diffusion:
             result["ram_peak"] = ram_peak()
             if self.watch is not None and self.watch.lowest is not None:
                 result["ram_free_min"] = self.watch.lowest
+                result["ram_usable_min"] = self.watch.lowest_usable
             return result
 
     def _generator(self, seed: int) -> Any:

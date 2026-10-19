@@ -72,7 +72,7 @@ async def test_images_and_videos_from_the_real_pipelines(tiny_root: Path, tmp_pa
         result = await eng.request("image", {"prompt": "a fox", "width": 96, "height": 64, "out": [str(first)],
                                              "steps": 2, "seed": 1}, progress=progress)
         assert png_size(first) == (96, 64) and result["mode"] == ("cpu8" if offload == "gpu8" else "cpu")
-        assert result["ram_peak"] > 0
+        assert result["ram_peak"] > 0 and result["ram_usable_min"] >= result["ram_free_min"] > 0
         assert [m["phase"] for m in seen][:1] == ["load"] and any(m["phase"] == "generate" for m in seen)
 
         changed = tmp_path / "out" / "b.png"

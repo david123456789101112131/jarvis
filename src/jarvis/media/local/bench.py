@@ -22,6 +22,7 @@ IMAGE_PROMPT = ("A friendly helper robot at a desk with a glowing blue holograph
                 "detailed, photographic")
 VIDEO_PROMPT = "A cup of hot coffee on a wooden table, steam rising slowly, soft morning light from the window"
 SEED = 42
+MEASURED = ("vram_peak", "ram_peak", "ram_free_min", "ram_usable_min")
 GB = 2**30
 
 
@@ -30,7 +31,8 @@ def _gb(value: Any) -> str:
 
 
 def describe_plan(plan: dict[str, Any]) -> list[str]:
-    lines = [f"  {plan['family']}: free now {_gb(plan.get('ram_free'))} GB RAM, {_gb(plan.get('vram_free'))} GB "
+    back = f", {_gb(plan['ram_reclaimable'])} GB of it the worker's shared pages" if plan.get("ram_reclaimable") else ""
+    lines = [f"  {plan['family']}: free now {_gb(plan.get('ram_free'))} GB RAM{back}, {_gb(plan.get('vram_free'))} GB "
              f"on the card (spare kept: {_gb(plan.get('ram_spare'))} GB RAM)"]
     for mode, need in (plan.get("needs") or {}).items():
         lines.append(f"    {mode:7} needs {_gb(need['ram'])} GB RAM, {_gb(need['vram'])} GB on the card")
@@ -81,7 +83,7 @@ async def _images(engine: LocalEngine, mode: str, out: Path, steps: int) -> list
         rows.append({"mode": mode, "ran_as": result.get("mode"), "kind": "image", "number": number,
                      "size": f"{width}x{height}", "steps": steps, "total_s": round(total, 1),
                      "load_s": round(total - made, 1), "make_s": round(made, 1), "path": str(path),
-                     **{k: result.get(k) for k in ("vram_peak", "ram_peak", "ram_free_min")}})
+                     **{k: result.get(k) for k in MEASURED}})
     return rows
 
 
@@ -99,14 +101,15 @@ async def _video(engine: LocalEngine, mode: str, out: Path, steps: int, seconds:
     return [{"mode": mode, "ran_as": result.get("mode"), "kind": "video", "number": 1,
              "size": f"{width}x{height}x{frames}", "steps": steps, "total_s": round(total, 1),
              "load_s": round(max(0.0, total - made), 1), "make_s": round(made, 1), "path": str(path),
-             **{k: result.get(k) for k in ("vram_peak", "ram_peak", "ram_free_min")}}]
+             **{k: result.get(k) for k in MEASURED}}]
 
 
 def summary(row: dict[str, Any]) -> str:
     return (f"{row['kind']} {row['number']} ({row['size']}, {row['steps']} steps, ran as {row['ran_as']}): "
             f"{row['total_s']} s in all, {row['load_s']} s loading, {row['make_s']} s making; card peak "
             f"{_gb(row.get('vram_peak'))} GB, worker RAM peak {_gb(row.get('ram_peak'))} GB, least RAM free "
-            f"{_gb(row.get('ram_free_min'))} GB")
+            f"{_gb(row.get('ram_free_min'))} GB ({_gb(row.get('ram_usable_min'))} GB counting what Windows can take "
+            f"back from the worker at once)")
 
 
 __all__ = ["IMAGE_PROMPT", "VIDEO_PROMPT", "describe_plan", "run", "summary"]

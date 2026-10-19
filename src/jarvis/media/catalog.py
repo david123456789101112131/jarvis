@@ -110,8 +110,10 @@ LOCAL_IMAGE_AREA = {"1k": 1024 * 1024}
 LOCAL_VIDEO_AREA = {"480p": 832 * 480, "720p": 1280 * 704}
 LOCAL_FPS = 24
 LOCAL_IMAGE_STRENGTH = {"change": 0.7, "variation": 0.55}     # how much of a preview a change redraws
-LOCAL_LOAD_S = 60.0                                            # loading a model onto the card
-LOCAL_IMAGE_S = 15.0                                           # each image
+# Measured on the target PC (RTX 5060 Ti 16 GB, Z-Image in gpu8, 1024x1024, 9 steps): 40 s loading plus 18 s of
+# first-run warm-up, then 18 s an image. The video times are still estimates.
+LOCAL_LOAD_S = 58.0                                            # loading a model, and its first run's warm-up
+LOCAL_IMAGE_S = 18.0                                           # each image
 LOCAL_VIDEO_S_PER_SECOND = {"480p": 60.0, "720p": 180.0}       # each second of video
 MAX_REFERENCES = 3                  # xAI takes up to 7; three keep the upload (and the price) small
 MAX_PROMPT = 4000

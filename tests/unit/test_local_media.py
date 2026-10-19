@@ -39,10 +39,14 @@ from jarvis.media.local.engine import (
 from jarvis.media.local.worker import (
     GIB,
     HEADROOM,
+    RAM_FLOOR,
     RAM_SPARE,
+    MemoryWatch,
     WorkerError,
     choose,
+    load_order,
     needs,
+    process_memory,
     serve,
     translate_lines,
     weights,
@@ -221,6 +225,40 @@ class TestMemory:
         d = err.value.details
         assert d["free_ram"] == int(9.6 * GIB) and d["need_ram"] == needs("image", Z_IMAGE, "group8")[0] + RAM_SPARE
         assert d["need_ram"] > d["free_ram"] and "GB of RAM" in str(err.value)
+
+    def test_the_part_that_shrinks_most_loads_first(self) -> None:
+        # Wan's text encoder has more numbers, but its transformer shrinks more in 8 bits, so the transformer goes
+        # first: 15.3 GB at the peak instead of 16.5, which is what lets a video load with AvodaAssistant closed.
+        assert load_order("video", WAN, True) == ["transformer", "text_encoder", "vae"]
+        assert load_order("video", WAN, False) == ["text_encoder", "transformer", "vae"]       # nothing shrinks
+        ram, vram = needs("video", WAN, "model8")
+        assert ram == (5_000_000_000 - 30_000_000 + 60_000_000) + 5_680_000_000 * 2
+        assert vram == (5_680_000_000 - 2_050_000_000 + 4_100_000_000) + HEADROOM["video"]
+        # The PC with AvodaAssistant closed, as measured: 19.2 GB of RAM and 14.8 GB of the card free.
+        assert choose("video", WAN, ram_free=int(19.2 * GIB), vram_free=int(14.8 * GIB)) == "model8"
+        assert choose("image", Z_IMAGE, ram_free=int(19.2 * GIB), vram_free=int(14.8 * GIB)) == "gpu8"
+
+    def test_the_watch_counts_the_model_files_windows_can_take_back(self) -> None:
+        readings = iter([{"ram_free": 1 * GIB, "ram_reclaimable": 5 * GIB},     # loading: the files' pages
+                         {"ram_free": 1 * GIB, "ram_reclaimable": 5 * GIB},
+                         {"ram_free": 4 * GIB, "ram_reclaimable": 0},
+                         {"ram_free": RAM_FLOOR - 1, "ram_reclaimable": 0},       # really short, once ...
+                         {"ram_free": RAM_FLOOR + GIB, "ram_reclaimable": 0},     # ... then not
+                         {"ram_free": RAM_FLOOR - 1, "ram_reclaimable": 0},
+                         {"ram_free": RAM_FLOOR - 2, "ram_reclaimable": 0}])      # twice running: stop
+        watch = MemoryWatch(measure=lambda: next(readings))
+        assert [watch.check() for _ in range(6)] == [False] * 6
+        assert watch.lowest == 1 * GIB and watch.lowest_usable == RAM_FLOOR - 1    # as Task Manager shows it, and not
+        assert watch.check() is True
+        watch.reset()
+        assert watch.lowest is None and watch.lowest_usable is None
+
+    def test_this_process_memory_is_measured(self) -> None:
+        own = process_memory()
+        assert own["peak_set"] >= own["set"] > 0 and 0 < own["private_set"] <= own["set"]
+        assert worker_module.ram_peak() >= own["set"]
+        now = worker_module.memory()
+        assert now["ram_free"] > 0 and worker_module.usable(now) >= now["ram_free"]
 
     def test_the_refusal_in_the_users_words(self) -> None:
         exc = LocalMediaError("x", "low_memory", {"need_ram": 18 * GIB, "free_ram": int(9.6 * GIB),
