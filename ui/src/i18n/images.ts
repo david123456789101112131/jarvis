@@ -86,7 +86,7 @@ export const imagesHe: Record<keyof typeof imagesEn, string> = {
   'media.sendsPreview': 'ואת התצוגה המקדימה {name}, שנוצרה כאן',
   'media.price': 'מחיר משוער: {price}',
   'media.priceAsOf': 'מחירי xAI נכון ל-{date} (docs.x.ai/developers/pricing). בסיום, התוצאה מראה כמה xAI אומר שחייב.',
-  'media.keptHere': 'התוצאה נשמרת כתצוגה מקדימה בתוך JARVIS; שום דבר לא נשמר במחשב שלך עד שתלחץ שמירה ותבחר איפה.',
+  'media.keptHere': 'התוצאה נשמרת כתצוגה מקדימה בתוך JARVIS; שום דבר לא נשמר במחשב שלך לפני שלוחצים "שמירה" ובוחרים איפה.',
   'media.chars': '{n} מתוך {max} תווים',
   'media.previews': 'תצוגות מקדימות',
   'media.empty': 'עדיין אין תצוגות מקדימות',

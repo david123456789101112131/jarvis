@@ -309,7 +309,7 @@ class DevService:
                 else t(lang, f"לקחת את {len(picked)} הקבצים שבחרת", f"Take the {len(picked)} files you chose"),
                 t(lang, f"לשלוח ל-{engine_label} ולקבל תוכנית ושינויים ממוקדים", f"Send to {engine_label} and get a plan with focused edits")
                 if not local else t(lang, "לבקש מהמודל המקומי תוכנית ושינויים ממוקדים", "Ask the local model for a plan with focused edits"),
-                t(lang, "לבדוק את ההצעה (תחביר, ייבוא, היקף) ולהציג אותה לסקירה; שום קובץ לא משתנה עד שתאשר",
+                t(lang, "לבדוק את ההצעה (תחביר, ייבוא, היקף) ולהציג אותה לסקירה; שום קובץ לא משתנה לפני האישור",
                   "Check the proposal (syntax, imports, size) and show it for review; no file changes until you apply it")]
         return await self.app.jobs.start(
             kind="dev.fix" if error_text.strip() else "dev.propose", area="code",

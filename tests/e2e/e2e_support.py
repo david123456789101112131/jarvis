@@ -54,7 +54,7 @@ class Jarvis:
         env = {k: v for k, v in os.environ.items() if not k.startswith("JARVIS__")}
         env.update(JARVIS_HOME=str(self.home), PYTHONPATH=str(ROOT / "src"), PYTHONUTF8="1",
                    JARVIS__VOICE__ENABLED="false", JARVIS__UI__DESKTOP_NOTIFICATIONS="false")
-        for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "BRAVE_API_KEY", "TAVILY_API_KEY"):
+        for key in ("ANTHROPIC_API_KEY", "XAI_API_KEY", "OPENAI_API_KEY", "BRAVE_API_KEY", "TAVILY_API_KEY"):
             env.pop(key, None)
         self.proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "jarvis", "--no-window", "--quiet", "--port", "0", env=env,

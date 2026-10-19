@@ -84,6 +84,12 @@ Rules:
 | `core/` | `JarvisCore`: modes, intent detection (bilingual), command router, responses, session context. |
 | `voice/` | Audio I/O, wake word engines, VAD/endpointing, STT engines, TTS engines with phrase cache, `VoicePipeline`, `VoiceService`. |
 | `computer/` | Computer control: a local vision model (Holo3.1, via llama.cpp) proposes actions; the backend (Win32 screen/input), the safety policy (judged from what Windows reports under the pointer), the look→think→act session, the model server, and `jarvis computer install`. Behind `use_computer`/`computer_act` in the tool layer. |
+| `devmode/` | The code screen: a project the user picked (read access to that folder only), its inspection without AI, which files a request is about, the AI proposal (plan, assumptions, search/replace edits, secret-looking values hidden first), review, apply and undo with byte-exact restore, and the project's own test run. |
+| `media/` | Image and video creation with xAI Grok Imagine (client, catalog with prices, previews store, save), and the marked demonstration used when xAI is not connected. |
+| `integrations/` | The apps screen: installed apps and open windows, one look at the screen with the computer-control model, one suggested step, a step done on approval. |
+| `jobs.py` | `JobManager`: the work screens' actions as jobs with steps, progress, what is sent and its cost, stop, retry, a deduplicated repeat, and a history file. |
+| `metrics.py` | Measured durations (median, p90) behind the speed report, with named snapshots ("before"). |
+| `privacy.py` | `PrivacyService`: what JARVIS keeps (counts, sizes, places, never the content), deleting each kind for good, and what reaches the microphone, the screen and the internet. |
 | `server/` | FastAPI app, WebSocket hub, REST routes, static UI hosting. |
 | `ui/` | Desktop shell (pywebview windows) + built static web UI. |
 | `app.py` | Composition root: builds and wires every service; start/stop lifecycle. |
@@ -212,6 +218,15 @@ status, current task, progress, last action, errors, permissions, activity, cont
 (grants, pending confirmations, audit, kill switches) and **Settings** (providers and keys
 status, voice, orb customization). A compact always-on-top orb window mirrors the reference
 design's minimal states and offers the quick-tools ring.
+
+The rail holds six areas: the Command Center, **Code & development**, **Image creation**, **Video
+creation**, **Apps & tools**, and **History & settings** (tasks, the work history with the speed report,
+agents, memory, security, settings, privacy & data). Every action of the four work areas is a job
+(`jarvis.jobs`): the screen shows what JARVIS understood, what it is about to do, whether it is real or a
+demonstration, what leaves the computer and where to, its steps and progress live (`job` events), the
+result or the error, and Stop / Try again. The jobs' tools go through the same executor, permission manager
+and approval dialog as the agents' (section 7); a file reaches a job only from the window's own file dialog
+or a typed path.
 
 At sign-in Windows starts JARVIS with `--background`: only the orb is on screen and the wake word
 is live, so JARVIS is used hands-free. `jarvis.host.autostart` keeps the per-user Run entry in step

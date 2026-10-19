@@ -28,7 +28,7 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     for key in list(os.environ):
         if key.startswith("JARVIS__"):
             monkeypatch.delenv(key, raising=False)
-    for key in ("ANTHROPIC_API_KEY", "OPENAI_API_KEY", "BRAVE_API_KEY", "TAVILY_API_KEY"):
+    for key in ("ANTHROPIC_API_KEY", "XAI_API_KEY", "OPENAI_API_KEY", "BRAVE_API_KEY", "TAVILY_API_KEY"):
         monkeypatch.delenv(key, raising=False)
     return home
 

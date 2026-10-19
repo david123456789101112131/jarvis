@@ -100,6 +100,46 @@ The kill switches are covered with them: `unit/test_agents.py::TestManager::test
 a running JARVIS in `e2e/test_live_process.py::test_stopping_a_task_and_the_kill_switch` and
 `e2e/test_ui_browser.py::test_approvals_and_the_kill_switch_in_the_window`.
 
+## The work screens: code, images, video, apps, privacy
+
+The checks the work screens were asked to pass, and the tests that make them. The AI, xAI and the screen
+are stand-ins in these tests (a scripted Grok, an `httpx.MockTransport` in place of xAI with a made-up key, a
+fake desktop and computer-control model), so no test sends anything to a paid service; the shared fixtures
+also remove any `XAI_API_KEY`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from the environment.
+
+| Required check | Covered by |
+|---|---|
+| The app opens and the new screens load | `e2e/test_ui_browser.py::test_the_work_areas_show_what_is_real_and_ask_first` (every area from the rail, against a real JARVIS); `ui/src/screens/*/*.test.tsx` (each screen on its own, with the core's answers scripted) |
+| A code request gets a result or a clear error | `integration/test_dev.py::TestCodeScreen::test_plan_review_apply_and_undo`, `::test_a_bad_answer_changes_nothing`, `::test_a_broken_proposal_is_shown_but_cannot_be_applied`, `::test_a_proposal_can_be_revised_in_words`; `ui/src/screens/code/code.test.tsx` |
+| Running tests reports real results | `integration/test_dev.py::TestTests::test_tests_run_after_approval_and_a_fix_gets_the_failures` (a real pytest run: what ran, 1 passed, 1 failed, which test), `::test_a_project_without_tests_says_so`; the browser test above, in the window |
+| Image and video screens show whether the service is available | `integration/test_media_routes.py::TestMediaRoutes::test_status_says_what_is_missing`, `::test_creating_for_real_without_xai_is_refused_not_faked`, `::test_a_demonstration_end_to_end`, `::test_a_real_image_is_created_shown_and_saved_after_approval` (a fake xAI); `ui/src/screens/images/ImagesScreen.test.tsx`, `ui/src/screens/video/VideoScreen.test.tsx` |
+| Actions can be stopped and cancelled | `integration/test_work.py::TestJobs::test_a_job_is_live_on_the_socket_stoppable_and_retryable`; `unit/test_jobs.py::TestJobs::test_stopping_a_job_abandons_its_wait_and_it_can_be_retried`; `unit/test_media.py::TestService::test_stopping_a_video_stops_asking_and_keeps_nothing`; `unit/test_apps.py::TestStep::test_stop_while_it_waits`, `::test_esc_twice_stops_it_while_jarvis_is_hidden`, `::test_the_kill_switch_stops_it` |
+| App actions ask for permission and approval | `unit/test_apps.py::TestLook::test_asks_first_and_sees_nothing_before_the_approval`, `::test_a_no_stops_it_and_nothing_is_seen`, `::test_a_password_manager_in_front_is_not_looked_into`; `unit/test_apps.py::TestStep::test_a_password_field_is_never_typed_into_even_when_asked_directly`; `integration/test_apps_routes.py::TestAppsRoutes::test_look_suggest_and_step_wait_for_the_approval`, `::test_bad_requests_and_the_kill_switch` |
+| Nothing is sent, deleted or changed before the approval | `integration/test_dev.py::TestCodeScreen::test_a_declined_approval_sends_nothing`, `::test_the_tool_never_reaches_grok_without_the_users_click`, `::test_an_edit_after_review_needs_a_new_approval`; `unit/test_apps.py::TestSuggest::test_send_is_previewed_and_asked_again`, `TestStep::test_the_rules_ask_again_for_a_send_and_a_no_stops_it`; `integration/test_privacy_routes.py` (deleting only on request, work in progress kept); the browser test above (tests run only after the approval; the privacy screen deletes on the second click) |
+| Errors are clear and reveal no secret | `unit/test_media.py::TestClient::test_the_key_never_shows_in_an_error`, `TestService::test_xai_failures_reach_the_job_in_words_without_the_key`; `unit/test_devmode.py::TestMaskCode::test_secret_values_are_hidden_and_the_code_stays_readable`; `integration/test_privacy_routes.py::TestPrivacyRoutes::test_what_is_kept_is_counted_without_its_content` |
+
+The UI tests run with `cd ui; npm test`; the browser test needs a Chromium-based browser (see
+`JARVIS_TEST_BROWSER` above). In a cloud build container without Playwright's own Chromium,
+`JARVIS_TEST_BROWSER=/opt/pw-browsers/chromium python -m pytest tests/e2e` runs it.
+
+## Speed
+
+`scripts/bench_local.py` measures how fast JARVIS answers on this computer, with nothing leaving it and
+nothing on the desktop touched: a fresh temporary home, no AI provider, voice off.
+
+```powershell
+python scripts/bench_local.py                    # this checkout
+python scripts/bench_local.py --src <other>/src  # another version, for a before/after comparison
+python scripts/bench_local.py --json             # the numbers as JSON
+```
+
+It reports importing the code, building and starting the app, understanding a command, the time from each
+everyday command to the first reply, and how many of a list of everyday wordings are understood on the spot.
+To compare with an older version, check that version out into another folder (`git worktree add ../old
+<commit>`) and pass its `src` with `--src`. While JARVIS runs, the same kind of numbers are kept for real
+use (`GET /api/metrics`, and the Speed panel under History & settings > Work history), where they can be
+saved as a named snapshot ("before") to compare with later.
+
 ## What only the PC can check
 
 A build machine has no microphone, speakers, Start menu or WebView2, and may not reach the speech

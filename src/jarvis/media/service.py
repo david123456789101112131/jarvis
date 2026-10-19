@@ -339,7 +339,7 @@ class MediaService:
             plan = [
                 t(lang, f"לשלוח ל-{catalog.SERVICE_NAME} את התיאור{what} וליצור {many} (מודל {label}{shape})",
                   f"Send the description{what} to {catalog.SERVICE_NAME} and create {many} ({label} model{shape})"),
-                t(lang, "לשמור תצוגה מקדימה בתיקיית העבודה של JARVIS; אצלך לא נשמר דבר עד שתלחץ שמירה ותבחר מקום",
+                t(lang, "לשמור תצוגה מקדימה בתיקיית העבודה של JARVIS; אצלך לא נשמר דבר לפני שלוחצים \"שמירה\" ובוחרים מקום",
                   "Keep a preview in JARVIS's workspace; nothing is saved on your computer until you press Save "
                   "and choose where"),
             ]
@@ -459,7 +459,7 @@ class MediaService:
         clip = scene if len(scene) <= 80 else scene[:79] + "…"
         title = t(lang, f"לשנות את הסרטון: «{change[:80]}»", f"Change the video: “{change[:80]}”") if kind == "video.refine" \
             else t(lang, f"ליצור סרטון של {length}: «{clip}»", f"Create a {seconds}-second video: “{clip}”")
-        stop_note = t(lang, "אם תעצור באמצע, xAI עשוי להשלים את הסרטון אצלו (ולחייב עליו), אבל אצלך לא יישמר ממנו דבר",
+        stop_note = t(lang, "עצירה באמצע: xAI עשוי להשלים את הסרטון אצלו (ולחייב עליו), אבל אצלך לא יישמר ממנו דבר",
                       "If you stop midway, xAI may still finish the video on its side (and charge for it), but nothing "
                       "of it is kept on your computer")
         if real:
