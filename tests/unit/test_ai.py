@@ -302,6 +302,22 @@ class TestXai:
         await p.complete(req())
         assert "reasoning_effort" not in fake.calls[4] and p.errors == 0 and p.last_error is None
 
+    async def test_thinking_tokens_count_as_output(self) -> None:
+        # xAI reports the thinking apart from the answer (total = prompt + answer + thinking)…
+        xai = completion("hi")
+        xai["usage"] = {"prompt_tokens": 32, "completion_tokens": 9, "total_tokens": 135,
+                        "completion_tokens_details": {"reasoning_tokens": 94}}
+        # …OpenAI inside the answer (total = prompt + answer).
+        inside = completion("hi")
+        inside["usage"] = {"prompt_tokens": 10, "completion_tokens": 50, "total_tokens": 60,
+                           "completion_tokens_details": {"reasoning_tokens": 30}}
+        p, _fake = grok(xai, inside)
+        first = (await p.complete(req())).usage
+        assert (first.input_tokens, first.output_tokens, first.reasoning_tokens) == (32, 103, 94)
+        second = (await p.complete(req())).usage
+        assert (second.output_tokens, second.reasoning_tokens) == (50, 30)
+        assert first.add(second).reasoning_tokens == 124
+
     async def test_other_errors_are_not_repeated(self) -> None:
         p, fake = grok(openai_error("BadRequestError", 400, "Error code: 400 - prompt too long"))
         with pytest.raises(ProviderError) as info:

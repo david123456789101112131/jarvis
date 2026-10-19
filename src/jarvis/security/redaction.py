@@ -41,6 +41,11 @@ _ASSIGNMENT = re.compile(
     """
 )
 
+# In source code: a quoted literal given to a name (`api_key = "…"`, `"password": '…'`, `token => `…``).
+_LITERAL_ASSIGNMENT = re.compile(
+    r"""(?P<key>[A-Za-z_][\w\-]*)(?P<sep>["']?\s*(?:=|:|=>)\s*)(?P<q>["'`])(?P<value>[^"'`\n]{6,})(?P=q)"""
+)
+
 # Secret-looking names are matched by whole words ("GITHUB_TOKEN", "apiKey", "x-api-key"), not substrings, so
 # data fields such as "key" (a plan step), "author", "keyboard" or "max_tokens" are kept.
 _SECRET_WORDS = frozenset({
@@ -134,6 +139,36 @@ class Redactor:
         if isinstance(obj, tuple):
             return tuple(self.redact(v, _depth + 1) for v in obj)
         return obj
+
+    def mask_code(self, text: str) -> tuple[str, int]:
+        """Hide credentials in source code before it leaves the computer: known secret values, well-known key
+        formats and string literals given to secret-looking names (`password = "hunter2"`). Code around them
+        is kept as it is (`token = get_token()` stays readable, unlike in `redact_text`). Returns the text and
+        how many values were hidden."""
+        if not text:
+            return text, 0
+        hidden = 0
+        pattern = self._value_pattern()
+        if pattern is not None:
+            text, n = pattern.subn(lambda m: f"[REDACTED:{self._values.get(m.group(0), 'secret')}]", text)
+            hidden += n
+        for name, pat in _PATTERNS:
+            if name == "url_credentials":
+                text, n = pat.subn(lambda m: f"{m.group(1)}{REDACTED}{m.group(2)}", text)
+            elif name == "bearer":
+                continue
+            else:
+                text, n = pat.subn(REDACTED, text)
+            hidden += n
+
+        def literal(m: re.Match[str]) -> str:
+            nonlocal hidden
+            if not looks_like_secret_name(m.group("key")) or m.group("value").startswith("[REDACTED"):
+                return m.group(0)
+            hidden += 1
+            return f"{m.group('key')}{m.group('sep')}{m.group('q')}{REDACTED}{m.group('q')}"
+
+        return _LITERAL_ASSIGNMENT.sub(literal, text), hidden
 
     def find_secrets(self, text: str) -> list[str]:
         """Names of secrets/patterns present in `text` (used to block outgoing data)."""

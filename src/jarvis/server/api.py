@@ -24,7 +24,7 @@ from starlette.types import Message as ASGIMessage
 
 from jarvis import __version__
 from jarvis.common.enums import AgentId, Capability, Mode
-from jarvis.common.errors import ConfigError, TaskRefused
+from jarvis.common.errors import ConfigError, JarvisError, TaskRefused
 from jarvis.common.i18n import t
 from jarvis.security.secrets import KNOWN_SECRETS, SecretFormatError
 from jarvis.server.auth import COOKIE, HEADER, ServerAuth
@@ -243,6 +243,11 @@ def create_api(app: JarvisApp) -> FastAPI:
     @api.exception_handler(TaskRefused)
     async def _refused(request: Request, exc: TaskRefused) -> JSONResponse:
         return _error(409, "refused", exc.message)
+
+    @api.exception_handler(JarvisError)
+    async def _not_done(request: Request, exc: JarvisError) -> JSONResponse:
+        # Something the user can act on ("open the project again", "turn on changes"), said in their words.
+        return _error(409, str(exc.details.get("code") or exc.code), app.redactor.redact_text(exc.message))
 
     @api.exception_handler(Exception)
     async def _crash(request: Request, exc: Exception) -> JSONResponse:

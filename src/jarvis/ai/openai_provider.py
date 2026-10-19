@@ -226,14 +226,21 @@ class OpenAICompatibleProvider(AIProvider):
             stop = "refusal"
         usage = getattr(completion, "usage", None)
         cached = getattr(getattr(usage, "prompt_tokens_details", None), "cached_tokens", 0) or 0
+        prompt = int(getattr(usage, "prompt_tokens", 0) or 0)
+        output = int(getattr(usage, "completion_tokens", 0) or 0)
+        thinking = int(getattr(getattr(usage, "completion_tokens_details", None), "reasoning_tokens", 0) or 0)
+        total = int(getattr(usage, "total_tokens", 0) or 0)
+        # xAI counts the thinking apart from the answer (total = prompt + answer + thinking), OpenAI inside it;
+        # both bill it as output, so output_tokens always includes it.
+        if thinking and total >= prompt + output + thinking:
+            output += thinking
         return AIResponse(
             text=text,
             tool_calls=calls,
             stop_reason=stop,  # type: ignore[arg-type]
             message=AIMessage(role="assistant", text=text, tool_calls=calls),
-            usage=Usage(input_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
-                        output_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
-                        cache_read_tokens=int(cached)),
+            usage=Usage(input_tokens=prompt, output_tokens=output, cache_read_tokens=int(cached),
+                        reasoning_tokens=thinking),
             provider=self.name,
             model=str(getattr(completion, "model", self.model)),
             refusal=Refusal(explanation=refusal_text) if refusal_text else None,
