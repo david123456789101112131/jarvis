@@ -34,6 +34,8 @@ def describe_plan(plan: dict[str, Any]) -> list[str]:
     back = f", {_gb(plan['ram_reclaimable'])} GB of it the worker's shared pages" if plan.get("ram_reclaimable") else ""
     lines = [f"  {plan['family']}: free now {_gb(plan.get('ram_free'))} GB RAM{back}, {_gb(plan.get('vram_free'))} GB "
              f"on the card (spare kept: {_gb(plan.get('ram_spare'))} GB RAM)"]
+    if plan.get("commit_free") is not None:
+        lines.append(f"    Windows can still reserve {_gb(plan['commit_free'])} GB (RAM and paging file together)")
     for mode, need in (plan.get("needs") or {}).items():
         lines.append(f"    {mode:7} needs {_gb(need['ram'])} GB RAM, {_gb(need['vram'])} GB on the card")
     lines.append(f"    → {plan.get('mode') or 'none fits: ' + str(plan.get('refusal'))}")

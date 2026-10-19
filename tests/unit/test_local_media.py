@@ -134,6 +134,25 @@ class TestProtocol:
         assert serve(no_card, ['{"id": 1, "op": "image"}'], sent) == 2
         assert json.loads(sent.getvalue()) == {"event": "error", "kind": "no_gpu", "message": "no NVIDIA graphics card"}
 
+    def test_running_out_of_ram_midway_is_low_memory_and_ends_the_worker(self) -> None:
+        class Short(Stand):
+            def image(self, req: dict[str, Any], progress: Any) -> dict[str, Any]:
+                raise RuntimeError("[enforce fail at alloc_cpu.cpp:117] data. DefaultCPUAllocator: not enough memory: "
+                                   "you tried to allocate 1073741824 bytes.")
+
+            def video(self, req: dict[str, Any], progress: Any) -> dict[str, Any]:
+                raise OSError("[WinError 1455] The paging file is too small for this operation to complete")
+
+            def translate(self, text: str) -> str:
+                raise MemoryError()
+
+        sent = io.StringIO()
+        serve(Short, ['{"id": 1, "op": "image"}', '{"id": 2, "op": "video"}', '{"id": 3, "op": "translate"}'], sent)
+        got = [json.loads(x) for x in sent.getvalue().splitlines()][1:]
+        assert [(m["id"], m["kind"], m["stopped"]) for m in got] == [(1, "low_memory", True), (2, "low_memory", True),
+                                                                     (3, "low_memory", True)]
+        assert "כמעט נגמר" in failure_text("he", LocalMediaError(got[0]["message"], "low_memory", {"stopped": True}))
+
     def test_hebrew_lines_are_translated_sentence_by_sentence_and_labels_stay(self) -> None:
         asked: list[list[str]] = []
 

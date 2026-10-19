@@ -62,6 +62,9 @@ HEADROOM = {"image": int(2.5 * GIB), "video": 4 * GIB}     # graphics memory for
 RAM_SPARE = 3 * GIB               # RAM left free for Windows and the programs already open
 RAM_FLOOR = 3 * GIB // 2          # below this much free RAM the worker ends itself rather than let the computer stall
 LOW_MEMORY_EXIT = 75              # its exit code then, which JARVIS words as "low_memory"
+# How running out of RAM reads: PyTorch's allocator, and Windows when the commit limit (RAM plus the paging file) is
+# reached, which can come before the RAM itself runs out.
+RAM_SHORT = ("defaultcpuallocator: not enough memory", "paging file is too small")
 EIGHT_BIT_PARTS = ("transformer", "text_encoder")
 # In the text encoders, the normalisations and the word tables stay in bf16 (diffusers' own models say this
 # themselves), and so does T5's last feed-forward layer ("wo"), whose dtype T5 reads to cast what goes into it.
@@ -165,6 +168,10 @@ def serve(make_backend: Callable[[], Backend], lines: Iterable[str], out: IO[str
         except Exception as exc:
             traceback.print_exc(file=sys.stderr)
             text = f"{type(exc).__name__}: {exc}"
+            if isinstance(exc, MemoryError) or any(m in text.lower() for m in RAM_SHORT):
+                # Out of RAM (or of what Windows lets programs reserve): JARVIS ends this process, freeing it all.
+                send({"id": rid, "event": "error", "kind": "low_memory", "message": text[:2000], "stopped": True})
+                continue
             kind = "oom" if "out of memory" in text.lower() else "failed"
             send({"id": rid, "event": "error", "kind": kind, "message": text[:2000]})
     return 0
@@ -476,7 +483,7 @@ class Diffusion:
         ram_free, vram_free = usable(now), self._free()
         plan: dict[str, Any] = {
             "family": family, "loaded": self.family, "ram_free": ram_free, "vram_free": vram_free,
-            "ram_reclaimable": now.get("ram_reclaimable", 0),
+            "ram_reclaimable": now.get("ram_reclaimable", 0), "commit_free": now.get("commit_free"),
             "parts": {name: {"numbers": total, "kept_bf16": kept} for name, (total, kept) in parts.items()},
             "needs": {mode: dict(zip(("ram", "vram"), needs(family, parts, mode), strict=True)) for mode in MODES},
             "ram_spare": RAM_SPARE}
