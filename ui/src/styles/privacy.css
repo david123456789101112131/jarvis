@@ -1,0 +1,134 @@
+/* The "Privacy & data" area: what JARVIS keeps (a row per kind, with its delete button), the microphone,
+   screen and internet facts, and what is kept on purpose. */
+
+.privacy__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
+  gap: var(--s4);
+  align-items: start;
+  min-height: 0;
+}
+
+@media (max-width: 1180px) {
+  .privacy__cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.privacy-list,
+.privacy-kept {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.privacy-row {
+  display: flex;
+  gap: var(--s3);
+  align-items: flex-start;
+  justify-content: space-between;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-0);
+}
+
+.privacy-row[data-empty] {
+  opacity: 0.6;
+}
+
+.privacy-row[data-busy] {
+  border-color: rgba(var(--tone-warn), 0.4);
+}
+
+.privacy-row__text,
+.privacy-kept li {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.privacy-kept li {
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+
+.privacy-row__name {
+  font-size: 13px;
+  color: var(--text-0);
+}
+
+.privacy-row__hint {
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.privacy-row__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  font-size: 12px;
+  color: var(--text-1);
+}
+
+.privacy-row__busy {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: rgb(var(--tone-warn));
+}
+
+.privacy-row__where summary {
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.privacy-row__where code,
+.privacy-kept code {
+  display: block;
+  font-size: 11px;
+  color: var(--text-2);
+  overflow-wrap: anywhere;
+}
+
+.privacy-row .btn {
+  flex: none;
+}
+
+.privacy-sense {
+  display: grid;
+  gap: 4px;
+  padding-bottom: var(--s3);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.privacy-sense:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.privacy-sense p {
+  margin: 0;
+}
+
+.privacy-sense__title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 2px;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+
+.privacy-sense [data-online] {
+  color: rgb(var(--tone-warn));
+}

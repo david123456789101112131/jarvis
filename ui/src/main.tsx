@@ -26,6 +26,7 @@ import './styles/code.css';
 import './styles/images.css';
 import './styles/video.css';
 import './styles/apps.css';
+import './styles/privacy.css';
 
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';

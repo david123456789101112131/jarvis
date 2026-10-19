@@ -167,22 +167,10 @@ class PrivacyService:
             self._row("logs", len(logs), where=[str(paths.logs)], size=_total(logs)),
             self._row("temp", len(temp), where=[str(paths.tts_cache), str(paths.cache)], size=_total(temp)),
         ]
-        media = self._media_inventory()
-        if media is not None:
-            rows.append(self._row("media", int(media.get("count", 0)), where=[str(w) for w in media.get("where", [])],
-                                  size=media.get("bytes")))
+        media = app.media.inventory()
+        rows.append(self._row("media", int(media["count"]), where=list(media["where"]), size=int(media["bytes"]) or None))
         return {"rows": rows, "organize": {"count": len(organize), "bytes": _total(organize),
                                            "where": str(paths.data / "organize-logs")}}
-
-    def _media_inventory(self) -> dict[str, Any] | None:
-        inventory = getattr(self.app.media, "inventory", None)
-        if inventory is None:
-            return None
-        try:
-            return dict(inventory())
-        except Exception:
-            log.exception("Counting the saved images and videos failed")
-            return None
 
     def _log_paths(self) -> list[Path]:
         folder = self.app.paths.logs
@@ -294,11 +282,7 @@ class PrivacyService:
             out = app.dev.clear()
             return {"count": int(out.get("changes", 0))}
         if key == "media":
-            clear = getattr(app.media, "clear", None)
-            if clear is None:
-                return {"count": 0}
-            out = await clear() if asyncio.iscoroutinefunction(clear) else clear()
-            return {"count": int(dict(out or {}).get("count", 0))}
+            return {"count": await app.media.clear()}
         if key == "speed":
             count = sum(int(s.get("count", 0)) for s in app.metrics.summary().values())
             app.metrics.clear()

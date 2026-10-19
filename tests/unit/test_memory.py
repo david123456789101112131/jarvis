@@ -132,3 +132,49 @@ class TestConversationAndHistory:
         assert history[0].ok is True and history[0].task_id == "task_1" and history[0].source == "voice"
         stats = await memory.stats()
         assert stats["commands"] == 1
+
+
+class TestClear:
+    async def _fill(self, memory) -> None:
+        await memory.add_chat(ChatRecord(role="user", text="סוד-השיחה zebra-chat"))
+        await memory.add_command("פתח את zebra-command", source="voice")
+        await memory.remember("הצבע האהוב עליי zebra-fact", "preference")
+        await memory.upsert_project("zebra-project", path="/tmp/zebra", description="פרויקט")
+        await memory.record_file("/tmp/zebra-file.txt", task_id="task_done")
+        await memory.save_task(TaskRecord(id="task_done", title="zebra-finished", status="completed"))
+        await memory.add_result(ResultRecord(task_id="task_done", summary="zebra-result"))
+        await memory.set_task_context("task_done", "notes", {"text": "zebra-context"})
+        for tid, status in (("task_live", "running"), ("task_paused", "interrupted")):
+            await memory.save_task(TaskRecord(id=tid, title=f"zebra-{status}", status=status))
+        memory.short.note("last_app", "zebra-app")
+
+    async def test_each_kind_goes_for_good_and_work_in_progress_stays(self, memory, tmp_path: Path) -> None:
+        await self._fill(memory)
+        stats = await memory.stats()
+        assert stats["finished_tasks"] == 1 and stats["tasks"] == 3
+        out = await memory.clear(["chat", "commands", "facts", "projects", "files", "tasks"])
+        assert out == {"chat": 1, "commands": 1, "facts": 1, "projects": 1, "files": 1, "tasks": 1}
+        stats = await memory.stats()
+        assert {k: stats[k] for k in ("chat", "commands", "facts", "projects", "files", "results")} == dict.fromkeys(
+            ("chat", "commands", "facts", "projects", "files", "results"), 0)
+        assert sorted(t.id for t in await memory.tasks()) == ["task_live", "task_paused"]
+        assert await memory.task_context("task_done") == {}
+        assert memory.short.recent() == [] and memory.short.get("last_app") is None
+        assert [h.id for h in await memory.search("zebra")] in (["task_live", "task_paused"], ["task_paused", "task_live"])
+        # nothing deleted lingers in the database file or its write-ahead log
+        raw = _db_bytes(tmp_path)
+        for gone in ("zebra-chat", "zebra-command", "zebra-fact", "zebra-project", "zebra-file", "zebra-finished",
+                     "zebra-result", "zebra-context"):
+            assert gone.encode() not in raw, gone
+        assert b"zebra-running" in raw
+
+    async def test_one_kind_at_a_time_and_unknown_kinds_are_refused(self, memory) -> None:
+        await self._fill(memory)
+        assert await memory.clear(["facts"]) == {"facts": 1}
+        stats = await memory.stats()
+        assert stats["facts"] == 0 and stats["chat"] == 1 and stats["tasks"] == 3
+        assert len(memory.short.recent()) == 1                 # the conversation stays
+        with pytest.raises(ValueError, match="cannot clear"):
+            await memory.clear(["chat", "everything"])
+        assert (await memory.stats())["chat"] == 1             # refused before anything went
+        assert await memory.clear([]) == {}

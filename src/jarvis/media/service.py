@@ -247,6 +247,11 @@ class MediaService:
     async def clear(self, kind: str | None = None) -> int:
         return await asyncio.to_thread(self.store.clear, kind)
 
+    def inventory(self) -> dict[str, Any]:
+        """For the privacy screen: how many previews JARVIS keeps, their size and where (never their content)."""
+        items = self.store.items(limit=1_000_000)
+        return {"count": len(items), "bytes": sum(i.bytes or 0 for i in items), "where": [str(self.store.folder)]}
+
     def _item(self, item_id: str | None, lang: str, kind: str = "image") -> MediaItem:
         item = self.store.file(item_id or "")
         if item is None:

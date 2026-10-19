@@ -75,11 +75,14 @@
   box-shadow: var(--glow-sm);
 }
 
+/* Only the colour and the padding change here: the `background` and `padding` shorthands would drop the arrow
+   components.css draws and the room it keeps for it. */
 .select {
-  padding: 7px 10px;
+  padding-block: 7px;
+  padding-inline: 10px 28px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--line-2);
-  background: var(--surface-solid);
+  background-color: var(--surface-solid);
   color: var(--text-0);
   font: inherit;
   font-size: 13px;

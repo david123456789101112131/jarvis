@@ -523,7 +523,7 @@
 .textarea:focus {
   border-color: rgba(var(--accent-2-rgb), 0.7);
   box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.15);
-  background: rgba(3, 8, 18, 0.75);
+  background-color: rgba(3, 8, 18, 0.75);       /* the colour only: a select keeps its arrow */
 }
 
 .select {
@@ -539,13 +539,11 @@
     calc(100% - 10px) 50%;
 }
 
+/* Right to left the arrow sits at the start; its two halves stay in the same order (swapped, they draw a notch). */
 [dir='rtl'] .select {
   background-position:
-    15px 50%,
-    10px 50%;
-  background-image:
-    linear-gradient(45deg, transparent 50%, var(--text-2) 50%),
-    linear-gradient(135deg, var(--text-2) 50%, transparent 50%);
+    10px 50%,
+    15px 50%;
 }
 
 .select option {
