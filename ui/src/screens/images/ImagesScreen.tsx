@@ -137,7 +137,7 @@ function ImageForm({ status }: { status: MediaStatus }) {
           </label>
           <label className="field">
             <span className="field__label">{t('images.aspect')}</span>
-            <select className="select ltr" dir="ltr" value={aspect} onChange={(e) => setAspect(e.target.value)} data-testid="images-aspect">
+            <select className="select ltr" dir="ltr" value={aspect} disabled={source !== null} onChange={(e) => setAspect(e.target.value)} data-testid="images-aspect">
               {offer.image.aspect_ratios.map((a) => (
                 <option key={a} value={a}>
                   {a === 'auto' ? t('images.aspectAuto') : a}
@@ -163,7 +163,8 @@ function ImageForm({ status }: { status: MediaStatus }) {
         <div className="field-row">
           <div className="field">
             <span className="field__label">{t('images.resolution')}</span>
-            <Segmented value={resolution} options={offer.image.resolutions.map((r) => ({ value: r, label: r.toUpperCase() }))} onChange={setResolution} label={t('images.resolution')} testId="images-resolution" />
+            {/* An image being changed keeps its own shape and size: neither is sent with it. */}
+            <Segmented value={resolution} options={offer.image.resolutions.map((r) => ({ value: r, label: r.toUpperCase() }))} onChange={setResolution} label={t('images.resolution')} testId="images-resolution" disabled={source !== null} />
           </div>
           <div className="field">
             <span className="field__label">{t('images.count')}</span>
