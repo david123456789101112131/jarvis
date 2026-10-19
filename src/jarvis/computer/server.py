@@ -23,6 +23,7 @@ from typing import IO, Any
 
 import httpx
 
+from jarvis.common.gpu import GpuTurns
 from jarvis.config.settings import ComputerSettings
 from jarvis.security.process import ProcessRegistry, kill_tree
 from jarvis.security.secrets import sanitized_env
@@ -30,6 +31,7 @@ from jarvis.security.secrets import sanitized_env
 log = logging.getLogger(__name__)
 
 OWNER = "computer-model"
+GPU_NAME = "computer"
 EXE_NAME = "llama-server.exe" if sys.platform == "win32" else "llama-server"
 HEALTH_TIMEOUT_S = 240.0       # loading ~10 GB onto the GPU takes a while the first time
 IMAGE_MIN_TOKENS = 1024        # the least picture detail the model grounds clicks well with
@@ -93,6 +95,7 @@ class ModelServer:
         self._log: IO[bytes] | None = None
         self._last_used = 0.0
         self._lock = asyncio.Lock()
+        self.gpu: GpuTurns | None = None          # set by the app: image/video creation lets go of the card first
 
     def problem(self) -> str | None:
         return self.files.problem()
@@ -124,6 +127,8 @@ class ModelServer:
             problem = self.problem()
             if problem is not None:
                 raise RuntimeError(problem)
+            if self.gpu is not None and await self.gpu.take(GPU_NAME) is not None:
+                raise RuntimeError("the graphics card is busy making an image or a video; try again when it is done.")
             await self._start()
 
     def command(self) -> list[str]:

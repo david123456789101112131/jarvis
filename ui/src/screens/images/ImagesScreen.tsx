@@ -1,5 +1,18 @@
 import { useMemo, useState } from 'react';
-import { changePrompt, imageCost, imagePrompt, media, usd, variationPrompt, type MediaItem, type MediaStatus } from '../../api/media';
+import {
+  canCreate,
+  changePrompt,
+  imageCost,
+  imagePrompt,
+  isLocal,
+  localChangePrompt,
+  localSeconds,
+  media,
+  usd,
+  variationPrompt,
+  type MediaItem,
+  type MediaStatus,
+} from '../../api/media';
 import { Icon } from '../../components/Icon';
 import { ScreenHeader } from '../../components/shell/Shell';
 import { ErrorBox, Loading, Panel, Segmented } from '../../components/ui';
@@ -21,13 +34,15 @@ import {
   SaveControl,
   SendBox,
   useAdoptJob,
+  useDuration,
   useMediaItems,
   useMediaStatus,
 } from './MediaParts';
 
 /**
- * The "Image creation" area: describe an image, see exactly what is sent to xAI and the price, create it (or, when
- * xAI is not connected, a demonstration that says so), then save, change or vary the preview.
+ * The "Image creation" area: describe an image, see the text the model gets (and, with xAI, exactly what is sent and
+ * the price; on this computer, that it is free and roughly how long), create it (or, when the models are not
+ * installed, a demonstration that says so), then save, change or vary the preview.
  */
 export function ImagesScreen() {
   const { t } = useI18n();
@@ -42,14 +57,14 @@ export function ImagesScreen() {
 
   return (
     <div className="area media" data-testid="images-screen">
-      <ScreenHeader title={t('images.title')} subtitle={t('images.subtitle')} icon="image" actions={s ? <ConnectionChip status={s} /> : null} />
+      <ScreenHeader title={t('images.title')} subtitle={t('images.subtitle')} icon="image" actions={s ? <ConnectionChip status={s} kind="image" /> : null} />
       {boot.mock ? <Unavailable testId="images-unavailable" reason={t('unavailable.simulation')} /> : null}
       {status.error ? <ErrorBox message={status.error} onRetry={status.reload} retryLabel={t('media.checkAgain')} /> : null}
       {!boot.mock && !s && status.loading ? <Loading label={t('images.title')} /> : null}
       {s ? (
         <div className="area__cols">
           <div className="area__stack">
-            {s.available ? null : <NotConnected status={s} hint={t('images.unavailableHint')} testId="images-unavailable" onCheck={status.reload} />}
+            {canCreate(s, 'image') ? null : <NotConnected status={s} kind="image" hint={t('images.unavailableHint')} testId="images-unavailable" onCheck={status.reload} />}
             <ImageForm status={s} />
           </div>
           <div className="area__stack">
@@ -80,18 +95,25 @@ function ImageForm({ status }: { status: MediaStatus }) {
   const api = useApi();
   const adopt = useAdoptJob();
   const { run, isPending } = useRunner(t('job.actionFailed'));
+  const duration = useDuration();
   const offer = status.offer;
+  const first = offer.image.models[0];
+  // A model may make only some sizes and shapes (the one on this computer makes about 1 megapixel, no "auto").
+  const aspects = first?.aspect_ratios?.length ? first.aspect_ratios : offer.image.aspect_ratios;
+  const resolutions = first?.resolutions?.length ? first.resolutions : offer.image.resolutions;
   const [description, setDescription] = useState('');
   const [styleId, setStyleId] = useState(offer.image.styles[0]?.id ?? 'none');
-  const [model, setModel] = useState(offer.image.models[0]?.id ?? '');
-  const [aspect, setAspect] = useState(offer.image.aspect_ratios[0] ?? '1:1');
-  const [resolution, setResolution] = useState(offer.image.resolutions[0] ?? '1k');
+  const [model, setModel] = useState(first?.id ?? '');
+  const [aspect, setAspect] = useState(aspects[0] ?? '1:1');
+  const [resolution, setResolution] = useState(resolutions[0] ?? '1k');
   const [count, setCount] = useState(1);
   const [source, setSource] = useState<string | null>(null);
-  const real = status.available;
+  const real = canCreate(status, 'image');
+  const local = isLocal(status);
   const prompt = imagePrompt(offer, description, styleId);
   const tooLong = prompt.length > offer.max_prompt;
   const price = imageCost(offer, model, resolution, count, source ? 1 : 0);
+  const cost = local ? t('media.free') : usd(price);
   const ready = description.trim().length > 0 && !tooLong && !isPending('create');
 
   const create = () =>
@@ -133,7 +155,7 @@ function ImageForm({ status }: { status: MediaStatus }) {
           <label className="field">
             <span className="field__label">{t('images.aspect')}</span>
             <select className="select" value={aspect} disabled={source !== null} onChange={(e) => setAspect(e.target.value)} data-testid="images-aspect">
-              {offer.image.aspect_ratios.map((a) => (
+              {aspects.map((a) => (
                 <option key={a} value={a}>
                   {a === 'auto' ? t('images.aspectAuto') : a}
                 </option>
@@ -146,20 +168,22 @@ function ImageForm({ status }: { status: MediaStatus }) {
           <span className="field__label">{t('images.model')}</span>
           <Segmented
             value={model}
-            options={offer.image.models.map((m) => ({ value: m.id, label: m.label, title: t('images.perImage', { price: usd(imageCost(offer, m.id, resolution, 1)) }) }))}
+            options={offer.image.models.map((m) => ({ value: m.id, label: m.label, title: local ? undefined : t('images.perImage', { price: usd(imageCost(offer, m.id, resolution, 1)) }) }))}
             onChange={setModel}
             label={t('images.model')}
             testId="images-model"
             fit
           />
-          <span className="field__hint num">{t('images.perImage', { price: usd(imageCost(offer, model, resolution, 1)) })}</span>
+          <span className="field__hint num" data-testid="images-model-hint">
+            {local ? t('images.perImageLocal', { time: duration(offer.local_times?.image_s ?? 0) }) : t('images.perImage', { price: usd(imageCost(offer, model, resolution, 1)) })}
+          </span>
         </div>
 
         <div className="field-row">
           <div className="field">
             <span className="field__label">{t('images.resolution')}</span>
             {/* An image being changed keeps its own shape and size: neither is sent with it. */}
-            <Segmented value={resolution} options={offer.image.resolutions.map((r) => ({ value: r, label: r.toUpperCase() }))} onChange={setResolution} label={t('images.resolution')} testId="images-resolution" disabled={source !== null} />
+            <Segmented value={resolution} options={resolutions.map((r) => ({ value: r, label: r.toUpperCase() }))} onChange={setResolution} label={t('images.resolution')} testId="images-resolution" disabled={source !== null} />
           </div>
           <div className="field">
             <span className="field__label">{t('images.count')}</span>
@@ -177,12 +201,20 @@ function ImageForm({ status }: { status: MediaStatus }) {
           <div className="field">
             <span className="field__label">{t('images.source')}</span>
             <PathPicker kind="open" value={source} onChange={setSource} fileTypes={IMAGE_FILE_TYPES} testId="images-source" />
-            <span className="field__hint">{t('images.sourceHint')}</span>
+            <span className="field__hint">{t(local ? 'images.sourceHintLocal' : 'images.sourceHint')}</span>
           </div>
         ) : null}
 
         {real ? (
-          <SendBox status={status} text={prompt} files={source ? [{ name: fileName(source), yours: true }] : []} price={price} notes={[t('media.keptHere')]} testId="images-sends" />
+          <SendBox
+            status={status}
+            text={prompt}
+            files={source ? [{ name: fileName(source), yours: true }] : []}
+            price={price}
+            seconds={localSeconds(status, 'image', { count })}
+            notes={[t('media.keptHere')]}
+            testId="images-sends"
+          />
         ) : (
           <DemoBox text={t('images.demoNote', { label: t('images.demoBadge') })} testId="images-sends" />
         )}
@@ -191,7 +223,7 @@ function ImageForm({ status }: { status: MediaStatus }) {
           {real ? (
             <button type="button" className="btn btn--primary" disabled={!ready} onClick={create} data-testid="images-create">
               <Icon name="sparkles" size={14} />
-              {count > 1 ? t('images.createMany', { n: count, price: usd(price) }) : t('images.create', { price: usd(price) })}
+              {count > 1 ? t('images.createMany', { n: count, price: cost }) : t('images.create', { price: cost })}
             </button>
           ) : (
             <button type="button" className="btn" disabled={!ready} onClick={create} data-testid="images-demo">
@@ -218,9 +250,12 @@ function ImageDetail({ item, status, onDeleted }: { item: MediaItem; status: Med
   const [change, setChange] = useState('');
   const base = item.description || item.prompt;
   const variation = mode === 'variation';
-  const text = variation ? variationPrompt(base) : changePrompt(base, change);
+  // On this computer a change redraws the preview from text, so the text says what the image should become.
+  const localModel = item.params.engine === 'local' || (offer.image.models.find((m) => m.id === String(item.params.model ?? ''))?.local ?? false);
+  const text = localModel ? (variation ? base : localChangePrompt(base, change)) : variation ? variationPrompt(base) : changePrompt(base, change);
   const price = imageCost(offer, String(item.params.model ?? ''), String(item.params.resolution ?? ''), 1, 1);
-  const blocked = item.real && !status.available;
+  const cost = isLocal(status) ? t('media.free') : usd(price);
+  const blocked = item.real && !canCreate(status, 'image');
   const ready = !blocked && (variation || change.trim().length > 0) && text.length <= offer.max_prompt && !isPending('refine');
 
   const refine = () =>
@@ -237,7 +272,7 @@ function ImageDetail({ item, status, onDeleted }: { item: MediaItem; status: Med
         </div>
         <MediaFacts item={item} />
         <div className="field">
-          <span className="field__label">{t('media.sent')}</span>
+          <span className="field__label">{t(item.params.engine === 'local' ? 'media.modelRead' : 'media.sent')}</span>
           {item.real ? (
             <pre className="mono-block media-send__text" data-testid="media-sent">
               {item.prompt}
@@ -269,10 +304,10 @@ function ImageDetail({ item, status, onDeleted }: { item: MediaItem; status: Med
           )}
           {blocked ? (
             <span className="field__hint" data-testid="images-refine-blocked">
-              {t('images.needsXai')}
+              {t(isLocal(status) ? 'images.needsLocal' : 'images.needsXai')}
             </span>
           ) : item.real ? (
-            <SendBox status={status} text={text} files={[{ name: item.name, yours: false }]} price={price} testId="images-refine-sends" />
+            <SendBox status={status} text={text} files={[{ name: item.name, yours: false }]} price={price} seconds={localSeconds(status, 'image')} testId="images-refine-sends" />
           ) : (
             <DemoBox text={t('images.refineDemoNote')} testId="images-refine-sends" />
           )}
@@ -280,7 +315,7 @@ function ImageDetail({ item, status, onDeleted }: { item: MediaItem; status: Med
             <button type="button" className={`btn ${item.real ? 'btn--primary' : ''}`} disabled={!ready} onClick={refine} data-testid="images-refine">
               <Icon name={variation ? 'layers' : 'wand'} size={14} />
               {item.real
-                ? t(variation ? 'images.variationRun' : 'images.changeRun', { price: usd(price) })
+                ? t(variation ? 'images.variationRun' : 'images.changeRun', { price: cost })
                 : t(variation ? 'images.variationDemo' : 'images.changeDemo')}
             </button>
             <DeleteButton item={item} onDeleted={onDeleted} />

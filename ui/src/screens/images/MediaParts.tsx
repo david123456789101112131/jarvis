@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { ApiError } from '../../api/client';
-import { EXTENSION, jobItems, media, usd, type MediaItem, type MediaKind, type MediaStatus } from '../../api/media';
+import { EXTENSION, canCreate, isLocal, jobItems, media, missingFor, usd, type MediaItem, type MediaKind, type MediaStatus } from '../../api/media';
 import type { Job } from '../../api/work';
 import { BidiText } from '../../components/BidiText';
 import { Icon } from '../../components/Icon';
@@ -8,10 +8,11 @@ import { Chip, ConfirmButton, EmptyState } from '../../components/ui';
 import { JobCard, Unavailable } from '../../components/work/JobCard';
 import { PathPicker } from '../../components/work/PathPicker';
 import { useI18n } from '../../i18n';
-import { formatBytes } from '../../lib/format';
+import { formatBytes, hasHebrew } from '../../lib/format';
 import { errorMessage, useApi, useAppState, useResource, useRunner, useServices, useStore, useToast } from '../../state/context';
 
-// What the image and video screens share: xAI's status, the "what will be sent" box, the previews, saving and
+// What the image and video screens share: the engine's status (the free models on this computer, or xAI when the
+// settings choose it), the box that says what the model gets and what leaves the computer, the previews, saving and
 // deleting a preview, and the screen's own job cards.
 
 export type MediaArea = 'images' | 'video';
@@ -51,21 +52,24 @@ export function useAdoptJob() {
   );
 }
 
-export function ConnectionChip({ status }: { status: MediaStatus }) {
+export function ConnectionChip({ status, kind }: { status: MediaStatus; kind: MediaKind }) {
   const { t } = useI18n();
+  const ready = canCreate(status, kind);
+  const local = isLocal(status);
   return (
-    <Chip tone={status.available ? 'ok' : 'warn'} dot testId="media-connection">
-      {status.available ? t('media.connected', { service: status.service }) : t('media.notConnected')}
+    <Chip tone={ready ? 'ok' : 'warn'} dot testId="media-connection">
+      {local ? t(ready ? 'media.localReady' : 'media.localMissing') : ready ? t('media.connected', { service: status.service }) : t('media.notConnected')}
     </Chip>
   );
 }
 
-/** What is missing for real creation, and how to check again after connecting it. */
-export function NotConnected({ status, hint, testId, onCheck }: { status: MediaStatus; hint: string; testId: string; onCheck: () => void }) {
+/** What is missing for real creation, and how to check again after installing or connecting it. */
+export function NotConnected({ status, kind, hint, testId, onCheck }: { status: MediaStatus; kind: MediaKind; hint: string; testId: string; onCheck: () => void }) {
   const { t } = useI18n();
+  const local = isLocal(status);
   return (
-    <Unavailable testId={testId} title={t('media.unavailableTitle')} reason={status.reason ?? ''} needs={status.missing}>
-      <span className="field__hint">{hint}</span>
+    <Unavailable testId={testId} title={t(local ? 'media.localUnavailableTitle' : 'media.unavailableTitle')} reason={status.reason ?? ''} needs={missingFor(status, kind)}>
+      <span className="field__hint">{local ? t('media.localUnavailableHint') : hint}</span>
       <div className="actions-row">
         <button type="button" className="btn btn--sm btn--ghost" onClick={onCheck} data-testid="media-check">
           <Icon name="restart" size={13} />
@@ -82,9 +86,53 @@ export interface Outgoing {
   yours: boolean;
 }
 
-/** Exactly what leaves the computer, where to and the estimated price: shown above the button that sends it. */
-export function SendBox({ status, text, files, price, notes, testId }: { status: MediaStatus; text: string; files: Outgoing[]; price: number; notes?: string[]; testId: string }) {
+/** Roughly how long, in words ("about 40 seconds", "about 3 minutes"). */
+export function useDuration() {
   const { t } = useI18n();
+  return (seconds: number) => (seconds < 90 ? t('media.aboutSeconds', { n: Math.max(5, Math.round(seconds / 5) * 5) }) : t('media.aboutMinutes', { n: Math.round(seconds / 60) }));
+}
+
+/**
+ * Shown above the button that starts the work. With xAI: exactly what leaves the computer, where to, and the
+ * estimated price. With the models on this computer: that nothing leaves it, the text the model reads, that it is
+ * free and roughly how long it takes (`seconds`).
+ */
+export function SendBox({ status, text, files, price, seconds = 0, notes, testId }: { status: MediaStatus; text: string; files: Outgoing[]; price: number; seconds?: number; notes?: string[]; testId: string }) {
+  const { t } = useI18n();
+  const duration = useDuration();
+  if (isLocal(status)) {
+    return (
+      <div className="media-send media-send--local" data-testid={testId} data-engine="local">
+        <span className="media-send__head">
+          <Icon name="cpu" size={13} />
+          {t('media.localHead')}
+        </span>
+        <span>{t('media.localReads')}</span>
+        <pre className="mono-block media-send__text" data-testid={`${testId}-text`}>
+          {text || '—'}
+        </pre>
+        {status.local?.translate && hasHebrew(text) ? (
+          <span className="field__hint" data-testid={`${testId}-translate`}>
+            {t('media.localTranslate')}
+          </span>
+        ) : null}
+        {files.map((file, i) => (
+          <span key={i} data-testid={`${testId}-file`}>
+            <BidiText text={t(file.yours ? 'media.localYourFile' : 'media.localPreview', { name: file.name })} />
+          </span>
+        ))}
+        <strong className="media-send__price" data-testid={`${testId}-price`}>
+          {t('media.localPrice', { time: duration(seconds) })}
+        </strong>
+        <span className="field__hint">{t('media.localTimeNote')}</span>
+        {notes?.map((note, i) => (
+          <span key={i} className="field__hint">
+            {note}
+          </span>
+        ))}
+      </div>
+    );
+  }
   return (
     <div className="media-send" data-testid={testId}>
       <span className="media-send__head">
@@ -149,7 +197,14 @@ export function MediaView({ item, controls }: { item: MediaItem; controls?: bool
 /** Format, size, length and price of a preview, as short labelled facts. */
 export function MediaFacts({ item }: { item: MediaItem }) {
   const { t } = useI18n();
-  const price = item.usd !== null && item.usd !== undefined ? t('media.charged', { price: usd(item.usd) }) : item.cost ? t('media.estimate', { price: item.cost }) : null;
+  const local = item.params.engine === 'local';
+  const price = local
+    ? t('media.free')
+    : item.usd !== null && item.usd !== undefined
+      ? t('media.charged', { price: usd(item.usd) })
+      : item.cost
+        ? t('media.estimate', { price: item.cost })
+        : null;
   const facts: [string, string][] = [[t('media.format'), item.format]];
   if (item.width && item.height) facts.push([t('media.pixels'), `${item.width}×${item.height}`]);
   if (item.seconds) facts.push([t('media.length'), t('media.secondsValue', { n: Math.round(item.seconds * 10) / 10 })]);

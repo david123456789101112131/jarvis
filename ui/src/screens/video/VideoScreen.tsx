@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { media, usd, videoChangePrompt, videoCost, videoPrompt, type MediaItem, type MediaStatus, type VideoPart } from '../../api/media';
+import { canCreate, isLocal, localSeconds, media, usd, videoChangePrompt, videoCost, videoPrompt, type MediaItem, type MediaStatus, type VideoPart } from '../../api/media';
 import { Icon } from '../../components/Icon';
 import { ScreenHeader } from '../../components/shell/Shell';
 import { ErrorBox, Loading, Panel, Segmented, Slider } from '../../components/ui';
@@ -27,8 +27,9 @@ import {
 } from '../images/MediaParts';
 
 /**
- * The "Video creation" area: describe the scene part by part, see exactly what is sent to xAI and the price, create
- * the clip and follow it until it is ready, then save or change it. When xAI is not connected there is no Create
+ * The "Video creation" area: describe the scene part by part, see the text the model gets (with xAI, exactly what is
+ * sent and the price; on this computer, that it is free and roughly how long), create the clip and follow it until it
+ * is ready, then save or change it. When the models are not installed (or xAI is not connected) there is no Create
  * button at all, only a demonstration of the steps that says so.
  */
 export function VideoScreen() {
@@ -44,14 +45,14 @@ export function VideoScreen() {
 
   return (
     <div className="area media" data-testid="video-screen">
-      <ScreenHeader title={t('video.title')} subtitle={t('video.subtitle')} icon="film" actions={s ? <ConnectionChip status={s} /> : null} />
+      <ScreenHeader title={t('video.title')} subtitle={t('video.subtitle')} icon="film" actions={s ? <ConnectionChip status={s} kind="video" /> : null} />
       {boot.mock ? <Unavailable testId="video-unavailable" reason={t('unavailable.simulation')} /> : null}
       {status.error ? <ErrorBox message={status.error} onRetry={status.reload} retryLabel={t('media.checkAgain')} /> : null}
       {!boot.mock && !s && status.loading ? <Loading label={t('video.title')} /> : null}
       {s ? (
         <div className="area__cols">
           <div className="area__stack">
-            {s.available ? null : <NotConnected status={s} hint={t('video.unavailableHint')} testId="video-unavailable" onCheck={status.reload} />}
+            {canCreate(s, 'video') ? null : <NotConnected status={s} kind="video" hint={t('video.unavailableHint')} testId="video-unavailable" onCheck={status.reload} />}
             <VideoForm status={s} />
           </div>
           <div className="area__stack">
@@ -87,10 +88,11 @@ function VideoForm({ status }: { status: MediaStatus }) {
   const adopt = useAdoptJob();
   const { run, isPending } = useRunner(t('job.actionFailed'));
   const offer = status.offer;
-  const real = status.available;
+  const real = canCreate(status, 'video');
+  const local = isLocal(status);
   const [parts, setParts] = useState(EMPTY_PARTS);
   const [model, setModel] = useState(offer.video.models[0]?.id ?? '');
-  const [seconds, setSeconds] = useState(offer.video.seconds.default);
+  const [seconds, setSeconds] = useState(offer.video.models[0]?.seconds?.default ?? offer.video.seconds.default);
   const [aspect, setAspect] = useState(offer.video.aspect_ratios[0] ?? '16:9');
   const [resolution, setResolution] = useState(offer.video.resolutions[0] ?? '480p');
   const [start, setStart] = useState<Start>('none');
@@ -103,7 +105,10 @@ function VideoForm({ status }: { status: MediaStatus }) {
   const previews = useMemo(() => (pictures.data ?? []).filter((i) => i.real), [pictures.data]);
 
   const info = offer.video.models.find((m) => m.id === model) ?? offer.video.models[0];
+  const range = info?.seconds ?? offer.video.seconds;
   const resolutions = start === 'references' ? offer.video.reference_resolutions : (info?.resolutions ?? offer.video.resolutions);
+  // Reference images only where a model takes them (the one on this computer starts from a first frame at most).
+  const starts: Start[] = offer.video.models.some((m) => m.references) ? ['none', 'image', 'references'] : ['none', 'image'];
   const preview = previews.find((i) => i.id === imageItem) ?? null;
   const files: Outgoing[] =
     start === 'image'
@@ -118,6 +123,7 @@ function VideoForm({ status }: { status: MediaStatus }) {
   const text = videoPrompt(offer, parts);
   const tooLong = text.length > offer.max_prompt;
   const price = videoCost(offer, model, resolution, seconds, files.length);
+  const cost = local ? t('media.free') : usd(price);
   const ready = parts.scene.trim().length > 0 && !tooLong && !isPending('create');
   const firstFrame = start === 'image' && files.length > 0;
 
@@ -137,6 +143,8 @@ function VideoForm({ status }: { status: MediaStatus }) {
   const chooseModel = (id: string) => {
     setModel(id);
     setNote(null);
+    const limits = offer.video.models.find((m) => m.id === id)?.seconds ?? offer.video.seconds;
+    setSeconds((n) => Math.min(Math.max(n, limits.min), limits.max));
     if (start === 'references' && !offer.video.models.find((m) => m.id === id)?.references) setStart('none');
   };
 
@@ -198,13 +206,15 @@ function VideoForm({ status }: { status: MediaStatus }) {
           <span className="field__label">{t('video.model')}</span>
           <Segmented
             value={model}
-            options={offer.video.models.map((m) => ({ value: m.id, label: m.label, title: t('video.perSecond', { price: usd(videoCost(offer, m.id, resolution, 1)) }) }))}
+            options={offer.video.models.map((m) => ({ value: m.id, label: m.label, title: local ? undefined : t('video.perSecond', { price: usd(videoCost(offer, m.id, resolution, 1)) }) }))}
             onChange={chooseModel}
             label={t('video.model')}
             testId="video-model"
             fit
           />
-          <span className="field__hint num">{t('video.perSecond', { price: usd(videoCost(offer, model, resolution, 1)) })}</span>
+          <span className="field__hint num" data-testid="video-model-hint">
+            {local ? t('video.localHint') : t('video.perSecond', { price: usd(videoCost(offer, model, resolution, 1)) })}
+          </span>
         </div>
 
         <div className="field">
@@ -212,8 +222,8 @@ function VideoForm({ status }: { status: MediaStatus }) {
           <div className="video-seconds">
             <Slider
               value={seconds}
-              min={offer.video.seconds.min}
-              max={offer.video.seconds.max}
+              min={range.min}
+              max={range.max}
               step={1}
               onChange={setSeconds}
               label={t('video.seconds')}
@@ -248,7 +258,7 @@ function VideoForm({ status }: { status: MediaStatus }) {
             <span className="field__label">{t('video.start')}</span>
             <Segmented
               value={start}
-              options={(['none', 'image', 'references'] as const).map((v) => ({ value: v, label: t(`video.start.${v}` as MessageKey) }))}
+              options={starts.map((v) => ({ value: v, label: t(`video.start.${v}` as MessageKey) }))}
               onChange={chooseStart}
               label={t('video.start')}
               testId="video-start"
@@ -336,7 +346,8 @@ function VideoForm({ status }: { status: MediaStatus }) {
             text={text}
             files={files}
             price={price}
-            notes={[t('video.stopNote'), t('video.waitNote', { n: offer.video.wait_minutes }), t('media.keptHere')]}
+            seconds={localSeconds(status, 'video', { seconds, resolution })}
+            notes={local ? [t('video.stopNoteLocal'), t('media.keptHere')] : [t('video.stopNote'), t('video.waitNote', { n: offer.video.wait_minutes }), t('media.keptHere')]}
             testId="video-sends"
           />
         ) : (
@@ -347,7 +358,7 @@ function VideoForm({ status }: { status: MediaStatus }) {
           {real ? (
             <button type="button" className="btn btn--primary" disabled={!ready} onClick={create} data-testid="video-create">
               <Icon name="sparkles" size={14} />
-              {t('video.create', { price: usd(price) })}
+              {t('video.create', { price: cost })}
             </button>
           ) : (
             <button type="button" className="btn" disabled={!ready} onClick={create} data-testid="video-demo">
@@ -373,7 +384,9 @@ function VideoDetail({ item, status, onDeleted }: { item: MediaItem; status: Med
   const along = (typeof p.image === 'string' && p.image ? 1 : 0) + (Array.isArray(p.references) ? p.references.length : 0);
   const text = videoChangePrompt(item.prompt, change);
   const price = videoCost(offer, String(p.model ?? ''), String(p.resolution ?? ''), Number(p.seconds ?? offer.video.seconds.default), along);
-  const blocked = item.real && !status.available;
+  const local = isLocal(status);
+  const cost = local ? t('media.free') : usd(price);
+  const blocked = item.real && !canCreate(status, 'video');
   const ready = !blocked && change.trim().length > 0 && text.length <= offer.max_prompt && !isPending('refine');
 
   const refine = () =>
@@ -390,7 +403,7 @@ function VideoDetail({ item, status, onDeleted }: { item: MediaItem; status: Med
         </div>
         <MediaFacts item={item} />
         <div className="field">
-          <span className="field__label">{t('media.sent')}</span>
+          <span className="field__label">{t(p.engine === 'local' ? 'media.modelRead' : 'media.sent')}</span>
           {item.real ? (
             <pre className="mono-block media-send__text" data-testid="media-sent">
               {item.prompt}
@@ -410,17 +423,25 @@ function VideoDetail({ item, status, onDeleted }: { item: MediaItem; status: Med
           </label>
           {blocked ? (
             <span className="field__hint" data-testid="video-refine-blocked">
-              {t('video.needsXai')}
+              {t(local ? 'video.needsLocal' : 'video.needsXai')}
             </span>
           ) : item.real ? (
-            <SendBox status={status} text={text} files={[]} price={price} notes={[...(along ? [t('video.changeFiles')] : []), t('video.stopNote')]} testId="video-refine-sends" />
+            <SendBox
+              status={status}
+              text={text}
+              files={[]}
+              price={price}
+              seconds={localSeconds(status, 'video', { seconds: Number(p.seconds ?? 0) || item.seconds || 0, resolution: String(p.resolution ?? '480p') })}
+              notes={[...(along && !local ? [t('video.changeFiles')] : []), t(local ? 'video.stopNoteLocal' : 'video.stopNote')]}
+              testId="video-refine-sends"
+            />
           ) : (
             <DemoBox text={t('video.refineDemoNote')} testId="video-refine-sends" />
           )}
           <div className="actions-row">
             <button type="button" className={`btn ${item.real ? 'btn--primary' : ''}`} disabled={!ready} onClick={refine} data-testid="video-refine">
               <Icon name="wand" size={14} />
-              {item.real ? t('video.changeRun', { price: usd(price) }) : t('video.changeDemo')}
+              {item.real ? t('video.changeRun', { price: cost }) : t('video.changeDemo')}
             </button>
             <DeleteButton item={item} onDeleted={onDeleted} />
           </div>

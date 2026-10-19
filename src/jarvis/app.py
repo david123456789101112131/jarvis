@@ -164,9 +164,13 @@ class JarvisApp:
                                     recall_limit=s.memory.recall_limit, redactor=self.redactor)
         self.services = ToolServices(settings=s, paths=self.paths, guard=self.guard, redactor=self.redactor,
                                      secrets=self.secrets, host=host, memory=self.memory, ai=self.router, bus=self.bus)
+        from jarvis.common.gpu import GpuTurns
         from jarvis.computer.service import ComputerService
 
+        # Computer control and image/video creation take turns on the graphics card (see GpuTurns).
+        self.gpu = GpuTurns()
         self.computer = ComputerService(s.computer, self.paths, self.services.processes, self.window_action)
+        self.computer.server.gpu = self.gpu
         self.services.extras["computer"] = self.computer
         self.executor = ToolExecutor(self.registry, self.services, self.permissions, self.broker, self.kill_switch,
                                      audit=self.audit, activity=self.activity, mode_provider=self._mode)
@@ -191,6 +195,8 @@ class JarvisApp:
         # The work screens' services (code, images and video, apps): their actions run as jobs.
         self.dev = DevService(self)
         self.media = MediaService(self)
+        self.gpu.register("computer", busy=self.computer.busy, release=self.computer.release_gpu)
+        self.gpu.register("media", busy=self.media.engine.busy, release=self.media.engine.stop)
         self.apps = AppsService(self)
         self.privacy = PrivacyService(self)
 

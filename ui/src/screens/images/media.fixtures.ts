@@ -42,6 +42,56 @@ export const OFFER: MediaOffer = {
   max_prompt: 4000,
 };
 
+/** The free models on this computer (`catalog.offer("en", "local")`): the default engine. */
+export const LOCAL_OFFER: MediaOffer = {
+  ...OFFER,
+  engine: 'local',
+  image: {
+    ...OFFER.image,
+    models: [
+      {
+        id: 'z-image-turbo',
+        label: 'Z-Image-Turbo, on this computer (free)',
+        usd_per_image: { '1k': 0 },
+        usd_per_input: 0,
+        local: true,
+        resolutions: ['1k'],
+        aspect_ratios: ['1:1', '16:9', '9:16', '4:3', '3:4', '3:2', '2:3', '2:1', '1:2', '19.5:9', '9:19.5', '20:9', '9:20'],
+      },
+    ],
+  },
+  video: {
+    ...OFFER.video,
+    models: [
+      { id: 'wan2.2-ti2v-5b', label: 'Wan 2.2, on this computer (free)', usd_per_second: { '480p': 0, '720p': 0 }, usd_per_input: 0, references: false, resolutions: ['480p', '720p'], local: true, seconds: { min: 1, max: 5, default: 3 } },
+    ],
+  },
+  local_times: { load_s: 60, image_s: 15, video_s_per_second: { '480p': 60, '720p': 180 } },
+};
+
+/** The local engine's status: `installed` lists the kinds whose model is installed (with the runtime). */
+export function localStatus(installed: ('image' | 'video')[] = ['image', 'video'], running = false): MediaStatus {
+  const missing = (kind: 'image' | 'video') => (installed.includes(kind) ? [] : [`the ${kind} model: install with jarvis media install`]);
+  const available = installed.length > 0;
+  return {
+    engine: 'local',
+    available,
+    kinds: { image: { available: installed.includes('image'), missing: missing('image') }, video: { available: installed.includes('video'), missing: missing('video') } },
+    local: { root: 'C:\\Users\\me\\Documents\\Projects\\JARVIS-models\\media', running, busy: false, translate: true, device: 'NVIDIA GeForce RTX 5060 Ti', vram_total: 17_000_000_000, mode: null },
+    xai: false,
+    network: false,
+    demo: !available,
+    service: 'This computer',
+    host: '',
+    key_name: '',
+    missing: [...missing('image'), ...missing('video')],
+    reason: available ? null : 'Creating on this computer needs free models installed once (jarvis media install, about a 70 GB download). Until then a demonstration is available.',
+    offer: LOCAL_OFFER,
+    media_dir: 'C:\\Users\\me\\JARVIS\\workspace\\media',
+    counts: { image: 0, video: 0 },
+  };
+}
+
 export function mediaStatus(available: boolean): MediaStatus {
   return {
     available,

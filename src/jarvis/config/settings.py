@@ -323,6 +323,40 @@ class ComputerSettings(_Section):
         return value
 
 
+class MediaSettings(_Section):
+    """The "Image creation" and "Video creation" screens.
+
+    "local" (the default): free open models on this computer's graphics card (Z-Image-Turbo for images, Wan 2.2
+    for video, `jarvis media install`); nothing leaves the computer and nothing is paid for. "xai": Grok Imagine,
+    paid per image and per second, used only when it is chosen here."""
+
+    engine: Literal["local", "xai"] = "local"
+    # Where the local models and their runtime live ("" = <cache>/models/media; `jarvis media install --dir`).
+    models_dir: str = ""
+    # The hungriest way a model may run; "auto" picks the fastest that fits the RAM and graphics memory free when it
+    # loads. "gpu" all of it on the card; "model" each part on the card only while it works, the rest in RAM; "group8"
+    # layers streamed in. An "8" keeps the big parts in 8 bits: half the memory, for a little detail.
+    offload: Literal["auto", "gpu", "gpu8", "model", "model8", "group8"] = "auto"
+    translate: bool = True              # a Hebrew description is translated to English on this computer first
+    image_steps: int = 9                # Z-Image-Turbo is made for 8 steps (9 in diffusers' count)
+    video_steps: int = 30
+    idle_minutes: float = 5.0           # the models leave the graphics card after this long unused
+
+    @field_validator("image_steps", "video_steps")
+    @classmethod
+    def _check_steps(cls, value: int) -> int:
+        if not 1 <= value <= 100:
+            raise ValueError("must be between 1 and 100 steps")
+        return value
+
+    @field_validator("idle_minutes")
+    @classmethod
+    def _check_idle(cls, value: float) -> float:
+        if not 0.5 <= value <= 240:
+            raise ValueError("must be between 0.5 and 240 minutes")
+        return value
+
+
 class Settings(_Section):
     general: GeneralSettings = Field(default_factory=GeneralSettings)
     paths: PathsSettings = Field(default_factory=PathsSettings)
@@ -336,3 +370,4 @@ class Settings(_Section):
     ui: UISettings = Field(default_factory=UISettings)
     web: WebSettings = Field(default_factory=WebSettings)
     computer: ComputerSettings = Field(default_factory=ComputerSettings)
+    media: MediaSettings = Field(default_factory=MediaSettings)

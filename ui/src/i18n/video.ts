@@ -18,6 +18,7 @@ export const videoEn = {
   'video.partsHint': 'Only the scene is needed; each other line you fill in is added as you wrote it.',
   'video.model': 'Model',
   'video.perSecond': '{price} per second',
+  'video.localHint': 'Free, made on your graphics card',
   'video.seconds': 'Length',
   'video.secondsValue': '{n} seconds',
   'video.aspect': 'Shape',
@@ -37,6 +38,7 @@ export const videoEn = {
   'video.fullChosen': 'Reference images work only with the Full model, so it was chosen.',
   'video.create': 'Create the video · {price}',
   'video.stopNote': 'If you stop it midway, xAI may still finish the video on its side and charge for it, but nothing of it is kept.',
+  'video.stopNoteLocal': 'You can stop it midway: the graphics card stops at once, and nothing of it is kept.',
   'video.waitNote': 'A video usually takes a few minutes; JARVIS waits up to {n} minutes and shows the progress.',
   'video.demo': 'Go through the steps as a demonstration (no video is made)',
   'video.demoNote': 'Demonstration: nothing is sent, nothing is charged and no video is created. A storyboard of your text, marked “{label}”, is made instead.',
@@ -50,6 +52,7 @@ export const videoEn = {
   'video.changeFiles': 'and the same first image or reference images as before, if they are still there',
   'video.refineDemoNote': 'This preview is a demonstration, so the change is one too: nothing is sent, and a new storyboard is made.',
   'video.needsXai': 'Changing a real video needs xAI, and it is not connected right now.',
+  'video.needsLocal': 'Changing a real video needs the free models, and they are not installed right now.',
 } as const;
 
 export const videoHe: Record<keyof typeof videoEn, string> = {
@@ -70,6 +73,7 @@ export const videoHe: Record<keyof typeof videoEn, string> = {
   'video.partsHint': 'רק הסצנה חובה; כל שורה אחרת שממלאים מתווספת כפי שנכתבה.',
   'video.model': 'מודל',
   'video.perSecond': '{price} לשנייה',
+  'video.localHint': 'חינם, נוצר בכרטיס הגרפי שלך',
   'video.seconds': 'אורך',
   'video.secondsValue': '{n} שניות',
   'video.aspect': 'צורה',
@@ -89,6 +93,7 @@ export const videoHe: Record<keyof typeof videoEn, string> = {
   'video.fullChosen': 'תמונות ייחוס עובדות רק עם המודל המלא, ולכן הוא נבחר.',
   'video.create': 'ליצור את הסרטון · {price}',
   'video.stopNote': 'עצירה באמצע: xAI עשוי להשלים את הסרטון אצלו ולחייב עליו, אבל לא יישמר ממנו דבר.',
+  'video.stopNoteLocal': 'אפשר לעצור באמצע: הכרטיס הגרפי מפסיק מיד, ולא נשמר ממנו דבר.',
   'video.waitNote': 'סרטון לוקח בדרך כלל כמה דקות; JARVIS מחכה עד {n} דקות ומראה את ההתקדמות.',
   'video.demo': 'לעבור על השלבים כהדגמה (לא נוצר סרטון)',
   'video.demoNote': 'הדגמה: לא נשלח דבר, לא מחויב דבר ולא נוצר סרטון. במקום זה נוצר לוח תכנון (סטוריבורד) של הטקסט שלך, שכתוב עליו «{label}».',
@@ -102,4 +107,5 @@ export const videoHe: Record<keyof typeof videoEn, string> = {
   'video.changeFiles': 'ואת אותה תמונת פתיחה או אותן תמונות ייחוס כמו קודם, אם הן עדיין קיימות',
   'video.refineDemoNote': 'התצוגה המקדימה הזו היא הדגמה, ולכן גם השינוי: לא נשלח דבר, ונוצר לוח תכנון חדש.',
   'video.needsXai': 'שינוי של סרטון אמיתי צריך את xAI, והוא לא מחובר כרגע.',
+  'video.needsLocal': 'שינוי של סרטון אמיתי צריך את המודלים החינמיים, והם לא מותקנים כרגע.',
 };

@@ -10,10 +10,15 @@ export type VideoPart = 'scene' | 'characters' | 'motion' | 'lighting' | 'style'
 export interface ImageModelOffer {
   id: string;
   label: string;
-  /** Resolution → the price of one image made. */
+  /** Resolution → the price of one image made (0 for a model on this computer). */
   usd_per_image: Record<string, number>;
   /** Each image sent along (the one being changed). */
   usd_per_input: number;
+  /** Runs on this computer: free, and nothing is sent anywhere. */
+  local?: boolean;
+  /** What this model makes (empty: the screen's own lists). */
+  resolutions?: string[];
+  aspect_ratios?: string[];
 }
 
 export interface VideoModelOffer {
@@ -25,6 +30,9 @@ export interface VideoModelOffer {
   /** Takes reference images. */
   references: boolean;
   resolutions: string[];
+  local?: boolean;
+  /** How long a video this model makes. */
+  seconds?: { min: number; max: number; default: number };
 }
 
 export interface StyleOffer {
@@ -36,6 +44,8 @@ export interface StyleOffer {
 
 /** What the screens may choose from, with the prices shown before every Create (`catalog.offer`). */
 export interface MediaOffer {
+  /** "local": free models on this computer (the default); "xai": Grok Imagine, paid. */
+  engine?: MediaEngine;
   image: {
     models: ImageModelOffer[];
     aspect_ratios: string[];
@@ -62,11 +72,31 @@ export interface MediaOffer {
   prices_checked: string;
   price_sources: string[];
   max_prompt: number;
+  /** Rough times on a 16 GB graphics card, shown instead of a price for the local models. */
+  local_times?: { load_s: number; image_s: number; video_s_per_second: Record<string, number> };
+}
+
+export type MediaEngine = 'local' | 'xai';
+
+/** The local engine: where its models are and what it is doing. */
+export interface LocalEngineStatus {
+  root: string;
+  running: boolean;
+  busy: boolean;
+  /** The Hebrew-to-English model is installed: a Hebrew description is translated here first. */
+  translate: boolean;
+  device: string | null;
+  vram_total: number | null;
+  mode: string | null;
 }
 
 export interface MediaStatus {
-  /** xAI can be used: a key is saved, the network is on and api.x.ai is allowed. */
+  engine?: MediaEngine;
+  /** Real creation can run: for "local" the runtime and a model are installed; for "xai" a key is saved, the network
+   * is on and api.x.ai is allowed. Per kind in `kinds`. */
   available: boolean;
+  kinds?: Record<MediaKind, { available: boolean; missing: string[] }>;
+  local?: LocalEngineStatus;
   xai: boolean;
   network: boolean;
   /** Only a demonstration can run. */
@@ -101,7 +131,7 @@ export interface MediaItem {
   /** Exactly what was sent to xAI. */
   prompt: string;
   params: Record<string, unknown>;
-  /** What xAI reported it charged. */
+  /** What xAI reported it charged (null when made on this computer). */
   usd: number | null;
   /** The estimate shown before the request. */
   cost: string | null;
@@ -183,6 +213,34 @@ export const media = {
 
 // ---------------------------------------------------------------------------- the price and the text, as the core
 // computes them (`jarvis.media.catalog`), so the screen shows them before anything is sent.
+
+export function isLocal(status: MediaStatus): boolean {
+  return (status.engine ?? status.offer.engine) === 'local';
+}
+
+/** Whether real images (or videos) can be made now; otherwise only a demonstration. */
+export function canCreate(status: MediaStatus, kind: MediaKind): boolean {
+  return status.kinds?.[kind]?.available ?? status.available;
+}
+
+export function missingFor(status: MediaStatus, kind: MediaKind): string[] {
+  return status.kinds?.[kind]?.missing ?? status.missing;
+}
+
+/** Roughly how long the local models take (`catalog.local_estimate_s`); the first job also loads the model. */
+export function localSeconds(status: MediaStatus, kind: MediaKind, { count = 1, seconds = 0, resolution = '480p' } = {}): number {
+  const times = status.offer.local_times;
+  if (!times) return 0;
+  const load = status.local?.running ? 0 : times.load_s;
+  if (kind === 'image') return load + times.image_s * count;
+  const per = times.video_s_per_second;
+  return load + (per[resolution] ?? Math.max(0, ...Object.values(per))) * seconds;
+}
+
+/** A local change redraws the preview from text, so the text describes the image as it should become. */
+export function localChangePrompt(original: string, change: string): string {
+  return `${original.trim()}\n${change.trim()}`;
+}
 
 function priceOf(table: Record<string, number>, key: string): number {
   return table[key] ?? Math.max(0, ...Object.values(table));

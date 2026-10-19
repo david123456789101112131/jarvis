@@ -150,7 +150,7 @@ def _failure(exc: MediaError, client: XaiMedia, **data: Any) -> ToolResult:
 # ============================================================================ images
 class CreateImageParams(BaseModel):
     prompt: str = Field(min_length=1, max_length=catalog.MAX_PROMPT)
-    model: str = catalog.DEFAULT_IMAGE_MODEL
+    model: str = catalog.XAI_IMAGE_MODEL
     count: int = Field(default=1, ge=1, le=catalog.MAX_IMAGES)
     aspect_ratio: str = "1:1"
     resolution: str = "1k"
@@ -161,8 +161,8 @@ class CreateImageParams(BaseModel):
     @field_validator("model")
     @classmethod
     def _known_model(cls, value: str) -> str:
-        if value not in {m.id for m in catalog.IMAGE_MODELS}:
-            raise ValueError(f"unknown image model {value!r}")
+        if value not in {m.id for m in catalog.image_models("xai")}:
+            raise ValueError(f"unknown xAI image model {value!r}")
         return value
 
     @field_validator("aspect_ratio")
@@ -246,7 +246,7 @@ def _write_pictures(folder: Path, stem: str, pictures: list[Picture]) -> list[di
 # ============================================================================ videos
 class CreateVideoParams(BaseModel):
     prompt: str = Field(min_length=1, max_length=catalog.MAX_PROMPT)
-    model: str = catalog.DEFAULT_VIDEO_MODEL
+    model: str = catalog.XAI_VIDEO_MODEL
     seconds: int = Field(default=catalog.DEFAULT_SECONDS, ge=catalog.MIN_SECONDS, le=catalog.MAX_SECONDS)
     aspect_ratio: str = "16:9"
     resolution: str = "480p"
@@ -258,8 +258,8 @@ class CreateVideoParams(BaseModel):
     @field_validator("model")
     @classmethod
     def _known_model(cls, value: str) -> str:
-        if value not in {m.id for m in catalog.VIDEO_MODELS}:
-            raise ValueError(f"unknown video model {value!r}")
+        if value not in {m.id for m in catalog.video_models("xai")}:
+            raise ValueError(f"unknown xAI video model {value!r}")
         return value
 
     @field_validator("aspect_ratio")

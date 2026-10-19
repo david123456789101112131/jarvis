@@ -15,6 +15,7 @@ others, and nothing here changes the computer (the few temporary files are remov
   internet   whether the web search JARVIS uses can be reached
   voice      the voice packages; with `--voice`, the whole voice self-test (microphone, speech, wake word)
   computer   whether the local model that controls the mouse and keyboard is installed (it is not started)
+  media      whether the free image and video models are installed, and how much RAM is free for them (not started)
 
 `--full` adds the `live` checks: a second JARVIS starts in a temporary folder (no AI, no voice, no
 window) and runs real commands end to end: a folder, a system check, a project the agents build and
@@ -77,6 +78,7 @@ async def run_checks(settings: Settings, paths: AppPaths, *, full: bool = False,
         ("internet", _internet(report, settings)),
         ("voice", _voice(report, settings, paths, secrets, run_all=voice)),
         ("computer", _computer(report, settings, paths)),
+        ("media", _media(report, settings, paths)),
     ]
     for name, job in steps:
         report.note(f"checking {name}")
@@ -377,6 +379,30 @@ async def _computer(report: CheckReport, settings: Settings, paths: AppPaths) ->
             "a folder that is already downloaded."])
         return
     report.add("computer", "ok", f"model ready: {files.model.name} in {root}")
+
+
+async def _media(report: CheckReport, settings: Settings, paths: AppPaths) -> None:
+    from jarvis.media.local.engine import LocalFiles
+    from jarvis.media.local.worker import memory
+
+    s = settings.media
+    if s.engine != "local":
+        report.add("media", "ok", "images and videos are made by Grok Imagine (paid, chosen in the settings)")
+        return
+    root = Path(s.models_dir) if s.models_dir else paths.models / "media"
+    files = await asyncio.to_thread(LocalFiles, root)
+    have = {part: await asyncio.to_thread(files.has, part) for part in ("runtime", "image", "video", "translate")}
+    missing = [part for part in ("runtime", "image", "video") if not have[part]]
+    if missing:
+        report.add("media", "warn", f"not installed yet: {', '.join(missing)} (until then, a demonstration only)",
+                   hints=["Install them: jarvis media install (about a 70 GB download), or with --dir <folder> "
+                          "for a folder that already has them."])
+        return
+    free = ""
+    with contextlib.suppress(Exception):
+        free = f"; {memory()['ram_free'] / 2**30:.1f} GB of RAM free now (a model needs about 15 GB free to load)"
+    report.add("media", "ok", f"images and videos are made on this computer, for free (models in {root}"
+                              f"{'' if have['translate'] else ', without the Hebrew translator'}){free}")
 
 
 # ------------------------------------------------------------------------------------------ live

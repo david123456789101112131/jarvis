@@ -45,6 +45,7 @@ cd ui; npm ci; npm run build; cd ..          # the interface the window tests lo
 |---|---|
 | `JARVIS_TEST_BROWSER` | path of a Chromium-based browser for the window tests. Without it they use Playwright's Chromium, then Microsoft Edge, then Google Chrome, and skip when none starts. |
 | `JARVIS_TEST_MODELS_DIR` | a folder with `openwakeword/` and `whisper/` models for the `voice_models` tests. Without it they look in JARVIS's own model cache (filled the first time voice runs, or by `jarvis voice-test`). |
+| `JARVIS_TEST_MEDIA_PYTHON` | a Python with the media runtime (torch, diffusers, transformers, imageio-ffmpeg; `<media>\venv\Scripts\python.exe` after `jarvis media install`) for `integration/test_local_media_real.py`: the real worker, diffusers' own Z-Image and Wan pipelines on tiny random models built on the spot, on the processor. Skipped without it. |
 
 ### Markers
 
@@ -112,6 +113,7 @@ also remove any `XAI_API_KEY`, `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` from the 
 | The app opens and the new screens load | `e2e/test_ui_browser.py::test_the_work_areas_show_what_is_real_and_ask_first` (every area from the rail, against a real JARVIS); `ui/src/screens/*/*.test.tsx` (each screen on its own, with the core's answers scripted) |
 | A code request gets a result or a clear error | `integration/test_dev.py::TestCodeScreen::test_plan_review_apply_and_undo`, `::test_a_bad_answer_changes_nothing`, `::test_a_broken_proposal_is_shown_but_cannot_be_applied`, `::test_a_proposal_can_be_revised_in_words`; `ui/src/screens/code/code.test.tsx` |
 | Running tests reports real results | `integration/test_dev.py::TestTests::test_tests_run_after_approval_and_a_fix_gets_the_failures` (a real pytest run: what ran, 1 passed, 1 failed, which test), `::test_a_project_without_tests_says_so`; the browser test above, in the window |
+| Images and videos are made on this computer, free, with no paid AI | `unit/test_local_media.py` (the worker's protocol, memory plan and refusal, the engine: start, progress, stop midway, crash, out of memory, the memory watch, idle stop, turns on the graphics card; the installer's checks; the screens' jobs with a stand-in worker); `integration/test_local_media_real.py` (the real worker on tiny models: image, change, video, first-frame video, 8-bit); `integration/test_media_routes.py::TestLocalByDefault`; the local cases in `ui/src/screens/images/ImagesScreen.test.tsx` and `ui/src/screens/video/VideoScreen.test.tsx` |
 | Image and video screens show whether the service is available | `integration/test_media_routes.py::TestMediaRoutes::test_status_says_what_is_missing`, `::test_creating_for_real_without_xai_is_refused_not_faked`, `::test_a_demonstration_end_to_end`, `::test_a_real_image_is_created_shown_and_saved_after_approval` (a fake xAI); `ui/src/screens/images/ImagesScreen.test.tsx`, `ui/src/screens/video/VideoScreen.test.tsx` |
 | Actions can be stopped and cancelled | `integration/test_work.py::TestJobs::test_a_job_is_live_on_the_socket_stoppable_and_retryable`; `unit/test_jobs.py::TestJobs::test_stopping_a_job_abandons_its_wait_and_it_can_be_retried`; `unit/test_media.py::TestService::test_stopping_a_video_stops_asking_and_keeps_nothing`; `unit/test_apps.py::TestStep::test_stop_while_it_waits`, `::test_esc_twice_stops_it_while_jarvis_is_hidden`, `::test_the_kill_switch_stops_it` |
 | App actions ask for permission and approval | `unit/test_apps.py::TestLook::test_asks_first_and_sees_nothing_before_the_approval`, `::test_a_no_stops_it_and_nothing_is_seen`, `::test_a_password_manager_in_front_is_not_looked_into`; `unit/test_apps.py::TestStep::test_a_password_field_is_never_typed_into_even_when_asked_directly`; `integration/test_apps_routes.py::TestAppsRoutes::test_look_suggest_and_step_wait_for_the_approval`, `::test_bad_requests_and_the_kill_switch` |
@@ -141,6 +143,11 @@ use (`GET /api/metrics`, and the Speed panel under History & settings > Work his
 saved as a named snapshot ("before") to compare with later.
 
 ## What only the PC can check
+
+The image and video models themselves (about 70 GB, a 16 GB graphics card): `jarvis media status`, then
+`jarvis media bench` (or `--modes gpu8,model8 --keep <folder>` to compare modes picture by picture) measures the
+load, the first and second image and a 3-second video, with the peak graphics memory and RAM, after printing what
+each mode needs against the memory free at that moment.
 
 A build machine has no microphone, speakers, Start menu or WebView2, and may not reach the speech
 models' download site, so these run on the user's Windows PC: `python -m pytest -m windows` (a

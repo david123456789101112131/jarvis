@@ -75,6 +75,16 @@ def build_parser() -> argparse.ArgumentParser:
     comp.add_argument("--dir", help="where to install (default: JARVIS's models folder)")
     comp.add_argument("--adopt", help="use a model folder that is already downloaded, without downloading")
     comp.add_argument("--no-convert", action="store_true", help="download only, skip the GGUF conversion")
+    med = sub.add_parser("media", help="the free models that make images and videos on this computer")
+    med.add_argument("action", nargs="?", choices=["install", "status", "bench"], default="status")
+    med.add_argument("--dir", help="where to install (default: JARVIS's models folder)")
+    med.add_argument("--only", choices=["image", "video"], help="install (or measure) one kind only")
+    med.add_argument("--no-runtime", action="store_true", help="models only: leave the Python environment as it is")
+    med.add_argument("--modes", default="auto", help="bench: the modes to measure, comma separated "
+                                                     "(auto, gpu, gpu8, model, model8, group8)")
+    med.add_argument("--keep", help="bench: keep what is made in this folder (otherwise it is deleted)")
+    med.add_argument("--resolution", choices=["480p", "720p"], default="480p", help="bench: the video's size")
+    med.add_argument("--seconds", type=int, choices=range(1, 6), default=3, help="bench: the video's length")
     sub.add_parser("paths", help="show JARVIS's folders")
     sub.add_parser("autostart", help="show whether JARVIS starts with Windows")
     return p
@@ -113,6 +123,8 @@ def main(argv: list[str] | None = None) -> int:
         return check(settings, paths, full=args.full, voice=args.voice, as_json=args.json)
     if command == "computer":
         return _computer(settings, paths, args)
+    if command == "media":
+        return _media(settings, paths, args)
     if command in ("open", "say", "status", "stop"):
         running = _running(paths)
         if running is None:
@@ -260,6 +272,90 @@ def _computer(settings: Any, paths: Any, args: argparse.Namespace) -> int:
         return EXIT_OK
     print("The model folder is still incomplete; see the messages above.", file=sys.stderr)
     return EXIT_ERROR
+
+
+def _media(settings: Any, paths: Any, args: argparse.Namespace) -> int:
+    from pathlib import Path
+
+    from jarvis.config.loader import save_settings, update_settings
+    from jarvis.media.local import install as inst
+    from jarvis.media.local.engine import IMAGE_DIR, TRANSLATE_DIR, VIDEO_DIR, LocalFiles
+
+    default_root = Path(settings.media.models_dir) if settings.media.models_dir else paths.models / "media"
+    if args.action == "status":
+        files = LocalFiles(default_root)
+        print(f"Model folder: {default_root}")
+        print(f"Engine in use: {settings.media.engine}" + ("" if settings.media.engine == "local" else
+                                                          " (Grok Imagine, paid; set media.engine to local)"))
+        for part, label in (("runtime", "runtime (PyTorch, diffusers)"), ("image", "images: Z-Image-Turbo"),
+                            ("video", "videos: Wan 2.2 TI2V-5B"), ("translate", "Hebrew to English")):
+            print(f"  {'✓' if files.has(part) else '·'} {label}")
+        if not all(files.has(p) for p in ("runtime", "image", "video")):
+            print("Install with:  jarvis media install")
+        return EXIT_OK
+
+    if args.action == "bench":
+        return _media_bench(settings, paths, Path(args.dir).expanduser() if args.dir else default_root, args)
+
+    root = Path(args.dir).expanduser() if args.dir else default_root
+    models = {"image": (IMAGE_DIR, TRANSLATE_DIR), "video": (VIDEO_DIR, TRANSLATE_DIR)}.get(
+        args.only or "", (IMAGE_DIR, VIDEO_DIR, TRANSLATE_DIR))
+    try:
+        result = inst.install(root, models=models, runtime=not args.no_runtime,
+                              progress=lambda m: print(m, flush=True))
+    except (OSError, RuntimeError) as exc:
+        print(f"Install failed: {exc}", file=sys.stderr)
+        return EXIT_ERROR
+    if str(root) != str(paths.models / "media"):            # remember where the models live, for every launch
+        save_settings(update_settings(settings, {"media": {"models_dir": str(root)}}))
+        print(f"JARVIS will use the models in {root}.")
+    for note in result.notes:
+        print(f"Note: {note}")
+    files = LocalFiles(root)
+    if files.has("runtime") and any(files.has(k) for k in ("image", "video")):
+        print("Done. The Images and Video screens now make them on this computer, for free.")
+        return EXIT_OK
+    print("The media folder is still incomplete; see the messages above.", file=sys.stderr)
+    return EXIT_ERROR
+
+
+def _media_bench(settings: Any, paths: Any, root: Any, args: argparse.Namespace) -> int:
+    import asyncio
+    import json
+    import shutil
+    import tempfile
+    from pathlib import Path
+
+    from jarvis.media.local import bench
+    from jarvis.media.local.engine import LocalEngine, LocalFiles
+    from jarvis.media.local.worker import MODES
+    from jarvis.security.process import ProcessRegistry
+
+    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+    if not modes or any(m not in ("auto", *MODES) for m in modes):
+        print(f"Unknown mode in {args.modes!r}; choose from auto, {', '.join(MODES)}.", file=sys.stderr)
+        return EXIT_ERROR
+    if not LocalFiles(root).has("runtime"):
+        print(f"The media runtime is not installed in {root}. Install with:  jarvis media install", file=sys.stderr)
+        return EXIT_ERROR
+    out = Path(args.keep).expanduser() if args.keep else Path(tempfile.mkdtemp(prefix="jarvis-media-bench-"))
+    processes = ProcessRegistry()
+
+    def engine(mode: str) -> LocalEngine:
+        return LocalEngine(settings.media.model_copy(update={"offload": mode}), root, processes, paths.logs)
+
+    try:
+        rows = asyncio.run(bench.run(engine, modes=modes, kinds=[args.only] if args.only else ["image", "video"],
+                                     out=out, image_steps=settings.media.image_steps,
+                                     video_steps=settings.media.video_steps, seconds=args.seconds,
+                                     resolution=args.resolution, say=lambda line: print(line, flush=True)))
+    finally:
+        if not args.keep:
+            shutil.rmtree(out, ignore_errors=True)
+    print(json.dumps(rows, ensure_ascii=False))
+    if args.keep:
+        print(f"What was made is in {out}")
+    return EXIT_OK if rows and not any("error" in r for r in rows) else EXIT_ERROR
 
 
 def _keys(paths: Any, action: str, name: str | None, *, every: bool = False) -> int:

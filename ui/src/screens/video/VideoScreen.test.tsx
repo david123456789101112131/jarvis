@@ -3,7 +3,7 @@ import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../../api/client';
 import { renderWith } from '../../test/render';
-import { mediaItem, mediaJob, mediaStatus, routes } from '../images/media.fixtures';
+import { localStatus, mediaItem, mediaJob, mediaStatus, routes } from '../images/media.fixtures';
 import { VideoScreen } from './VideoScreen';
 
 afterEach(cleanup);
@@ -166,5 +166,44 @@ describe('the video screen', () => {
     await waitFor(() => expect(queryByTestId('media-selected')).toBeNull());
     expect(sent(request, 'DELETE', '/api/media/items/media_vid1')).toHaveLength(1);
     expect(await findByTestId('media-empty')).toBeTruthy();
+  });
+});
+
+describe('the video screen with the free model on this computer (the default)', () => {
+  it('offers what the model makes, says it is free and roughly how long, and asks for the local model', async () => {
+    const { findByTestId, getByTestId, request } = renderWith(<VideoScreen />, {
+      request: routes({
+        'GET /api/media/status': () => localStatus(),
+        'GET /api/media/items': () => [],
+        'POST /api/media/videos': () => mediaJob({ kind: 'video.create', area: 'video' }),
+      }),
+    });
+    expect((await findByTestId('media-connection')).textContent).toBe('On this computer · free');
+    fireEvent.change(getByTestId('video-part-scene'), { target: { value: 'A cup of coffee' } });
+    expect(getByTestId('video-seconds-value').textContent).toBe('3 seconds'); // the model's own default, up to 5
+    expect(getByTestId('video-sends').textContent).toContain('Made on this computer: nothing leaves it');
+    expect(getByTestId('video-sends').textContent).toContain('the graphics card stops at once');
+    expect(getByTestId('video-sends-price').textContent).toBe('Free · about 4 minutes'); // loading, then 3 s at 480p
+    expect(getByTestId('video-create').textContent).toBe('Create the video · Free');
+    expect(getByTestId('video-model-hint').textContent).toBe('Free, made on your graphics card');
+    // No reference images: the model on this computer starts from a first image at most.
+    expect(getByTestId('video-start').querySelector('[data-value="references"]')).toBeNull();
+    pick(getByTestId('video-resolution'), '720p');
+    expect(getByTestId('video-sends-price').textContent).toBe('Free · about 10 minutes');
+
+    fireEvent.click(getByTestId('video-create'));
+    await waitFor(() => expect(sent(request, 'POST', '/api/media/videos')).toHaveLength(1));
+    expect(sent(request, 'POST', '/api/media/videos')[0]).toMatchObject({ model: 'wan2.2-ti2v-5b', seconds: 3, resolution: '720p', demo: false });
+  });
+
+  it('with only the image model installed, video is a demonstration that says what to install', async () => {
+    const { findByTestId, getByTestId, queryByTestId } = renderWith(<VideoScreen />, {
+      request: routes({ 'GET /api/media/status': () => localStatus(['image']), 'GET /api/media/items': () => [] }),
+    });
+    const missing = await findByTestId('video-unavailable');
+    expect(missing.textContent).toContain('the video model: install with jarvis media install');
+    expect(missing.textContent).not.toContain('the image model');
+    expect(queryByTestId('video-create')).toBeNull();
+    expect(getByTestId('media-connection').textContent).toBe('The free models are not installed: demonstration only');
   });
 });

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -14,7 +15,7 @@ from jarvis.selfcheck import format_report, run_checks
 
 SECRET = "sk-ant-test-" + "7" * 24
 NAMES = ["python", "folders", "memory", "server", "interface", "desktop", "keys", "ai", "tools", "internet", "voice",
-         "computer"]
+         "computer", "media"]
 
 
 @pytest.fixture
@@ -69,6 +70,26 @@ async def test_computer_control_line(setup, monkeypatch, tmp_path) -> None:
     assert ready["status"] == "ok" and "Holo-3.1-9B-Q8_0.gguf" in ready["detail"]
     settings.computer.enabled = False
     assert line(await run_checks(settings, paths))["status"] == "ok"
+
+
+async def test_media_line(setup, tmp_path) -> None:
+    settings, paths = setup
+    settings.media.models_dir = str(tmp_path)
+    line = lambda report: next(c for c in report["checks"] if c["name"] == "media")  # noqa: E731
+    missing = line(await run_checks(settings, paths))
+    assert missing["status"] == "warn" and "runtime, image, video" in missing["detail"]
+    assert "jarvis media install" in " ".join(missing["data"]["hints"])
+    python = tmp_path / "venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+    python.parent.mkdir(parents=True)
+    python.write_bytes(b"")
+    for folder in ("Z-Image-Turbo", "Wan2.2-TI2V-5B"):
+        (tmp_path / folder).mkdir()
+        (tmp_path / folder / "model_index.json").write_text("{}", encoding="utf-8")
+    ready = line(await run_checks(settings, paths))
+    assert ready["status"] == "ok" and "for free" in ready["detail"] and "without the Hebrew translator" in ready["detail"]
+    assert "GB of RAM free now" in ready["detail"]
+    settings.media.engine = "xai"
+    assert "Grok Imagine (paid" in line(await run_checks(settings, paths))["detail"]
 
 
 async def test_without_an_ai_key_it_says_what_still_works(setup) -> None:

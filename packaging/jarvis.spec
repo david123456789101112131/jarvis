@@ -38,6 +38,8 @@ datas = [
     (str(PACKAGE / "ui" / "static"), "jarvis/ui/static"),                      # the built interface
     (str(PACKAGE / "agents" / "development" / "templates"), "jarvis/agents/development/templates"),
     (str(PACKAGE / "assets"), "jarvis/assets"),                                # the icon, for windows and toasts
+    # The media worker runs as a script in the media runtime's own Python, so it ships as a .py file too.
+    (str(PACKAGE / "media" / "local" / "worker.py"), "jarvis/media/local"),
 ]
 for package in ("faster_whisper", "pptx", "webview", "certifi"):
     datas += optional(collect_data_files, package)

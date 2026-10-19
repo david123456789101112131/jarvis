@@ -263,10 +263,14 @@ class TestCatalog:
         assert catalog.video_change_prompt("Scene: a beach", "at night") == "Scene: a beach\nChange: at night"
 
     def test_the_offer_the_screens_show(self) -> None:
-        he = catalog.offer("he")
+        he = catalog.offer("he", "xai")
         assert he["image"]["models"][0]["label"] == "רגיל" and he["prices_checked"] == catalog.PRICES_CHECKED  # type: ignore[index]
-        assert catalog.offer("en")["video"]["seconds"] == {"min": 1, "max": 15, "default": 6}  # type: ignore[index]
-        assert all(m.id in {"grok-imagine-video-1.5-lite", "grok-imagine-video-1.5"} for m in catalog.VIDEO_MODELS)
+        assert catalog.offer("en", "xai")["video"]["seconds"] == {"min": 1, "max": 15, "default": 6}  # type: ignore[index]
+        assert [m.id for m in catalog.video_models("xai")] == ["grok-imagine-video-1.5-lite", "grok-imagine-video-1.5"]
+        # Only the engine in use is offered: Grok's models are not on the screens while making locally.
+        local = catalog.offer("en", "local")
+        assert [m["id"] for m in local["image"]["models"]] == ["z-image-turbo"]  # type: ignore[index]
+        assert [m["id"] for m in local["video"]["models"]] == ["wan2.2-ti2v-5b"]  # type: ignore[index]
 
     def test_file_formats_and_names(self, tmp_path: Path) -> None:
         found = probe(png(5, 7))
@@ -443,6 +447,7 @@ async def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     assert Path.home() == home                          # never the real Documents or Pictures
     monkeypatch.setattr(catalog, "VIDEO_POLL_S", 0.01)
     settings = Settings()
+    settings.media.engine = "xai"                       # these tests are about Grok Imagine (local: test_local_media)
     jarvis = JarvisApp(settings, host=FakeHost(), router=ProviderRouter(settings.ai, []), voice=False, use_keyring=False,
                        serve=False)
     await jarvis.start()

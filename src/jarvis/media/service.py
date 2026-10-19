@@ -1,14 +1,16 @@
 """The media service: what the "Image creation" and "Video creation" screens do, each action a job.
 
-Creating runs the `create_image` / `create_video` tools through the executor as the Creative agent, so the
-permission check and the approval (whenever one is due) are those of any agent action, and nothing reaches xAI
-or the disk another way. Previews land in `<workspace>/media/<job id>/`. Saving copies a preview to the place the
+Two engines (`media.engine`): "local", the default, makes images and videos on this computer's graphics card with
+free open models (`create_image_local` / `create_video_local`, `jarvis.media.local`): nothing leaves the computer
+and nothing is paid. "xai" uses Grok Imagine (`create_image` / `create_video`), paid, only when chosen in the
+settings. Either way the tools run through the executor as the Creative agent, so the permission check and the
+approval (whenever one is due) are those of any agent action, and nothing reaches xAI or the disk another way. Previews land in `<workspace>/media/<job id>/`. Saving copies a preview to the place the
 user picked, with `copy_path` through the executor, under a one-use permission for exactly that file that is
 withdrawn as soon as the copy is done, refused or stopped.
 
-When xAI is not connected (no key, or the network is off), the screens offer a demonstration instead: the same
-steps, marked as not real, and a placeholder that says so in the picture itself. A demonstration sends nothing
-anywhere and cannot be saved.
+When the engine cannot work yet (the local models are not installed; or, for xAI, no key or no network), the
+screens offer a demonstration instead: the same steps, marked as not real, and a placeholder that says so in the
+picture itself. A demonstration sends nothing anywhere and cannot be saved.
 """
 
 from __future__ import annotations
@@ -26,9 +28,11 @@ from jarvis.common.i18n import plural, t
 from jarvis.jobs import Job, JobContext
 from jarvis.media import catalog, demo
 from jarvis.media.files import safe_name, with_format
+from jarvis.media.local.engine import LocalEngine
 from jarvis.media.store import MediaItem, MediaStore
 from jarvis.security.path_guard import normalize_path
 from jarvis.tools.base import ToolResult
+from jarvis.tools.local_media_tools import HEBREW
 from jarvis.tools.media_tools import media_folder
 
 if TYPE_CHECKING:
@@ -59,7 +63,7 @@ def _check(value: str, allowed: tuple[str, ...] | set[str], what: str) -> str:
 class ImageRequest(BaseModel):
     description: str = Field(min_length=1, max_length=catalog.MAX_PROMPT)
     style: str = "none"
-    model: str = catalog.DEFAULT_IMAGE_MODEL
+    model: str | None = None                 # None: the engine in use's own model
     count: int = Field(default=1, ge=1, le=catalog.MAX_IMAGES)
     aspect_ratio: str = "1:1"
     resolution: str = "1k"
@@ -75,8 +79,8 @@ class ImageRequest(BaseModel):
 
     @field_validator("model")
     @classmethod
-    def _model(cls, v: str) -> str:
-        return _check(v, {m.id for m in catalog.IMAGE_MODELS}, "image model")
+    def _model(cls, v: str | None) -> str | None:
+        return None if v is None else _check(v, {m.id for m in catalog.IMAGE_MODELS}, "image model")
 
     @field_validator("aspect_ratio")
     @classmethod
@@ -115,8 +119,8 @@ class VideoRequest(BaseModel):
     motion: str = Field(default="", max_length=1000)
     lighting: str = Field(default="", max_length=1000)
     style: str = Field(default="", max_length=1000)
-    model: str = catalog.DEFAULT_VIDEO_MODEL
-    seconds: int = Field(default=catalog.DEFAULT_SECONDS, ge=catalog.MIN_SECONDS, le=catalog.MAX_SECONDS)
+    model: str | None = None                 # None: the engine in use's own model
+    seconds: int | None = Field(default=None, ge=catalog.MIN_SECONDS, le=catalog.MAX_SECONDS)   # None: its default
     aspect_ratio: str = "16:9"
     resolution: str = "480p"
     image_item: str | None = Field(default=None, max_length=80)       # a preview image as the first frame
@@ -128,8 +132,8 @@ class VideoRequest(BaseModel):
 
     @field_validator("model")
     @classmethod
-    def _model(cls, v: str) -> str:
-        return _check(v, {m.id for m in catalog.VIDEO_MODELS}, "video model")
+    def _model(cls, v: str | None) -> str | None:
+        return None if v is None else _check(v, {m.id for m in catalog.VIDEO_MODELS}, "video model")
 
     @field_validator("aspect_ratio")
     @classmethod
@@ -149,7 +153,7 @@ class VideoRequest(BaseModel):
         if refs > catalog.MAX_REFERENCES:
             raise ValueError(f"at most {catalog.MAX_REFERENCES} reference images")
         if refs:
-            if not catalog.video_model(self.model).references:
+            if self.model is not None and not catalog.video_model(self.model).references:
                 raise ValueError("reference images need the full video model")
             if self.resolution not in catalog.REFERENCE_RESOLUTIONS:
                 raise ValueError("a video from reference images goes up to 720p")
@@ -180,7 +184,16 @@ class MediaService:
     def __init__(self, app: JarvisApp) -> None:
         self.app = app
         self.store = MediaStore(app.paths.data / "media_items.json", media_folder(app.services))
+        settings = app.settings.media
+        root = Path(settings.models_dir) if settings.models_dir else app.paths.models / "media"
+        self.engine = LocalEngine(settings, root, app.services.processes, app.paths.logs, gpu=getattr(app, "gpu", None))
         app.services.extras["media"] = self
+        app.services.extras["media_engine"] = self.engine
+
+    @property
+    def local(self) -> bool:
+        """Images and videos are made on this computer (the default), not by xAI."""
+        return self.app.settings.media.engine == "local"
 
     # ------------------------------------------------------------------ status
     def _lang(self, lang: str | None) -> str:
@@ -194,11 +207,51 @@ class MediaService:
         return (self.app.secrets.has(catalog.KEY_NAME), security.network_enabled,
                 not allow or any(host == d or host.endswith("." + d) for d in allow))
 
-    def available(self) -> bool:
+    def available(self, kind: str = "image") -> bool:
+        if self.local:
+            return not self.engine.files.missing(kind)
         return all(self._connection())
+
+    def _part(self, part: str, lang: str) -> str:
+        what = {"runtime": ("סביבת ההרצה (PyTorch ו-diffusers)", "the runtime (PyTorch and diffusers)"),
+                "image": ("מודל התמונות Z-Image-Turbo", "the image model Z-Image-Turbo"),
+                "video": ("מודל הווידאו Wan 2.2", "the video model Wan 2.2")}[part]
+        return t(lang, f"{what[0]}: מתקינים עם jarvis media install", f"{what[1]}: install with jarvis media install")
+
+    def _local_status(self, lang: str) -> dict[str, Any]:
+        files, engine = self.engine.files, self.engine
+        kinds: dict[str, dict[str, Any]] = {kind: {"available": not files.missing(kind),
+                        "missing": [self._part(p, lang) for p in files.missing(kind)]} for kind in ("image", "video")}
+        missing = list(dict.fromkeys(m for k in kinds.values() for m in k["missing"]))
+        available = any(k["available"] for k in kinds.values())
+        return {
+            "engine": "local",
+            "available": available,
+            "kinds": kinds,
+            "xai": self.app.secrets.has(catalog.KEY_NAME),
+            "network": False,
+            "demo": not available,
+            "service": t(lang, "המחשב שלך", "This computer"),
+            "host": "",
+            "key_name": "",
+            "missing": missing,
+            "reason": None if not missing else t(
+                lang, "יצירה במחשב צריכה מודלים חינמיים שמותקנים פעם אחת (jarvis media install, בערך 70GB הורדה). "
+                      "עד אז אפשר לראות הדגמה.",
+                "Creating on this computer needs free models installed once (jarvis media install, about a 70 GB "
+                "download). Until then a demonstration is available."),
+            "local": {"root": str(files.root), "running": engine.running, "busy": engine.busy(),
+                      "translate": files.has("translate"), "device": engine.info.get("device"),
+                      "vram_total": engine.info.get("vram_total"), "mode": engine.info.get("mode")},
+            "offer": catalog.offer(lang, "local"),
+            "media_dir": str(self.store.folder),
+            "counts": {kind: len(self.store.items(kind, limit=10_000)) for kind in ("image", "video")},
+        }
 
     def status(self, lang: str | None = None) -> dict[str, Any]:
         lang = self._lang(lang)
+        if self.local:
+            return self._local_status(lang)
         key, network, allowed = self._connection()
         missing: list[str] = []
         if not key:
@@ -211,7 +264,9 @@ class MediaService:
                              f"Add {catalog.SERVICE_HOST} to the network allowlist"))
         available = key and network and allowed
         return {
+            "engine": "xai",
             "available": available,
+            "kinds": {kind: {"available": available, "missing": missing} for kind in ("image", "video")},
             "xai": key,
             "network": network and allowed,
             "demo": not available,
@@ -222,17 +277,38 @@ class MediaService:
             "reason": None if available else t(
                 lang, f"יצירה אמיתית של תמונות וסרטונים צריכה את {catalog.SERVICE_NAME}, והוא לא מחובר כרגע.",
                 f"Creating real images and videos needs {catalog.SERVICE_NAME}, and it is not connected right now."),
-            "offer": catalog.offer(lang),
+            "offer": catalog.offer(lang, "xai"),
             "media_dir": str(self.store.folder),
             "counts": {kind: len(self.store.items(kind, limit=10_000)) for kind in ("image", "video")},
         }
 
-    def _require(self, lang: str) -> None:
-        if not self.available():
-            missing = self.status(lang)["missing"]
-            raise MediaRequestError(409, t(lang, "xAI לא מחובר, ולכן אין יצירה אמיתית. חסר: ", "xAI is not connected, so "
-                                                 "nothing real can be created. Missing: ") + "; ".join(missing),
-                                    code="unavailable")
+    def _require(self, lang: str, kind: str = "image") -> None:
+        if self.available(kind):
+            return
+        if self.local:
+            missing = [self._part(p, lang) for p in self.engine.files.missing(kind)]
+            raise MediaRequestError(409, t(lang, "המודלים החינמיים עוד לא מותקנים במחשב, ולכן אין יצירה אמיתית. חסר: ",
+                                           "The free models are not installed on this computer yet, so nothing "
+                                           "real can be made. Missing: ") + "; ".join(missing), code="unavailable")
+        missing = self.status(lang)["missing"]
+        raise MediaRequestError(409, t(lang, "xAI לא מחובר, ולכן אין יצירה אמיתית. חסר: ", "xAI is not connected, so "
+                                             "nothing real can be created. Missing: ") + "; ".join(missing),
+                                code="unavailable")
+
+    def _default_model(self, kind: str) -> str:
+        engine = self.app.settings.media.engine
+        return (catalog.image_models(engine) if kind == "image" else catalog.video_models(engine))[0].id
+
+    def _engine_of(self, model: str, kind: str, lang: str) -> None:
+        """A model of the engine in use: Grok's are refused while images and videos are made on this computer."""
+        info = catalog.image_model(model) if kind == "image" else catalog.video_model(model)
+        engine = self.app.settings.media.engine
+        if info.engine != engine:
+            raise MediaRequestError(400, t(lang, "Grok כבוי: תמונות וסרטונים נוצרים במחשב שלך, בחינם." if self.local
+                                           else "המודל הזה הוא של המחשב, והמנוע שנבחר בהגדרות הוא Grok.",
+                                           "Grok is off: images and videos are made on this computer, for free."
+                                           if self.local else "That model is a local one, and the settings choose "
+                                           "Grok."), code="engine")
 
     # ------------------------------------------------------------------ the previews
     def items(self, kind: str | None = None) -> list[dict[str, Any]]:
@@ -286,13 +362,18 @@ class MediaService:
     async def create_image(self, req: ImageRequest) -> Job:
         lang = self._lang(req.lang)
         real = not req.demo
+        model = req.model or self._default_model("image")
+        self._engine_of(model, "image", lang)
+        info = catalog.image_model(model)
+        if req.aspect_ratio not in info.aspects or req.resolution not in info.resolutions:
+            raise MediaRequestError(400, t(lang, "הגודל הזה לא זמין במודל הזה.", "That size is not available with this model."))
         if real:
-            self._require(lang)
+            self._require(lang, "image")
         source, source_item = self._input(req.source_item, req.source_path, lang) if real else (None, None)
         prompt = catalog.image_prompt(req.description, req.style)
         return await self._image_job(
             kind="image.create", lang=lang, real=real, prompt=prompt, description=req.description.strip(),
-            model=req.model, count=req.count, aspect=req.aspect_ratio, resolution=req.resolution, style=req.style,
+            model=model, count=req.count, aspect=req.aspect_ratio, resolution=req.resolution, style=req.style,
             source=source, parent=source_item, changes=[],
             params=req.model_dump(exclude={"lang"}),
         )
@@ -301,14 +382,19 @@ class MediaService:
         lang = self._lang(req.lang)
         item = self._item(req.item_id, lang)
         real = item.real
-        if real:
-            self._require(lang)
-        base = item.description or item.prompt
-        prompt = catalog.variation_prompt(base) if req.variation else catalog.change_prompt(base, req.change)
         p = item.params
+        model = str(p.get("model") or catalog.DEFAULT_IMAGE_MODEL)
+        if real:
+            self._engine_of(model, "image", lang)
+            self._require(lang, "image")
+        base = item.description or item.prompt
+        if catalog.image_model(model).local:
+            prompt = base if req.variation else catalog.local_change_prompt(base, req.change)
+        else:
+            prompt = catalog.variation_prompt(base) if req.variation else catalog.change_prompt(base, req.change)
         return await self._image_job(
-            kind="image.refine", lang=lang, real=real, prompt=prompt, description=base, model=str(p.get("model") or
-            catalog.DEFAULT_IMAGE_MODEL), count=req.count, aspect=str(p.get("aspect_ratio") or "1:1"),
+            kind="image.refine", lang=lang, real=real, prompt=prompt, description=base, model=model,
+            count=req.count, aspect=str(p.get("aspect_ratio") or "1:1"),
             resolution=str(p.get("resolution") or "1k"), style=str(p.get("style") or "none"),
             source=Path(item.path) if real else None, parent=item.id,
             changes=[*p.get("changes", []), req.change.strip() if not req.variation else "(variation)"],
@@ -322,6 +408,7 @@ class MediaService:
         if len(prompt) > catalog.MAX_PROMPT:
             raise MediaRequestError(400, t(lang, "התיאור ארוך מדי.", "The description is too long."))
         info = catalog.image_model(model)
+        local = info.local
         label = info.label_he if lang == "he" else info.label_en
         many = plural(lang, count, "תמונה אחת", "תמונות", "image", "images")
         estimate = catalog.image_cost(model, resolution, count, inputs=1 if source else 0)
@@ -333,7 +420,24 @@ class MediaService:
                 t(lang, f"לשנות את התמונה: «{change[:80]}»", f"Change the image: “{change[:80]}”")
         else:
             title = t(lang, f"ליצור {many}: «{clip}»", f"Create {many}: “{clip}”")
-        if real:
+        if real and local:
+            width, height = catalog.local_image_size(aspect, resolution)
+            redraw = t(lang, f" מתוך {source.name}" if source else "", f" from {source.name}" if source else "")
+            plan = [t(lang, f"ליצור {many}{redraw} במחשב שלך עם Z-Image-Turbo ({width}x{height}); שום דבר לא יוצא "
+                            "מהמחשב ושום דבר לא עולה כסף",
+                      f"Create {many}{redraw} on this computer with Z-Image-Turbo ({width}x{height}); nothing leaves "
+                      "the computer and nothing costs money")]
+            if self._translates(prompt):
+                plan.append(t(lang, "לתרגם קודם את התיאור לאנגלית, במחשב (המודל מבין אנגלית הכי טוב)",
+                              "First translate the description to English, on this computer (the model follows "
+                              "English best)"))
+            plan.append(t(lang, "לשמור תצוגה מקדימה בתיקיית העבודה של JARVIS; אצלך לא נשמר דבר לפני שלוחצים "
+                                "\"שמירה\" ובוחרים מקום",
+                          "Keep a preview in JARVIS's workspace; nothing is saved on your computer until you press "
+                          "Save and choose where"))
+            sends: list[str] = []
+            cost: str | None = self._local_cost(lang, "image", count=count)
+        elif real:
             what = t(lang, " ואת התמונה " + source.name if source else "", " and the image " + source.name if source else "")
             shape = "" if source else f", {aspect}, {resolution}"
             plan = [
@@ -350,18 +454,20 @@ class MediaService:
                        f"the description ({len(prompt)} characters) → {catalog.SERVICE_NAME}, {catalog.SERVICE_HOST}")]
             if source is not None:
                 sends.append(t(lang, f"התמונה {source.name} ← xAI", f"the image {source.name} → xAI"))
-            cost: str | None = f"≈ {catalog.usd(estimate)}"
+            cost = f"≈ {catalog.usd(estimate)}"
         else:
             stand_ins = plural(lang, count, "תמונת דוגמה אחת", "תמונות דוגמה", "placeholder", "placeholders")
-            plan = [t(lang, "הדגמה: לא נשלח דבר ל-xAI ולא נוצרת תמונה אמיתית",
-                      "Demonstration: nothing is sent to xAI and no real image is created"),
+            plan = [t(lang, "הדגמה: לא נשלח דבר לשום מקום ולא נוצרת תמונה אמיתית",
+                      "Demonstration: nothing is sent anywhere and no real image is created"),
                     t(lang, f"להכין במקום זה {stand_ins} עם הכיתוב «{demo.DEMO_IMAGE_HE}»",
                       f"Make {stand_ins} marked “{demo.DEMO_IMAGE_EN}” instead")]
             sends, cost = [], None
         steps = [("prepare", t(lang, "הכנת הבקשה", "Preparing the request")),
-                 ("create", t(lang, "שליחה ל-xAI ויצירה", "Sending to xAI and creating")),
+                 ("create", t(lang, "יצירה במחשב שלך", "Creating on this computer") if local else
+                  t(lang, "שליחה ל-xAI ויצירה", "Sending to xAI and creating")),
                  ("preview", t(lang, "שמירת תצוגה מקדימה", "Keeping a preview"))]
-        area_params = {**params, "real": real}
+        area_params = {**params, "real": real, "engine": info.engine}
+        strength = catalog.LOCAL_IMAGE_STRENGTH["variation" if variation else "change"]
 
         async def run(ctx: JobContext) -> dict[str, Any]:
             folder = self.store.job_folder(ctx.job.id)
@@ -369,18 +475,29 @@ class MediaService:
                 if source is not None and not await asyncio.to_thread(source.is_file):
                     raise ToolError(ctx.t(f"התמונה {source} כבר לא קיימת.", f"The image {source} no longer exists."))
             usd: float | None = None
+            used = prompt
             if real:
                 async with ctx.step("create"):
-                    result = await self.app.executor.execute(
-                        "create_image", {"prompt": prompt, "model": model, "count": count, "aspect_ratio": aspect,
-                                         "resolution": resolution, "source": str(source) if source else None,
-                                         "out_dir": str(folder), "name": safe_name(description[:40], "image")},
-                        agent_id="creative", task_id=ctx.job.id, cancel=ctx.cancel, lang=lang,
-                        progress=_scaled(ctx, 0.05, 0.9))
+                    if local:
+                        result = await self.app.executor.execute(
+                            "create_image_local", {"prompt": prompt, "count": count, "aspect_ratio": aspect,
+                                                   "resolution": resolution, "source": str(source) if source else None,
+                                                   "strength": strength, "out_dir": str(folder),
+                                                   "name": safe_name(description[:40], "image")},
+                            agent_id="creative", task_id=ctx.job.id, cancel=ctx.cancel, lang=lang,
+                            progress=_scaled(ctx, 0.05, 0.95))
+                    else:
+                        result = await self.app.executor.execute(
+                            "create_image", {"prompt": prompt, "model": model, "count": count, "aspect_ratio": aspect,
+                                             "resolution": resolution, "source": str(source) if source else None,
+                                             "out_dir": str(folder), "name": safe_name(description[:40], "image")},
+                            agent_id="creative", task_id=ctx.job.id, cancel=ctx.cancel, lang=lang,
+                            progress=_scaled(ctx, 0.05, 0.9))
                     _raise_for(result)
                 data = result.data or {}
                 files = list(data.get("files") or [])
-                usd = data.get("usd")
+                usd = None if local else data.get("usd")
+                used = str(data.get("prompt_used") or prompt)
             else:
                 files = []
                 await ctx.skip("create", ctx.t("הדגמה: לא נשלח דבר", "Demonstration: nothing was sent"))
@@ -395,14 +512,16 @@ class MediaService:
                 items = self.store.add(MediaItem(
                     kind="image", job_id=ctx.job.id, path=f["path"], format=f["format"], mime=f["mime"],
                     bytes=int(f.get("bytes") or 0), width=f.get("width"), height=f.get("height"), real=real,
-                    description=description, prompt=prompt, usd=share, cost=cost, parent=parent,
+                    description=description, prompt=used, usd=share, cost=cost, parent=parent,
                     params={"model": model, "aspect_ratio": aspect, "resolution": resolution, "style": style,
-                            "changes": changes, "source": str(source) if source else None},
+                            "changes": changes, "source": str(source) if source else None, "engine": info.engine,
+                            **({"asked": prompt} if used != prompt else {})},
                 ) for f in files)
             done = plural(lang, len(items), "תמונה אחת מוכנה", "תמונות מוכנות", "image ready", "images ready")
             summary = done if real else t(lang, f"הדגמה מוכנה ({done}) — לא נוצרה תמונה אמיתית",
                                           f"Demonstration ready ({done}) — no real image was created")
-            return {"summary": summary, "items": [i.view() for i in items], "usd": usd, "estimated": cost, "real": real}
+            return {"summary": summary, "items": [i.view() for i in items], "usd": usd, "estimated": cost, "real": real,
+                    "engine": info.engine, **({"took_s": data.get("seconds")} if real and local else {})}
 
         return await self.app.jobs.start(kind=kind, area="images", title=title, run=run, plan=plan, steps=steps,
                                          params=area_params, real=real, sends=sends, cost=cost, lang=lang)
@@ -411,8 +530,20 @@ class MediaService:
     async def create_video(self, req: VideoRequest) -> Job:
         lang = self._lang(req.lang)
         real = not req.demo
+        model = req.model or self._default_model("video")
+        self._engine_of(model, "video", lang)
+        info = catalog.video_model(model)
+        seconds = req.seconds or info.default_seconds
+        if (req.reference_items or req.reference_paths) and not info.references:
+            raise MediaRequestError(400, t(lang, "תמונות ייחוס צריכות את מודל הווידאו המלא.",
+                                           "Reference images need the full video model."))
+        if seconds > info.max_seconds or req.resolution not in info.resolutions:
+            raise MediaRequestError(400, t(lang, f"במודל הזה סרטון הוא עד {info.max_seconds} שניות, ברזולוציה "
+                                                 f"{' או '.join(info.resolutions)}.",
+                                           f"With this model a video is up to {info.max_seconds} seconds, at "
+                                           f"{' or '.join(info.resolutions)}."))
         if real:
-            self._require(lang)
+            self._require(lang, "video")
         image, image_item = self._input(req.image_item, req.image_path, lang) if real else (None, None)
         references: list[Path] = []
         if real:
@@ -423,7 +554,7 @@ class MediaService:
             references += [p for p in (self._user_file(r, lang) for r in req.reference_paths) if p is not None]
         prompt = catalog.video_prompt(**req.parts())
         return await self._video_job(kind="video.create", lang=lang, real=real, prompt=prompt, parts=req.parts(),
-                                     model=req.model, seconds=req.seconds, aspect=req.aspect_ratio,
+                                     model=model, seconds=seconds, aspect=req.aspect_ratio,
                                      resolution=req.resolution, image=image, references=references,
                                      parent=image_item, params=req.model_dump(exclude={"lang"}))
 
@@ -431,7 +562,8 @@ class MediaService:
         lang = self._lang(req.lang)
         item = self._item(req.item_id, lang, kind="video")
         if item.real:
-            self._require(lang)
+            self._engine_of(str(item.params.get("model") or catalog.DEFAULT_VIDEO_MODEL), "video", lang)
+            self._require(lang, "video")
         p = item.params
         # The same first frame or reference images as the video being changed, while they are still there.
         image = next(iter(_existing([p["image"]] if item.real and p.get("image") else [])), None)
@@ -451,6 +583,7 @@ class MediaService:
         if len(prompt) > catalog.MAX_PROMPT:
             raise MediaRequestError(400, t(lang, "התיאור ארוך מדי.", "The description is too long."))
         info = catalog.video_model(model)
+        local = info.local
         label = info.label_he if lang == "he" else info.label_en
         inputs = [*([image] if image else []), *references]
         estimate = catalog.video_cost(model, resolution, seconds, inputs=len(inputs))
@@ -462,7 +595,25 @@ class MediaService:
         stop_note = t(lang, "עצירה באמצע: xAI עשוי להשלים את הסרטון אצלו (ולחייב עליו), אבל אצלך לא יישמר ממנו דבר",
                       "If you stop midway, xAI may still finish the video on its side (and charge for it), but nothing "
                       "of it is kept on your computer")
-        if real:
+        if real and local:
+            width, height = catalog.local_video_size(aspect, resolution)
+            first = t(lang, f", מהתמונה {image.name}" if image else "", f", from the image {image.name}" if image else "")
+            plan = [t(lang, f"ליצור במחשב שלך סרטון של {length} עם Wan 2.2 ({width}x{height}, {catalog.LOCAL_FPS} "
+                            f"תמונות בשנייה{first}); שום דבר לא יוצא מהמחשב ושום דבר לא עולה כסף",
+                      f"Make a {seconds}-second video on this computer with Wan 2.2 ({width}x{height}, "
+                      f"{catalog.LOCAL_FPS} frames a second{first}); nothing leaves the computer and nothing costs "
+                      "money")]
+            if self._translates(prompt):
+                plan.append(t(lang, "לתרגם קודם את התיאור לאנגלית, במחשב (המודל מבין אנגלית הכי טוב)",
+                              "First translate the description to English, on this computer (the model follows "
+                              "English best)"))
+            plan += [t(lang, "זה לוקח כמה דקות, והכרטיס הגרפי עסוק בזמן הזה; אפשר להמשיך לעבוד",
+                       "It takes a few minutes, and the graphics card is busy meanwhile; you can keep working"),
+                     t(lang, "עצירה באמצע עוצרת את היצירה מיד, ולא נשמר ממנה דבר",
+                       "Stopping midway stops it at once, and nothing of it is kept")]
+            sends: list[str] = []
+            cost: str | None = self._local_cost(lang, "video", seconds=seconds, resolution=resolution)
+        elif real:
             sent = "".join(t(lang, f" ואת {p.name}", f" and {p.name}") for p in inputs)
             plan = [
                 t(lang, f"לשלוח ל-{catalog.SERVICE_NAME} את התיאור{sent} וליצור סרטון של {length} "
@@ -481,15 +632,16 @@ class MediaService:
             sends = [t(lang, f"התיאור ({len(prompt)} תווים) ← {catalog.SERVICE_NAME}, {catalog.SERVICE_HOST}",
                        f"the description ({len(prompt)} characters) → {catalog.SERVICE_NAME}, {catalog.SERVICE_HOST}"),
                      *(t(lang, f"התמונה {p.name} ← xAI", f"the image {p.name} → xAI") for p in inputs)]
-            cost: str | None = f"≈ {catalog.usd(estimate)}"
+            cost = f"≈ {catalog.usd(estimate)}"
         else:
-            plan = [t(lang, "הדגמה: לא נשלח דבר ל-xAI ולא נוצר סרטון אמיתי",
-                      "Demonstration: nothing is sent to xAI and no real video is created"),
+            plan = [t(lang, "הדגמה: לא נשלח דבר לשום מקום ולא נוצר סרטון אמיתי",
+                      "Demonstration: nothing is sent anywhere and no real video is created"),
                     t(lang, "להכין במקום זה לוח תכנון (סטוריבורד) של התיאור, שכתוב עליו שהוא הדגמה",
                       "Make a storyboard of the description instead, marked as a demonstration")]
             sends, cost = [], None
         steps = [("prepare", t(lang, "הכנת הבקשה", "Preparing the request")),
-                 ("create", t(lang, "יצירת הסרטון ב-xAI: שליחה, המתנה והורדה", "Making the video at xAI: send, wait, download")),
+                 ("create", t(lang, "יצירת הסרטון במחשב שלך", "Making the video on this computer") if local else
+                  t(lang, "יצירת הסרטון ב-xAI: שליחה, המתנה והורדה", "Making the video at xAI: send, wait, download")),
                  ("preview", t(lang, "שמירת תצוגה מקדימה", "Keeping a preview"))]
         labels = {key: t(lang, he, en) for key, he, en in (
             ("scene", "סצנה", "Scene"), ("characters", "דמויות", "Characters"), ("motion", "תנועה", "Motion"),
@@ -502,19 +654,30 @@ class MediaService:
                     if not await asyncio.to_thread(path.is_file):
                         raise ToolError(ctx.t(f"התמונה {path} כבר לא קיימת.", f"The image {path} no longer exists."))
             usd: float | None = None
+            used = prompt
             if real:
                 async with ctx.step("create"):
-                    result = await self.app.executor.execute(
-                        "create_video", {"prompt": prompt, "model": model, "seconds": seconds, "aspect_ratio": aspect,
-                                         "resolution": resolution, "image": str(image) if image else None,
-                                         "references": [str(p) for p in references], "out_dir": str(folder),
-                                         "name": safe_name(scene[:40], "video")},
-                        agent_id="creative", task_id=ctx.job.id, cancel=ctx.cancel, lang=lang,
-                        progress=_scaled(ctx, 0.05, 0.95))
+                    if local:
+                        result = await self.app.executor.execute(
+                            "create_video_local", {"prompt": prompt, "seconds": seconds, "aspect_ratio": aspect,
+                                                   "resolution": resolution, "image": str(image) if image else None,
+                                                   "out_dir": str(folder), "name": safe_name(scene[:40], "video")},
+                            agent_id="creative", task_id=ctx.job.id, cancel=ctx.cancel, lang=lang,
+                            progress=_scaled(ctx, 0.05, 0.97))
+                    else:
+                        result = await self.app.executor.execute(
+                            "create_video", {"prompt": prompt, "model": model, "seconds": seconds,
+                                             "aspect_ratio": aspect, "resolution": resolution,
+                                             "image": str(image) if image else None,
+                                             "references": [str(p) for p in references], "out_dir": str(folder),
+                                             "name": safe_name(scene[:40], "video")},
+                            agent_id="creative", task_id=ctx.job.id, cancel=ctx.cancel, lang=lang,
+                            progress=_scaled(ctx, 0.05, 0.95))
                     _raise_for(result)
                 data = result.data or {}
                 files = list(data.get("files") or [])
-                usd = data.get("usd")
+                usd = None if local else data.get("usd")
+                used = str(data.get("prompt_used") or prompt)
             else:
                 files = []
                 await ctx.skip("create", ctx.t("הדגמה: לא נשלח דבר", "Demonstration: nothing was sent"))
@@ -527,14 +690,16 @@ class MediaService:
                 items = self.store.add(MediaItem(
                     kind="video", job_id=ctx.job.id, path=f["path"], format=f["format"], mime=f["mime"],
                     bytes=int(f.get("bytes") or 0), seconds=f.get("seconds"), real=real, description=scene,
-                    prompt=prompt, usd=usd, cost=cost, parent=parent,
+                    width=f.get("width"), height=f.get("height"), prompt=used, usd=usd, cost=cost, parent=parent,
                     params={"model": model, "seconds": seconds, "aspect_ratio": aspect, "resolution": resolution,
                             "parts": parts, "image": str(image) if image else None,
-                            "references": [str(p) for p in references]},
+                            "references": [str(p) for p in references], "engine": info.engine,
+                            **({"asked": prompt} if used != prompt else {})},
                 ) for f in files)
             summary = t(lang, "הסרטון מוכן", "The video is ready") if real else t(
                 lang, "הדגמה מוכנה — לא נוצר סרטון אמיתי", "Demonstration ready — no real video was created")
-            return {"summary": summary, "items": [i.view() for i in items], "usd": usd, "estimated": cost, "real": real}
+            return {"summary": summary, "items": [i.view() for i in items], "usd": usd, "estimated": cost, "real": real,
+                    "engine": info.engine, **({"took_s": data.get("seconds")} if real and local else {})}
 
         return await self.app.jobs.start(kind=kind, area="video", title=title, run=run, plan=plan, steps=steps,
                                          params={**params, "real": real}, real=real, sends=sends, cost=cost, lang=lang)
@@ -599,6 +764,17 @@ class MediaService:
                                          params=req.model_dump(exclude={"lang"}), real=True, lang=lang)
 
     # ------------------------------------------------------------------ helpers
+    def _translates(self, prompt: str) -> bool:
+        return bool(self.app.settings.media.translate and HEBREW.search(prompt) and self.engine.files.has("translate"))
+
+    def _local_cost(self, lang: str, kind: str, *, count: int = 1, seconds: int = 0, resolution: str = "480p") -> str:
+        """What the screens show instead of a price: free, and roughly how long it takes."""
+        s = catalog.local_estimate_s(kind, count=count, seconds=seconds, resolution=resolution,
+                                     loaded=self.engine.running)
+        took = t(lang, f"{round(s)} שניות", f"{round(s)} seconds") if s < 90 else \
+            t(lang, f"{round(s / 60)} דקות", f"{round(s / 60)} minutes")
+        return t(lang, f"חינם · בערך {took}", f"Free · about {took}")
+
     async def _write_demo(self, ctx: JobContext, path: Path, svg: str, lang: str) -> Path:
         """A demonstration placeholder, written into the workspace like any file an agent writes."""
         result = await self.app.executor.execute("write_file", {"path": str(path), "content": svg, "mode": "overwrite"},
@@ -607,7 +783,7 @@ class MediaService:
         return path
 
     async def aclose(self) -> None:
-        return None
+        await self.engine.aclose()
 
 
 def _existing(paths: list[str]) -> list[Path]:

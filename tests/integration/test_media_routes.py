@@ -46,7 +46,27 @@ async def until(check: Any, timeout: float = 10.0) -> None:
         await asyncio.sleep(0.02)
 
 
+class TestLocalByDefault:
+    async def test_nothing_paid_is_offered_and_what_to_install_is_said(self, live: Live) -> None:  # noqa: F811
+        status = await live.get("/api/media/status", params={"lang": "he"})
+        assert status["engine"] == "local" and status["available"] is False and status["demo"] is True
+        assert status["host"] == "" and status["network"] is False
+        assert all("jarvis media install" in line for line in status["missing"]) and status["missing"]
+        offer = status["offer"]
+        assert [m["local"] for m in offer["image"]["models"] + offer["video"]["models"]] == [True, True]
+        assert offer["local_times"]["image_s"] > 0
+        refused = await live.http.post("/api/media/images", json={"description": "שועל", "lang": "he"})
+        error = refused.json()["error"]
+        assert refused.status_code == 409 and error["code"] == "unavailable" and "jarvis media install" in error["message"]
+
+
 class TestMediaRoutes:
+    """Grok Imagine (paid), when the settings choose it."""
+
+    @pytest.fixture(autouse=True)
+    def _grok(self, live: Live) -> None:  # noqa: F811
+        live.app.settings.media.engine = "xai"
+
     async def test_status_says_what_is_missing(self, live: Live) -> None:  # noqa: F811
         status = await live.get("/api/media/status", params={"lang": "he"})
         assert status["available"] is False and status["demo"] is True and status["xai"] is False

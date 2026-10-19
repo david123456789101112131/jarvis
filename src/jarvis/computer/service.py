@@ -69,6 +69,11 @@ class ComputerService:
     def busy(self) -> bool:
         return self._active is not None
 
+    async def release_gpu(self) -> None:
+        """Another local model needs the graphics card: stop the idle model server (it starts again when needed)."""
+        if not self.busy():
+            await self.server.stop()
+
     def start(self) -> None:
         if self._idle_task is None or self._idle_task.done():
             self._idle_task = asyncio.ensure_future(self._idle_loop())

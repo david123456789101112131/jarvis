@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ApiError } from '../../api/client';
 import { renderWith } from '../../test/render';
 import { ImagesScreen } from './ImagesScreen';
-import { mediaItem, mediaJob, mediaStatus, routes } from './media.fixtures';
+import { localStatus, mediaItem, mediaJob, mediaStatus, routes } from './media.fixtures';
 
 afterEach(cleanup);
 
@@ -161,5 +161,85 @@ describe('the image screen', () => {
     await waitFor(() => expect(queryByTestId('media-selected')).toBeNull());
     expect(sent(request, 'DELETE', '/api/media/items/media_real1')).toHaveLength(1);
     expect(await findByTestId('media-empty')).toBeTruthy();
+  });
+});
+
+describe('the image screen with the free models on this computer (the default)', () => {
+  const LOCAL_ITEM = {
+    description: 'A fox', prompt: 'A fox', usd: null, cost: 'Free · about 75 seconds',
+    params: { model: 'z-image-turbo', engine: 'local', aspect_ratio: '1:1', resolution: '1k', style: 'none', changes: [] },
+  };
+
+  it('says nothing leaves the computer, that it is free and roughly how long, and asks for the local model', async () => {
+    const { findByTestId, getByTestId, queryByTestId, request } = renderWith(<ImagesScreen />, {
+      request: routes({
+        'GET /api/media/status': () => localStatus(),
+        'GET /api/media/items': () => [],
+        'POST /api/media/images': () => mediaJob(),
+      }),
+    });
+    expect((await findByTestId('media-connection')).textContent).toBe('On this computer · free');
+    expect(queryByTestId('images-unavailable')).toBeNull();
+    fireEvent.change(getByTestId('images-description'), { target: { value: 'A fox in the snow' } });
+    const box = getByTestId('images-sends');
+    expect(box.getAttribute('data-engine')).toBe('local');
+    expect(box.textContent).toContain('Made on this computer: nothing leaves it');
+    expect(box.textContent).not.toContain('api.x.ai');
+    expect(getByTestId('images-sends-text').textContent).toBe('A fox in the snow');
+    expect(queryByTestId('images-sends-translate')).toBeNull();
+    expect(getByTestId('images-sends-price').textContent).toBe('Free · about 75 seconds'); // loading, then one image
+    expect(getByTestId('images-model-hint').textContent).toBe('Free, about 15 seconds an image');
+    expect(getByTestId('images-create').textContent).toBe('Create the image · Free');
+    // Only what this model makes: no "automatic" shape, one size.
+    const shapes = Array.from(getByTestId('images-aspect').querySelectorAll('option')).map((o) => o.getAttribute('value'));
+    expect(shapes).not.toContain('auto');
+    expect(getByTestId('images-resolution').querySelectorAll('[data-value]')).toHaveLength(1);
+
+    fireEvent.click(getByTestId('images-create'));
+    await waitFor(() => expect(sent(request, 'POST', '/api/media/images')).toHaveLength(1));
+    expect(sent(request, 'POST', '/api/media/images')[0]).toMatchObject({ model: 'z-image-turbo', resolution: '1k', aspect_ratio: '1:1', demo: false });
+  });
+
+  it('in Hebrew it says the description is translated here first, and a loaded model is quicker', async () => {
+    const { findByTestId, getByTestId } = renderWith(<ImagesScreen />, {
+      lang: 'he',
+      request: routes({ 'GET /api/media/status': () => localStatus(['image', 'video'], true), 'GET /api/media/items': () => [] }),
+    });
+    fireEvent.change(await findByTestId('images-description'), { target: { value: 'שועל בשלג' } });
+    expect(getByTestId('images-sends-translate').textContent).toContain('מתורגמת קודם לאנגלית, כאן במחשב');
+    expect(getByTestId('images-sends-price').textContent).toBe('חינם · בערך 15 שניות');
+    expect(getByTestId('images-create').textContent).toBe('ליצור את התמונה · חינם');
+  });
+
+  it('a change is drawn from text that says what the image should become, for free', async () => {
+    const { findAllByTestId, findByTestId, getByTestId, request } = renderWith(<ImagesScreen />, {
+      request: routes({
+        'GET /api/media/status': () => localStatus(),
+        'GET /api/media/items': () => [mediaItem(LOCAL_ITEM)],
+        'POST /api/media/images/refine': () => mediaJob({ id: 'job_refine', kind: 'image.refine' }),
+      }),
+    });
+    fireEvent.click(within((await findAllByTestId('media-item'))[0]).getByTestId('media-item-open'));
+    expect(getByTestId('media-price').textContent).toBe('Free');
+    expect(getByTestId('media-selected').textContent).toContain('What the model got');
+    fireEvent.change(await findByTestId('images-change'), { target: { value: 'at night' } });
+    expect(getByTestId('images-refine-sends-text').textContent).toBe('A fox\nat night');
+    expect(getByTestId('images-refine').textContent).toBe('Change it · Free');
+    pick(getByTestId('images-refine-mode'), 'variation');
+    expect(getByTestId('images-refine-sends-text').textContent).toBe('A fox');
+    fireEvent.click(getByTestId('images-refine'));
+    await waitFor(() => expect(sent(request, 'POST', '/api/media/images/refine')).toHaveLength(1));
+  });
+
+  it('without the models it says what to install, and offers only a marked demonstration', async () => {
+    const { findByTestId, getByTestId, queryByTestId } = renderWith(<ImagesScreen />, {
+      request: routes({ 'GET /api/media/status': () => localStatus([]), 'GET /api/media/items': () => [] }),
+    });
+    const missing = await findByTestId('images-unavailable');
+    expect(missing.textContent).toContain('The free models are not installed yet');
+    expect(missing.textContent).toContain('jarvis media install');
+    expect(getByTestId('media-connection').textContent).toBe('The free models are not installed: demonstration only');
+    expect(queryByTestId('images-create')).toBeNull();
+    expect(getByTestId('images-demo')).toBeTruthy();
   });
 });
