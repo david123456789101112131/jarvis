@@ -187,6 +187,25 @@ const ICONS: Record<string, ReactElement> = {
       <path d="M4.5 17v1.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V17" />
     </>
   ),
+  upload: (
+    <>
+      <path d="M12 15V4M7.5 8.5L12 4l4.5 4.5" />
+      <path d="M4.5 17v1.5A1.5 1.5 0 0 0 6 20h12a1.5 1.5 0 0 0 1.5-1.5V17" />
+    </>
+  ),
+  pointer: <path d="M6 3.5l12.5 7.2-5.6 1.5 3.4 6.4-2.4 1.3-3.4-6.4L6.4 17.6z" />,
+  window: (
+    <>
+      <rect x="3.5" y="4.5" width="17" height="15" rx="2" />
+      <path d="M3.5 8.5h17M6.5 6.5h.1M9 6.5h.1" />
+    </>
+  ),
+  sliders: (
+    <>
+      <path d="M5 4v6M5 14v6M12 4v3M12 11v9M19 4v9M19 17v3" />
+      <path d="M3 12h4M10 9h4M17 15h4" />
+    </>
+  ),
   lock: (
     <>
       <rect x="5" y="10.5" width="14" height="10" rx="2" />
