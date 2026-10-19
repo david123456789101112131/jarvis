@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, waitFor, within } from '@testing-library/react';
 import type { Mock } from 'vitest';
 import { afterEach, describe, expect, it } from 'vitest';
+import { ApiError } from '../../api/client';
 import { renderWith } from '../../test/render';
 import { mediaItem, mediaJob, mediaStatus, routes } from '../images/media.fixtures';
 import { VideoScreen } from './VideoScreen';
@@ -61,12 +62,16 @@ describe('the video screen', () => {
   });
 
   it('with xAI it shows the exact text, the images sent, the price and the stop note before Create', async () => {
-    const dialog = ['C:\\pics\\a.png', 'C:\\pics\\b.png'];
-    const { findByTestId, getByTestId, request } = renderWith(<VideoScreen />, {
+    const dialog = ['C:\\pics\\a.png'];
+    const { findByTestId, getByTestId, container, request } = renderWith(<VideoScreen />, {
       request: routes({
         'GET /api/media/status': () => mediaStatus(true),
         'GET /api/media/items': (_body, path) => (path.includes('kind=image') ? [mediaItem({ id: 'media_pic1', name: 'fox.png' })] : []),
-        'POST /api/dialog': () => ({ paths: [dialog.shift()] }),
+        'POST /api/dialog': () => {
+          const path = dialog.shift();
+          if (!path) throw new ApiError(409, 'conflict', 'no window'); // then the path is typed
+          return { paths: [path] };
+        },
         'POST /api/media/videos': () => mediaJob({ kind: 'video.create', area: 'video' }),
       }),
     });
@@ -94,6 +99,9 @@ describe('the video screen', () => {
     fireEvent.click(getByTestId('video-add-reference-open'));
     await waitFor(() => expect(getByTestId('video-references').children).toHaveLength(1));
     fireEvent.click(getByTestId('video-add-reference-open'));
+    fireEvent.change(await findByTestId('video-add-reference-typed'), { target: { value: 'C:\\pics\\b.png' } });
+    expect(container.querySelector('form form')).toBeNull(); // the picker's own form is never nested in another
+    fireEvent.click(getByTestId('video-add-reference-use'));
     await waitFor(() => expect(getByTestId('video-references').children).toHaveLength(2));
     pick(getByTestId('video-resolution'), '720p');
     expect(getByTestId('video-sends').textContent).toContain('your file b.png');

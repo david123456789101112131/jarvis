@@ -101,13 +101,8 @@ function ImageForm({ status }: { status: MediaStatus }) {
 
   return (
     <Panel title={t('images.form')} icon="wand" testId="images-form">
-      <form
-        className="media-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (ready) create();
-        }}
-      >
+      {/* Not a <form>: the file picker inside has its own, and a paid request is only ever sent by its button. */}
+      <div className="media-form">
         <label className="field">
           <span className="field__label">{t('images.description')}</span>
           <textarea
@@ -137,7 +132,7 @@ function ImageForm({ status }: { status: MediaStatus }) {
           </label>
           <label className="field">
             <span className="field__label">{t('images.aspect')}</span>
-            <select className="select ltr" dir="ltr" value={aspect} disabled={source !== null} onChange={(e) => setAspect(e.target.value)} data-testid="images-aspect">
+            <select className="select" value={aspect} disabled={source !== null} onChange={(e) => setAspect(e.target.value)} data-testid="images-aspect">
               {offer.image.aspect_ratios.map((a) => (
                 <option key={a} value={a}>
                   {a === 'auto' ? t('images.aspectAuto') : a}
@@ -194,18 +189,18 @@ function ImageForm({ status }: { status: MediaStatus }) {
 
         <div className="actions-row">
           {real ? (
-            <button type="submit" className="btn btn--primary" disabled={!ready} data-testid="images-create">
+            <button type="button" className="btn btn--primary" disabled={!ready} onClick={create} data-testid="images-create">
               <Icon name="sparkles" size={14} />
               {count > 1 ? t('images.createMany', { n: count, price: usd(price) }) : t('images.create', { price: usd(price) })}
             </button>
           ) : (
-            <button type="submit" className="btn" disabled={!ready} data-testid="images-demo">
+            <button type="button" className="btn" disabled={!ready} onClick={create} data-testid="images-demo">
               <Icon name="eye" size={14} />
               {t('images.demo')}
             </button>
           )}
         </div>
-      </form>
+      </div>
     </Panel>
   );
 }

@@ -74,7 +74,7 @@ export const videoHe: Record<keyof typeof videoEn, string> = {
   'video.secondsValue': '{n} שניות',
   'video.aspect': 'צורה',
   'video.resolution': 'רזולוציה',
-  'video.start': 'להתחיל מ…',
+  'video.start': 'נקודת התחלה',
   'video.start.none': 'רק הטקסט',
   'video.start.image': 'תמונת פתיחה',
   'video.start.references': 'תמונות ייחוס',

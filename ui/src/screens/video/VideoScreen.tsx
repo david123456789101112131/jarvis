@@ -159,13 +159,8 @@ function VideoForm({ status }: { status: MediaStatus }) {
 
   return (
     <Panel title={t('video.form')} icon="film" testId="video-form">
-      <form
-        className="media-form"
-        onSubmit={(e) => {
-          e.preventDefault();
-          if (ready) create();
-        }}
-      >
+      {/* Not a <form>: the file pickers inside have their own, and a paid request is only ever sent by its button. */}
+      <div className="media-form">
         <div className="video-parts">
           {offer.video.parts.map((key) => (
             <label key={key} className={`field ${key === 'scene' ? '' : 'video-part'}`}>
@@ -234,7 +229,7 @@ function VideoForm({ status }: { status: MediaStatus }) {
         <div className="field-row">
           <label className="field">
             <span className="field__label">{t('video.aspect')}</span>
-            <select className="select ltr" dir="ltr" value={aspect} disabled={firstFrame} onChange={(e) => setAspect(e.target.value)} data-testid="video-aspect">
+            <select className="select" value={aspect} disabled={firstFrame} onChange={(e) => setAspect(e.target.value)} data-testid="video-aspect">
               {offer.video.aspect_ratios.map((a) => (
                 <option key={a} value={a}>
                   {a}
@@ -350,18 +345,18 @@ function VideoForm({ status }: { status: MediaStatus }) {
 
         <div className="actions-row">
           {real ? (
-            <button type="submit" className="btn btn--primary" disabled={!ready} data-testid="video-create">
+            <button type="button" className="btn btn--primary" disabled={!ready} onClick={create} data-testid="video-create">
               <Icon name="sparkles" size={14} />
               {t('video.create', { price: usd(price) })}
             </button>
           ) : (
-            <button type="submit" className="btn" disabled={!ready} data-testid="video-demo">
+            <button type="button" className="btn" disabled={!ready} onClick={create} data-testid="video-demo">
               <Icon name="eye" size={14} />
               {t('video.demo')}
             </button>
           )}
         </div>
-      </form>
+      </div>
     </Panel>
   );
 }

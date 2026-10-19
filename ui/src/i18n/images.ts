@@ -102,7 +102,7 @@ export const imagesHe: Record<keyof typeof imagesEn, string> = {
   'media.length': 'אורך',
   'media.secondsValue': '{n} שנ׳',
   'media.saveAs': 'שמירה כ-{format}…',
-  'media.saveHint': 'נשמר כ-{format}, הפורמט האמיתי של הקובץ, ולכן השם מסתיים ב-.{ext}. JARVIS יבקש את אישורך לפני שהוא כותב אותו.',
+  'media.saveHint': 'נשמר כ-{format}, הפורמט האמיתי של הקובץ, ולכן השם מסתיים ב-.{ext}. לפני הכתיבה JARVIS יבקש את אישורך.',
   'media.saveDemo': 'אי אפשר לשמור הדגמה',
   'media.savedTo': 'נשמר ב-{path}',
   'media.replace': 'להחליף אותו',
