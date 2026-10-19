@@ -396,6 +396,23 @@ def sha(data: bytes) -> str:
 
 
 class TestInstaller:
+    def test_an_environment_missing_a_package_is_completed_not_called_ready(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # As on the PC: an environment made before ftfy was pinned imports torch fine but lacks it.
+        here = Path(sys.executable).parents[1]                     # JARVIS's own environment: no torch, no ftfy
+        version = __import__("importlib.metadata").metadata.version("httpx")
+        wrong, versions = inst.runtime_problems(here, (f"httpx=={version}", "httpx==0.0.1", "ftfy==6.3.1"))
+        assert wrong == ["httpx==0.0.1", "ftfy==6.3.1"] and versions == ""
+        assert inst.runtime_problems(tmp := here / "no-such-venv")[0] == [inst.TORCH, *inst.PACKAGES]
+        assert not tmp.exists()
+
+        ran: list[list[str]] = []
+        answers = iter([(["ftfy==6.3.1"], ""), ([], "2.14.1 0.41.0 5.20.1")])
+        monkeypatch.setattr(inst, "runtime_problems", lambda venv: next(answers))
+        monkeypatch.setattr(inst, "_run", lambda args, progress: ran.append([str(a) for a in args]))
+        monkeypatch.setattr(inst, "venv_python", lambda venv: Path(sys.executable))
+        assert inst.install_runtime(Path("/media-root"), lambda line: None) == ["ftfy==6.3.1"]
+        assert [r[3:] for r in ran] == [["install", "-q", "--upgrade", "pip"], ["install", "-q", "ftfy==6.3.1"]]
+
     def test_only_what_the_pipelines_read(self) -> None:
         image, _video, words = inst.REPOS
         assert inst.wanted(image, "transformer/diffusion_pytorch_model-00001-of-00003.safetensors")

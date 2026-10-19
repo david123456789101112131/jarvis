@@ -56,8 +56,25 @@ TORCH_INDEX = "https://download.pytorch.org/whl/cu130"      # CUDA 13 builds: th
 PACKAGES = ("diffusers==0.41.0", "transformers==5.20.1", "accelerate==1.15.0", "safetensors==0.8.0",
             "sentencepiece==0.2.2", "sacremoses==0.2.0", "imageio==2.38.1", "imageio-ffmpeg==0.6.0",
             "pillow==13.0.0", "numpy==2.5.4", "ftfy==6.3.1")     # ftfy: Wan's image-to-video cleans text with it
-CHECK = ("import torch, diffusers, transformers, imageio_ffmpeg, PIL, numpy; "
-         "print(torch.__version__, diffusers.__version__, transformers.__version__)")
+# Run in the media environment: which pins are missing or at another version, then that everything imports.
+CHECK = """
+import importlib.metadata as md, json, sys
+wrong = []
+for pin in json.loads(sys.argv[1]):
+    name, _, want = pin.partition("==")
+    try:
+        have = md.version(name)
+    except md.PackageNotFoundError:
+        have = None
+    if have is None or have.split("+")[0] != want:
+        wrong.append(pin)
+if not wrong:
+    import torch, diffusers, transformers, accelerate, safetensors, sentencepiece, sacremoses, imageio
+    import imageio_ffmpeg, PIL, numpy, ftfy
+    print(json.dumps({"wrong": [], "versions": f"{torch.__version__} {diffusers.__version__} {transformers.__version__}"}))
+else:
+    print(json.dumps({"wrong": wrong, "versions": ""}))
+"""
 
 
 @dataclass
@@ -94,36 +111,52 @@ def base_python() -> str:
                   "(install one from python.org, then run this again)")
 
 
-def runtime_ready(venv: Path) -> str | None:
-    """The versions the environment reports when everything imports, else None."""
+def runtime_problems(venv: Path, pins: tuple[str, ...] = (TORCH, *PACKAGES)) -> tuple[list[str], str]:
+    """The pins missing from the environment or at another version (all of them when it has no Python or does not
+    import), and, when none is, the versions it reports (torch, diffusers, transformers)."""
     py = venv_python(venv)
     if not py.is_file():
-        return None
-    proc = subprocess.run([str(py), "-I", "-c", CHECK], env=sanitized_env(), capture_output=True, text=True,
-                          timeout=300)
-    return proc.stdout.strip() if proc.returncode == 0 else None
+        return list(pins), ""
+    proc = subprocess.run([str(py), "-I", "-c", CHECK, json.dumps(list(pins))], env=sanitized_env(),
+                          capture_output=True, text=True, timeout=300)
+    try:
+        answer = json.loads(proc.stdout.strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        return list(pins), ""
+    return list(answer["wrong"]), str(answer["versions"])
+
+
+def runtime_ready(venv: Path) -> str | None:
+    """The versions the environment reports when every pinned package is there and imports, else None."""
+    wrong, versions = runtime_problems(venv)
+    return None if wrong else versions
 
 
 def install_runtime(root: Path, progress: Progress) -> list[str]:
+    """Make the environment complete: only what is missing or at another version is installed (an environment
+    made earlier, or by hand, is completed rather than rebuilt)."""
     venv = root / "venv"
-    have = runtime_ready(venv)
-    if have:
+    wrong, have = runtime_problems(venv)
+    if not wrong:
         progress(f"  the environment is ready (torch, diffusers, transformers: {have})")
         return []
     py = venv_python(venv)
     if not py.is_file():
         progress("  creating the environment…")
         _run([base_python(), "-m", "venv", str(venv)], progress)
-    progress(f"  installing PyTorch with CUDA ({TORCH}, about 3 GB)…")
     _run([str(py), "-m", "pip", "install", "-q", "--upgrade", "pip"], progress)
-    _run([str(py), "-m", "pip", "install", "-q", TORCH, "--index-url", TORCH_INDEX], progress)
-    progress("  installing diffusers, transformers and the video writer…")
-    _run([str(py), "-m", "pip", "install", "-q", *PACKAGES], progress)
-    have = runtime_ready(venv)
-    if not have:
-        raise OSError("the media environment was installed but does not import (see the messages above)")
+    if TORCH in wrong:
+        progress(f"  installing PyTorch with CUDA ({TORCH}, about 3 GB)…")
+        _run([str(py), "-m", "pip", "install", "-q", TORCH, "--index-url", TORCH_INDEX], progress)
+    rest = [pin for pin in wrong if pin != TORCH]
+    if rest:
+        progress(f"  installing {', '.join(rest)}…")
+        _run([str(py), "-m", "pip", "install", "-q", *rest], progress)
+    still, have = runtime_problems(venv)
+    if still:
+        raise OSError(f"the media environment is still missing {', '.join(still)} (see the messages above)")
     progress(f"  ready: {have}")
-    return [TORCH, *PACKAGES]
+    return wrong
 
 
 # ------------------------------------------------------------------------------------- the models
