@@ -76,6 +76,10 @@ class NullVoiceEvents:
     async def on_speech(self, text: str, language: str) -> None:
         return None
 
+    async def on_timing(self, name: str, ms: float, ok: bool) -> None:
+        """How long a step took ("voice.stt", "voice.reply", "voice.tts.<engine>"); optional for a sink."""
+        return None
+
 
 # Short phrases pre-synthesized at start-up so acknowledgements play with no delay.
 ACK_PHRASES: dict[str, dict[str, str]] = {

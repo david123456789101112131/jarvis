@@ -597,6 +597,14 @@ def _b_find_files(m: re.Match[str], text: str) -> dict[str, Any] | None:
     return {"query": q, "location": location}
 
 
+def _b_recall(m: re.Match[str], text: str) -> dict[str, Any] | None:
+    """"What do you remember about X"; about the user themself (or nothing named) lists what is remembered."""
+    about = (m.groupdict().get("x") or "").strip(" .,!?:\"'")
+    if normalize(about) in {"", "me", "myself", "עליי", "עלי", "אותי", "אודותיי"}:
+        return {"query": "", "about": "me"}
+    return {"query": about}
+
+
 def _b_status_focus(m: re.Match[str], text: str) -> dict[str, Any] | None:
     t = normalize(text)
     for key, words in {
@@ -629,6 +637,20 @@ def _b_window(m: re.Match[str], text: str) -> dict[str, Any] | None:
 _HE_NAME = r"(?:jarvis|ג'?א?רוויס|ג'?א?רביס)"            # normalized text: ׳ is already '
 _HE_WINDOW = rf"(?:את\s+)?(?:עצמך|{_HE_NAME}|ה?חלון\s+(?:שלך|הראשי|של\s+{_HE_NAME}))"
 _EN_WINDOW = r"(?:yourself|your window|the (?:jarvis|main) window|jarvis)"
+# The assistant's name after a short command ("שלום ג'רוויס", "thanks Jarvis", "מה השעה גרביס").
+_NAME_TAIL = r"(?:\s+(?:jarvis|gravis|ג'?א?רוויס|ג'?א?רביס))?"
+
+
+_GREET_EN = (r"(?:(?:hi|hello|hey)(?: there)?|good (?:morning|afternoon|evening|night)|yo|what's up|howdy|are you there|you there|"
+             r"how are you(?: doing)?(?: today)?|how's it going|how are things)")
+_GREET_HE = (r"(?:שלום|היי|הי|הלו|בוקר טוב|ערב טוב|לילה טוב|צהריים טובים|מה נשמע|מה קורה|מה שלומך|מה העניינים|מה איתך|"
+             r"מה המצב|אתה שם|את שם|אתה פה)")
+
+
+def _named(*patterns: str) -> list[re.Pattern[str]]:
+    """`_p` for whole-command patterns (^...$) that may also end with the assistant's name."""
+    assert all(p.startswith("^") and p.endswith("$") for p in patterns)
+    return _p(*(f"^(?:{p[1:-1]}){_NAME_TAIL}$" for p in patterns))
 
 
 def _b_computer(m: re.Match[str], text: str) -> dict[str, Any] | None:
@@ -763,13 +785,14 @@ _RULES: list[Rule] = [
         r"^(?:תכניס|הכנס|תכניסי)\s+(?:את\s+)?(?:ה)?מחשב\s+(?:ל)?מצב\s+שינה$",
         r"^(?:תנתק|נתק|תתנתק|התנתק)\s+(?:את\s+)?(?:ה)?משתמש$",
     ), "simple", (AgentId.SYSTEM,), build=_b_power),
-    Rule(I.SYSTEM_STATUS, _p(
+    Rule(I.SYSTEM_STATUS, _named(
         r"^(?:check|scan|diagnose|inspect|analyze)\s+(?:my\s+|the\s+)?(?:system|computer|pc|machine|laptop)(?:\s+(?:health|status))?$",
         r"^(?:show|get|display)(?:\s+me)?\s+(?:the\s+)?(?:system|computer|pc)\s+(?:status|health|info|stats|resources)$",
         r"^(?:system|pc|computer)\s+(?:status|health|check|report)$",
-        r"^how(?:'s| is) my (?:system|computer|pc) (?:doing|running)$",
+        r"^how(?:'s| is) (?:my|the) (?:system|computer|pc) (?:doing|running)$",
         r"^(?:check|show|what(?:'s| is))\s+(?:the\s+|my\s+)?(?:cpu|ram|memory|disk|storage|network|battery|internet)(?:\s+(?:usage|load|space|status|speed|level|connection))?$",
         r"^how much (?:ram|memory|disk space|storage|space|battery)(?: is| do i have)?(?: left| free| available| used)?$",
+        r"^how much (?:free|available) (?:ram|memory|disk space|storage|space)(?: is there| do i have)?(?: left)?$",
         rf"^(?:{V_RESEARCH_HE}|{V_SHOW_HE})\s+(?:לי\s+)?(?:את\s+)?(?:מצב\s+)?(?:ה)?(?:מחשב|מערכת)(?:\s+שלי)?$",
         r"^(?:מה\s+)?(?:ה)?מצב\s+(?:ה)?(?:מחשב|מערכת)$",
         r"^איך\s+(?:ה)?(?:מחשב|מערכת)(?:\s+(?:עובד|מתפקד|מרגיש))?$",
@@ -777,27 +800,28 @@ _RULES: list[Rule] = [
         rf"^(?:{V_RESEARCH_HE}|{V_SHOW_HE}|מה)\s+(?:לי\s+)?(?:את\s+)?(?:ה)?(?:צריכת|עומס|מצב)\s+(?:ה)?(?:מעבד|זיכרון|דיסק|רשת|סוללה|אינטרנט)$",
         r"^כמה\s+(?:זיכרון|מקום|סוללה|ראם)(?:\s+(?:פנוי|פנויה|נשאר|נשארה|יש|יש לי))*(?:\s+(?:ב)?(?:מחשב|דיסק))?$",
     ), "simple", (AgentId.SYSTEM,), build=_b_status_focus),
-    Rule(I.TIME, _p(
-        r"^(?:what(?:'s| is) the time|what time is it|time|current time|tell me the time|(?:tell me )?what time it is)$",
+    Rule(I.TIME, _named(
+        r"^(?:what(?:'s| is) the time|what time is it(?: now)?|time|current time|tell me the time|(?:tell me )?what time it is)$",
         r"^(?:מה\s+)?(?:ה)?שעה(?:\s+עכשיו)?$",
         r"^כמה\s+(?:ה)?שעה$",
     ), "instant"),
-    Rule(I.DATE, _p(
-        r"^(?:what(?:'s| is) (?:the |today's )?date|what day is (?:it|today)|today's date|date)$",
-        r"^(?:מה\s+)?(?:ה)?תאריך(?:\s+היום)?$",
+    Rule(I.DATE, _named(
+        r"^(?:what(?:'s| is) (?:the |today's )?date(?: today)?|what day is (?:it|today)(?: today)?|today's date|date)$",
+        r"^(?:(?:מה|איזה)\s+)?(?:ה)?תאריך(?:\s+היום)?$",
         r"^(?:איזה|מה)\s+יום\s+(?:היום|זה)$",
     ), "instant"),
-    Rule(I.HELP, _p(
-        r"^(?:help|commands|what can you do|what are your (?:capabilities|commands)|how can you help(?: me)?)$",
+    Rule(I.HELP, _named(
+        r"^(?:help|commands|what can you do(?: for me)?|what do you know how to do|what are your (?:capabilities|commands)|how can you help(?: me)?|how do i use you|what can i ask you(?: to do)?)$",
         r"^(?:עזרה|פקודות|מה\s+(?:אתה|את)\s+(?:יכול|יכולה)\s+לעשות|במה\s+(?:אתה|את)\s+(?:יכול|יכולה)\s+לעזור(?:\s+לי)?|איך\s+(?:אתה|את)\s+(?:יכול|יכולה)\s+לעזור(?:\s+לי)?)$",
+        r"^(?:מה\s+(?:אתה|את)\s+(?:יודע|יודעת)\s+לעשות|איך\s+משתמשים\s+בך|מה\s+אפשר\s+(?:לעשות\s+איתך|לבקש\s+ממך))$",
     ), "instant"),
-    Rule(I.GREETING, _p(
-        r"^(?:hi|hello|hey|good (?:morning|afternoon|evening)|yo|what's up|howdy|are you there|you there)$",
-        r"^(?:שלום|היי|הי|הלו|בוקר טוב|ערב טוב|צהריים טובים|מה נשמע|מה קורה|מה שלומך|אתה שם|את שם|אתה פה)$",
+    Rule(I.GREETING, _named(          # one greeting or two ("שלום, מה שלומך?")
+        rf"^{_GREET_EN}(?:\s+{_GREET_EN})?$",
+        rf"^{_GREET_HE}(?:\s+{_GREET_HE})?$",
     ), "instant", confidence=0.85),
-    Rule(I.THANKS, _p(
-        r"^(?:thanks|thank you|thx|great job|well done|good job|perfect|awesome)(?: jarvis)?$",
-        r"^(?:תודה|תודה רבה|תודה לך|יופי|מעולה|כל הכבוד|אחלה|מושלם|סבבה)$",
+    Rule(I.THANKS, _named(
+        r"^(?:thanks|thank you|thx|great job|well done|good job|perfect|awesome|thank you (?:so|very) much|thanks a lot|many thanks|thanks for (?:the|your) help)$",
+        r"^(?:תודה|תודה רבה|תודה לך|תודה רבה לך|תודה רבה רבה|תודה ענקית|תודה על העזרה|יופי|מעולה|כל הכבוד|אחלה|מושלם|סבבה)$",
     ), "instant", confidence=0.85),
     Rule(I.VOLUME, _p(
         r"^(?:turn|crank)\s+(?:the\s+)?(?:volume|sound)\s+(?:up|down)$",
@@ -955,10 +979,15 @@ _RULES: list[Rule] = [
         r"^(?:remember|note|keep in mind|don't forget)\s+(?:that\s+)?(?P<x>.+)$",
         rf"^{V_REMEMBER_HE}\s+(?:ש|את\s+זה\s+ש|לך\s+ש|לעצמך\s+ש|ש-)?(?P<x>.+)$",
     ), "instant", build=_b_text("fact")),
-    Rule(I.RECALL, _p(
+    Rule(I.RECALL, [*_named(
+        r"^what do you (?:remember|know) about (?:me|myself)$",
+        r"^what do you remember$",
+        r"^(?:מה\s+)?(?:אתה\s+|את\s+)?(?:זוכר|זוכרת|יודע|יודעת)\s+(?:עליי|עלי|אודותיי)$",
+        r"^מה\s+(?:אתה\s+|את\s+)?(?:זוכר|זוכרת)$",
+    ), *_p(
         r"^what do you (?:remember|know) about\s+(?P<x>.+)$",
         r"^(?:מה\s+)?(?:אתה\s+|את\s+)?(?:זוכר|זוכרת|יודע|יודעת)\s+על\s+(?P<x>.+)$",
-    ), "instant", build=_b_text("query")),
+    )], "instant", build=_b_recall),
     Rule(I.RESEARCH, _p(
         r"^(?:research|investigate|look up|look into|find out|find information (?:about|on)|find info (?:about|on)|learn about|study)\s+(?P<q>.+)$",
         r"^(?:search|check|look)\s+(?:the\s+)?(?:web|internet|online|net)\s+(?:for\s+|about\s+)?(?P<q>.+)$",

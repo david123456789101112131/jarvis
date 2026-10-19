@@ -21,7 +21,7 @@ import json
 import logging
 import time
 from collections.abc import Callable, Sequence
-from typing import Any, TypeVar
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
@@ -33,6 +33,9 @@ from jarvis.ai.types import AIMessage, AIResponse, CompletionRequest, Effort, To
 from jarvis.common.enums import AgentId
 from jarvis.common.errors import ProviderError, ProviderRefusal, ProviderUnavailable
 from jarvis.config.settings import AISettings
+
+if TYPE_CHECKING:
+    from jarvis.metrics import Metrics
 
 log = logging.getLogger(__name__)
 
@@ -79,6 +82,7 @@ class ProviderRouter:
         self._key_caches: list[_KeyCache] = []
         self.last_provider: str | None = None
         self.failovers = 0
+        self.metrics: Metrics | None = None      # how long each call takes (provider and role, never the text)
 
     @classmethod
     def from_settings(cls, settings: AISettings, secrets: Any | None) -> ProviderRouter:
@@ -246,9 +250,11 @@ class ProviderRouter:
             req = request
             if request.model and p.name != owner:
                 req = request.model_copy(update={"model": None})  # a role's model name belongs to one provider
+            started = time.perf_counter()
             try:
                 response = await p.complete(req)
             except ProviderError as exc:
+                self._measure(p.name, request.role, started, ok=False)
                 retry_elsewhere = (isinstance(exc, ProviderUnavailable) or exc.retryable
                                    or (p.name == agents_choice and not isinstance(exc, ProviderRefusal)))
                 if not retry_elsewhere or index == len(chain) - 1:
@@ -257,9 +263,14 @@ class ProviderRouter:
                 self.failovers += 1
                 log.warning("%s failed (%s); trying %s", p.name, exc.message, chain[index + 1].name)
                 continue
+            self._measure(p.name, request.role, started)
             self.last_provider = p.name
             return response
         raise last or ProviderUnavailable("No AI provider answered.")  # pragma: no cover
+
+    def _measure(self, provider: str, role: str, started: float, *, ok: bool = True) -> None:
+        if self.metrics is not None:
+            self.metrics.record(f"ai.{provider}.{role}", (time.perf_counter() - started) * 1000, ok=ok)
 
     def _model_owner(self, role: str, model: str) -> str | None:
         """The provider a role's model name was chosen for: the role's provider, else the maker of that

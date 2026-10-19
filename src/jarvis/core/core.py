@@ -57,6 +57,7 @@ if TYPE_CHECKING:
     from jarvis.config.settings import Settings
     from jarvis.logs.activity import ActivityLog
     from jarvis.memory.manager import MemoryManager
+    from jarvis.metrics import Metrics
     from jarvis.orchestration.orchestrator import TaskOrchestrator
     from jarvis.orchestration.task import JarvisTask
     from jarvis.permissions.confirm import ConfirmationBroker, ConfirmationRequest
@@ -135,7 +136,30 @@ You are in chat mode: you only talk. If the user asks you to act on the computer
 would hand it to the agents."""
 
 
+# A question about the user ("מה הצבע האהוב עליי?", "what's my dog's name?") that a remembered fact may answer.
+_ABOUT_ME = re.compile(r"(?:\bmy\b|\bdo i\b|\bam i\b|\bdid i\b|שלי\b|עליי\b|(?<!\w)עלי\b|(?<!\w)אני\b)", re.I)
+_ASKS = re.compile(r"^(?:what|what's|which|where|when|who|how|do|does|did|am|is|מה|איזה|איזו|איפה|מתי|מי|כמה|האם)\b",
+                   re.I)
+_QUESTION_WORDS = frozenset(
+    "what what's whats which where when who how do does did am is are was were my me i i'm the a an of to in on "
+    "about for and it its that this מה איזה איזו איפה מתי מי כמה האם של שלי עליי עלי הוא היא הם הן זה זאת את אני "
+    "לי יש היה הייתה".split())
+_GOOD_NIGHT = re.compile(r"\b(?:good night)\b|לילה טוב")
+_HOW_ARE_YOU = re.compile(r"\bhow (?:are you|are things|'s it going)|מה שלומך|מה נשמע|מה איתך|מה העניינים")
 _QUESTION_END = re.compile(r"[?？؟][\s\"'”“»«)\]]*$")
+
+
+def _word_base(word: str) -> str:
+    """A word without the Hebrew article or a one-letter prefix, and without a plural ending ("הכלבים" → "כלב")."""
+    w = word.strip("'")
+    if re.fullmatch(r"[\u05d0-\u05ea]+", w):
+        if len(w) >= 4 and w[0] in "הוכלבמש":
+            w = w[1:]
+        if len(w) >= 5 and w.endswith(("ים", "ות")):
+            w = w[:-2]
+    elif w.endswith("'s"):
+        w = w[:-2]
+    return w
 
 
 def asks_question(text: str | None) -> bool:
@@ -170,6 +194,8 @@ class _Turn:
     message: dict[str, Any] | None = None
     agent: AgentId | None = None      # an explicit (agent, skill) chosen by the core (e.g. "open it")
     skill: str | None = None
+    started: float = field(default_factory=time.perf_counter)
+    route: str = "other"              # how it was handled, for the speed measurements ("instant", "chat_ai"...)
 
 
 @dataclass
@@ -247,6 +273,7 @@ class JarvisCore:
         self._bg: set[asyncio.Task[Any]] = set()
         self._started = False
         self._closing = False
+        self.metrics: Metrics | None = None            # how long each kind of command takes (names and times only)
 
     # ================================================================== lifecycle
     @property
@@ -297,6 +324,7 @@ class JarvisCore:
     async def handle_input(self, text: str, *, source: Source | str = "text", language: str | None = None) -> CommandResult:
         """Handle one command or message. Returns quickly: long work continues in the background and its
         result arrives as a chat message (and speech, for voice commands)."""
+        started = time.perf_counter()
         raw = " ".join((text or "").split())
         word = named_ai(raw)                     # "תשתמש בגרוק ותכתוב לי שיר": the AI, then the command itself
         command = word.rest if word.provider else raw
@@ -313,12 +341,14 @@ class JarvisCore:
                 cmd_id = (await self.memory.add_command(raw, source=str(source), intent=intent.name)).id
         message = await self.say(raw, role="user", kind="answer", lang=lang, source=str(source), intent=intent.name)
         turn = _Turn(text=intent.text or command, raw=raw, intent=intent, lang=lang, source=str(source),
-                     cmd_id=cmd_id, message=message)
+                     cmd_id=cmd_id, message=message, started=started)
         await self._pipeline("understanding", "done", lang, intent.name)
+        self._measure("command.understood", started)
         try:
             with allow_provider(self._allowance(word)):
                 result = await self._route(turn, word)
         except Exception as exc:
+            self._measure(f"command.{turn.route}", started, ok=False)
             log.exception("Command failed: %s", raw)
             reply = await self.say(t(lang, f"משהו השתבש: {exc}", f"Something went wrong: {exc}"), kind="error",
                                    lang=lang, intent=intent.name)
@@ -328,6 +358,7 @@ class JarvisCore:
                                  speech={"ack_key": "error", "language": lang, "follow_up": False})
         result.message = message
         result.intent = {**intent_view, "name": turn.intent.name, "complexity": turn.intent.complexity}
+        self._measure(f"command.{turn.route}", started)
         if turn.source != "voice":
             await self._pipeline("done", "done", lang)
         return result
@@ -339,10 +370,13 @@ class JarvisCore:
     async def _route(self, turn: _Turn, word: AIWord | None = None) -> CommandResult:
         answer = self._approval_answer(turn.text)
         if answer is not None:
+            turn.route = "approval"
             return await self._answer_approval(turn, answer)
+        turn.route = "ai_word"
         about_ai = await self._ai_turn(turn, word or AIWord())
         if about_ai is not None:
             return about_ai
+        turn.route = "other"
         self._fill_question(turn)
         self._resolve_reference(turn)
         intent = turn.intent
@@ -352,19 +386,24 @@ class JarvisCore:
                            lang=turn.lang, intent=intent.name)
         handler = self._instant.get(intent.name)
         if handler is not None:
+            turn.route = "instant"
             return await handler(self, turn)
         if self._mode == Mode.CHAT and (intent.name in ACTION_INTENTS or turn.skill):
+            turn.route = "refused"
             return await self._reply(turn, R.chat_mode_refusal(turn.lang), kind="info", ok=False)
         if intent.name == I.RESUME_TASK:
+            turn.route = "task"
             return await self._resume(turn)
         if intent.name == I.CHAT:
             return await self._converse(turn)
         if self.kill_switch.global_engaged:
+            turn.route = "refused"
             return await self._reply(turn, t(turn.lang, "מתג החירום פעיל, ולכן הסוכנים לא מבצעים פעולות. אפשר להגיד "
                                                          "\"שחרר את מתג החירום\".",
                                              "The kill switch is engaged, so the agents take no actions. Say \"release "
                                              "the kill switch\"."), kind="error", ok=False)
         if intent.name == I.AGENT_ASSIGN:
+            turn.route = "task"
             return await self._assign(turn)
         if intent.complexity == "simple" or turn.skill:
             return await self._fast_path(turn)
@@ -408,7 +447,10 @@ class JarvisCore:
             if chosen is not None:               # "כן", or "תשתמש בגרוק" on its own
                 self._ai_ok = (chosen, time.monotonic() + AI_OK_TTL_S)
                 with allow_provider(chosen):
-                    return await self._route(wait.turn)
+                    wait.turn.started = turn.started
+                    result = await self._route(wait.turn)
+                turn.route = wait.turn.route
+                return result
             if word.provider is None and _NO.match(clean):
                 name = CLOUD_NAMES.get(wait.provider, wait.provider)
                 return await self._reply(turn, t(lang, f"בסדר, בלי {name}.", f"OK, no {name}."), follow_up=False)
@@ -426,6 +468,7 @@ class JarvisCore:
         if told is None:
             return None
         self._ai_wait = _AIWait(turn, told, time.monotonic() + AI_ASK_TTL_S)
+        turn.route = "ask_ai"
         name = CLOUD_NAMES.get(told, told)
         await self._pipeline("routing", "done", turn.lang, name)
         return await self._reply(turn, t(turn.lang, f"בשביל זה צריך את {name}. להשתמש בו?",
@@ -549,6 +592,7 @@ class JarvisCore:
                                                  params=dict(intent.slots), lang=turn.lang)
             return await self._task(turn, plan=plan)
         lang = turn.lang
+        turn.route = "fast"
         title, icon = R.action_title(intent.name, intent.slots, lang)
         await self._pipeline("routing", "done", lang, R.agent_name(agent, lang))
         await self._pipeline("selecting_tool", "done", lang, skill_name)
@@ -571,6 +615,7 @@ class JarvisCore:
             return await self._fast_done(turn, fast, running.result())
         # Still running (waiting for an approval, or simply slow): answer now, report the result later.
         fast.deferred = True
+        turn.route = "fast_ack"
         running.add_done_callback(lambda f: self._spawn(self._fast_finished_later(turn, fast, f)))
         if fast.asking.is_set():
             req = next((r for r in self.broker.pending() if r.task_id == turn.cmd_id), None)
@@ -608,6 +653,8 @@ class JarvisCore:
         if future.cancelled() or self._closing:
             return
         result = future.result()
+        if not fast.asking.is_set():             # a wait for the user's approval is not JARVIS's speed
+            self._measure("command.fast_result", turn.started, ok=result.ok)
         lang = turn.lang
         ok = result.ok
         summary = result.summary or fast.title
@@ -634,6 +681,7 @@ class JarvisCore:
             if asked is not None:
                 return asked
         await self._pipeline("routing", "done", lang, t(lang, "מחלק בין הסוכנים", "Splitting between the agents"))
+        turn.route = "task"
         try:
             task = await self.orchestrator.submit(
                 turn.text, title=title, intent=None if intent.name == I.CHAT else intent.name,
@@ -709,12 +757,18 @@ class JarvisCore:
     # -- conversation -------------------------------------------------------------------------------------
     async def _converse(self, turn: _Turn) -> CommandResult:
         lang = turn.lang
+        remembered = await self._from_memory(turn)
+        if remembered is not None:
+            turn.route = "memory"
+            return remembered
         asked = await self._ask_ai_first(turn, "chat")
         if asked is not None:
             return asked
         router = self.router
         if router is None or not router.available:
+            turn.route = "offline"
             return await self._reply(turn, R.offline_chat(lang), kind="info")
+        turn.route = "chat_ai"
         await self._pipeline("routing", "active", lang, t(lang, "חושב…", "Thinking…"))
         system = await self._chat_system(turn)
         messages = self._chat_messages(turn)
@@ -732,6 +786,7 @@ class JarvisCore:
         await self._pipeline("routing", "done", lang, t(lang, "סוכנים" if decision.run_task else "שיחה",
                                                         "agents" if decision.run_task else "conversation"))
         if decision.run_task and decision.task.strip() and self._mode != Mode.CHAT:
+            turn.route = "chat_task"
             if self.kill_switch.global_engaged:
                 return await self._reply(turn, t(lang, "מתג החירום פעיל, ולכן הסוכנים לא מבצעים פעולות.",
                                                  "The kill switch is engaged, so the agents take no actions."),
@@ -751,6 +806,27 @@ class JarvisCore:
             text = decision.reply.strip() or R.complex_ack([], lang)
             return await self._reply(turn, text, kind="ack", ok=None, task_id=task.id, follow_up=False)
         return await self._reply(turn, decision.reply.strip() or R.offline_chat(lang))
+
+    async def _from_memory(self, turn: _Turn) -> CommandResult | None:
+        """A question about the user that a remembered fact answers: answered here, at once and without a
+        cloud AI. Only a fact containing every word the question is about counts; otherwise None."""
+        said = normalize(turn.text).strip(" ?!.")
+        if self.memory is None or not _ASKS.match(said) or not _ABOUT_ME.search(said):
+            return None
+        wanted = {_word_base(w) for w in re.findall(r"[\w']+", said) if w not in _QUESTION_WORDS and len(w) > 1}
+        wanted.discard("")
+        if not wanted:
+            return None
+        try:
+            hits = await self.memory.search(turn.text, limit=5, layers=["long_term"])
+        except Exception:
+            return None
+        for hit in hits:
+            fact = re.sub(r"^\[[^\]]*\]\s*", "", hit.text)      # the index tags each fact with its category
+            have = {_word_base(w) for w in re.findall(r"[\w']+", normalize(fact))}
+            if all(any(w in h for h in have) for w in wanted):
+                return await self._reply(turn, R.recall_answer(fact, turn.lang), speak=fact)
+        return None
 
     async def _chat_system(self, turn: _Turn) -> str:
         lang = turn.lang
@@ -804,6 +880,11 @@ class JarvisCore:
         return await self._reply(turn, R.help_text(turn.lang), speak=R.help_spoken(turn.lang))
 
     async def _greeting(self, turn: _Turn) -> CommandResult:
+        said = normalize(turn.text)
+        if _GOOD_NIGHT.search(said):
+            return await self._reply(turn, R.good_night(turn.lang, self.settings.general.user_name), follow_up=False)
+        if _HOW_ARE_YOU.search(said):
+            return await self._reply(turn, R.how_are_you(turn.lang))
         return await self._reply(turn, R.greeting(turn.lang, self.settings.general.user_name))
 
     async def _thanks(self, turn: _Turn) -> CommandResult:
@@ -988,6 +1069,14 @@ class JarvisCore:
         if self.memory is None:
             return await self._reply(turn, R.memory_off(lang), kind="error", ok=False)
         query = str(turn.intent.slots.get("query") or "").strip()
+        if turn.intent.slots.get("about") == "me" or not query:
+            # "What do you remember about me?": the preferences and facts the user asked JARVIS to keep.
+            prefs = [p.text for p in await self.memory.preferences(limit=10)]
+            facts = [f.text for f in await self.memory.facts(limit=20) if f.category != "preference"]
+            mine = list(dict.fromkeys(prefs + facts))
+            if not mine:
+                return await self._reply(turn, R.recall_about_me_nothing(lang))
+            return await self._reply(turn, R.recall_about_me(mine, lang), speak=mine[0])
         recall = await self.memory.recall(query)
         words = [w for w in normalize(query).split() if len(w) > 1]
         prefs = [f.text for f in recall.preferences if any(w in normalize(f.text) for w in words)]
@@ -1154,6 +1243,10 @@ class JarvisCore:
                       detail: str | None = None) -> None:
         await self._publish("action", {"id": action_id, "title": title, "detail": detail, "icon": icon,
                                        "progress": progress, "status": status, "ts": iso(utcnow())})
+
+    def _measure(self, name: str, started: float, *, ok: bool = True) -> None:
+        if self.metrics is not None:
+            self.metrics.record(name, (time.perf_counter() - started) * 1000, ok=ok)
 
     async def _publish(self, topic: str, data: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):

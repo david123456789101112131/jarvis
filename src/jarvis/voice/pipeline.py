@@ -189,7 +189,7 @@ class _EventDispatcher:
         self._closed = False
 
     def emit(self, method: str, *args: Any) -> None:
-        if self._closed:
+        if self._closed or not hasattr(self.sink, method):
             return
         try:
             loop = asyncio.get_running_loop()
@@ -764,6 +764,7 @@ class VoicePipeline:
 
     async def _turn_body(self, turn: _Turn) -> None:
         o = self.options
+        heard_at = time.perf_counter()               # the user just stopped speaking
         transcript = turn.transcript
         if transcript is None:
             utterance = turn.utterance
@@ -777,6 +778,7 @@ class VoicePipeline:
                     if self._is_current(turn):
                         self._events.emit("on_pipeline", "transcribing", "error", _label("error", self.language))
                     raise
+                self._events.emit("on_timing", "voice.stt", (time.perf_counter() - heard_at) * 1000, True)
                 if not self._is_current(turn):
                     return
                 self._events.emit("on_pipeline", "transcribing", "done", _label("transcribing", transcript.language))
@@ -828,7 +830,8 @@ class VoicePipeline:
         reply_language = reply.language if reply.language in ("he", "en") else (
             detect_language(reply.text, default=language) if reply.text else language
         )
-        await self._say(reply.text, reply.ack_key, reply_language, guard=lambda: self._is_current(turn), trigger="reply")
+        await self._say(reply.text, reply.ack_key, reply_language, guard=lambda: self._is_current(turn), trigger="reply",
+                        heard_at=None if turn.transcript is not None else heard_at)
         if not self._is_current(turn):
             return
         if reply.follow_up:
@@ -878,8 +881,10 @@ class VoicePipeline:
         while not self._stopping and (self.busy or (self.state is VoiceState.ERROR and self._source_problem is None)):
             await asyncio.sleep(0.05)
 
-    async def _say(self, text: str | None, ack_key: str | None, language: str, *, guard: Callable[[], bool], trigger: str) -> bool:
-        """Speak an acknowledgement and/or text. Returns False when interrupted or superseded."""
+    async def _say(self, text: str | None, ack_key: str | None, language: str, *, guard: Callable[[], bool], trigger: str,
+                   heard_at: float | None = None) -> bool:
+        """Speak an acknowledgement and/or text. Returns False when interrupted or superseded. `heard_at`: when
+        the user stopped speaking, to measure how long the reply took to start sounding."""
         o = self.options
         if not o.speak_responses:
             return True
@@ -902,7 +907,7 @@ class VoicePipeline:
                     if clip is not None:
                         if not guard():
                             return False
-                        started = self._speaking(spoken, language, trigger, started)
+                        started = self._speaking(spoken, language, trigger, started, heard_at)
                         if not await self._play(clip):
                             return False
                 if chunks:
@@ -914,7 +919,7 @@ class VoicePipeline:
                         continue
                     if not guard():
                         return False
-                    started = self._speaking(spoken, language, trigger, started)
+                    started = self._speaking(spoken, language, trigger, started, heard_at)
                     if not await self._play(clip):
                         return False
                 return guard()
@@ -922,10 +927,12 @@ class VoicePipeline:
                 if prefetch is not None and not prefetch.done():
                     prefetch.cancel()
 
-    def _speaking(self, spoken: str, language: str, trigger: str, started: bool) -> bool:
+    def _speaking(self, spoken: str, language: str, trigger: str, started: bool, heard_at: float | None = None) -> bool:
         if not started:
             self._set_state(VoiceState.SPEAKING, trigger=trigger)
             self._events.emit("on_speech", spoken, language)
+            if heard_at is not None:
+                self._events.emit("on_timing", "voice.reply", (time.perf_counter() - heard_at) * 1000, True)
         return True
 
     async def _ack_clip(self, key: str, language: str) -> AudioClip | None:
@@ -942,13 +949,16 @@ class VoicePipeline:
             return None
 
     async def _synthesize(self, text: str, language: str) -> AudioClip | None:
+        started = time.perf_counter()
         try:
-            return await self.tts.synthesize(text, language)
+            clip = await self.tts.synthesize(text, language)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             self._tts_failed(exc)
             return None
+        self._events.emit("on_timing", f"voice.tts.{clip.engine or 'speech'}", (time.perf_counter() - started) * 1000, True)
+        return clip
 
     def _tts_failed(self, exc: BaseException) -> None:
         now = time.monotonic()

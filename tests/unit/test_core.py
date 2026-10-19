@@ -383,6 +383,17 @@ class TestInstant:
         assert "במה אפשר לעזור" in (await c.say("שלום")).reply["text"]
         assert (await c.say("thanks")).reply["text"] == "Anytime."
 
+    async def test_everyday_wordings_are_answered_on_the_spot(self, c: C) -> None:
+        provider = grok(c, chat_turn("לא אמור לקרות"))
+        assert "במה אפשר לעזור" in (await c.say("שלום ג'רוויס")).reply["text"]
+        assert (await c.say("מה שלומך ג'רוויס?")).reply["text"] == "מצוין, תודה. במה אפשר לעזור?"
+        assert (await c.say("how are you doing today")).reply["text"] == "Doing well, thanks. How can I help?"
+        res = await c.say("לילה טוב", source="voice")
+        assert res.reply["text"] == "לילה טוב." and res.speech["follow_up"] is False
+        assert (await c.say("תודה רבה ג'רוויס")).reply["text"] == "בשמחה."
+        assert "חמישה סוכנים" in (await c.say("מה אתה יודע לעשות?")).reply["text"]
+        assert not provider.requests                 # none of them needed Grok, or asked for it
+
     async def test_wake_word_alone_is_a_greeting(self, c: C) -> None:
         res = await c.say("ג'ארוויס")
         assert res.intent["name"] == I.GREETING and "במה אפשר לעזור" in res.reply["text"]
@@ -411,6 +422,16 @@ class TestInstant:
         assert (await c.say("תשכח את זה")).reply["text"] == "שכחתי את זה."
         assert await c.env.memory.facts() == []
         assert (await c.say("forget that I like jazz")).reply["text"].startswith("I didn't find")
+
+    async def test_what_do_you_remember_about_me(self, c: C) -> None:
+        assert (await c.say("מה אתה זוכר עליי?")).reply["text"].startswith("עוד לא ביקשת ממני לזכור")
+        await c.say("תזכור שאני אוהב קפה שחור")
+        await c.say("תזכור שהכלב שלי נקרא רקס")
+        res = await c.say("מה אתה זוכר עליי?", source="voice")
+        assert res.reply["text"].startswith("זה מה שאני זוכר עליך:")
+        assert "אני אוהב קפה שחור" in res.reply["text"] and "הכלב שלי נקרא רקס" in res.reply["text"]
+        res = await c.say("what do you know about me")
+        assert res.reply["text"].startswith("Here's what I remember about you:")
 
 
 # ================================================================================== conversation
@@ -459,7 +480,7 @@ class TestConversation:
 
     async def test_it_listens_again_only_after_a_question(self, c: C) -> None:
         provider = c.env.use_ai(default=chat_turn("אני יכול לחקור באינטרנט ולנהל קבצים. תגיד לי מה אתה צריך."))
-        res = await c.say("מה אתה יודע לעשות?", source="voice")
+        res = await c.say("ספר לי על עצמך", source="voice")
         assert res.speech["follow_up"] is False             # not a question: the room's next "OK" is not a command
         provider.default = chat_turn("באיזו עיר?")
         res = await c.say("תמליץ לי על מסעדה", source="voice")
@@ -469,6 +490,18 @@ class TestConversation:
         res = await c.say("שלום", source="voice")            # "...How can I help?"
         assert res.speech["follow_up"] is True
         assert "End with a question only when" in provider.requests[-1].system
+
+    async def test_a_question_about_the_user_is_answered_from_memory(self, c: C) -> None:
+        provider = grok(c, chat_turn("לא אמור לקרות"))
+        await c.say("תזכור שהצבע האהוב עליי הוא כחול")
+        res = await c.say("מה הצבע האהוב עליי?", source="voice")
+        assert res.reply["text"] == "לפי מה שביקשת שאזכור: הצבע האהוב עליי הוא כחול"
+        assert res.speech["text"] == "הצבע האהוב עליי הוא כחול" and not provider.requests
+        # A fact that does not hold every word asked about is not an answer: the question goes on as usual.
+        await c.say("תזכור שלכלב שלי קוראים רקס")
+        assert (await c.say("מה הגיל של הכלב שלי?")).reply["text"] == ASK_GROK
+        assert (await c.say("מה הבירה של צרפת?")).reply["text"] == ASK_GROK
+        assert not provider.requests
 
     async def test_a_model_failure_is_reported(self, c: C) -> None:
         c.env.use_ai(ProviderError("overloaded", retryable=True))
@@ -555,6 +588,29 @@ class TestCloudAIWhenTold:
         assert quiet.allowed_ai == ""
         await c.finished(quiet.id)
         assert len(provider.requests) == 1                  # no word, no Grok: the agent worked without it
+
+
+# ================================================================================== speed measurements
+class TestSpeed:
+    async def test_each_kind_of_command_is_timed_by_name_only(self, c: C) -> None:
+        from jarvis.metrics import Metrics
+
+        metrics = Metrics(None)
+        provider = grok(c, chat_turn("פריז."))
+        c.core.metrics = c.env.manager.metrics = c.env.runtime.router.metrics = metrics
+        await c.say("מה השעה")
+        await c.say("פתח את כרום")
+        await c.say("מה הבירה של צרפת?")
+        await c.say("כן")
+        names = metrics.summary()
+        for name in ("command.understood", "command.instant", "command.fast", "command.ask_ai", "command.chat_ai",
+                     "ai.xai.chat"):
+            assert names[name]["count"] >= 1, (name, sorted(names))
+        assert any(n.startswith("agent.system.") for n in names), sorted(names)
+        assert names["command.understood"]["count"] == 4 and len(provider.requests) == 1
+        assert names["command.instant"]["median_ms"] < 1000
+        stored = json.dumps(metrics.view(), ensure_ascii=False)
+        assert "כרום" not in stored and "צרפת" not in stored     # names and times only, never what was said
 
 
 # ================================================================================== chat log

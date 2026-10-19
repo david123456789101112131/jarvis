@@ -264,6 +264,36 @@ class TestSystemAndMemory:
         r = await run(tk, "health_check", {})
         assert r.ok and "findings" in r.data
 
+    def test_the_busiest_processes_from_a_recent_reading_without_waiting(self, monkeypatch) -> None:
+        import subprocess
+        import time
+
+        from jarvis.tools import apps
+
+        monkeypatch.setattr(apps, "_process_read_at", None)
+        busy = subprocess.Popen([sys.executable, "-c", "while True: sum(range(1000))"])
+        try:
+            time.sleep(0.3)
+            started = time.perf_counter()
+            apps.top_processes(5)                          # no reading yet: it measures for sample_s
+            assert time.perf_counter() - started >= 0.35
+            apps.prime_processes()                         # what the background monitor does every 30 s
+            time.sleep(0.6)
+            late = subprocess.Popen([sys.executable, "-c", "while True: sum(range(1000))"])
+            try:
+                time.sleep(0.6)
+                started = time.perf_counter()
+                rows = apps.top_processes(400)
+                assert time.perf_counter() - started < 0.3   # the reading 1.2 s ago starts the window
+                by_pid = {r["pid"]: r for r in rows}
+                cores = __import__("psutil").cpu_count() or 1
+                assert by_pid[busy.pid]["cpu"] > 40 / cores      # one busy core, measured since the reading
+                assert by_pid[late.pid]["cpu"] > 20 / cores      # started since: measured from its own start
+            finally:
+                late.kill()
+        finally:
+            busy.kill()
+
     async def test_volume_brightness_media_power(self, tk) -> None:
         assert (await run(tk, "volume", {"action": "set", "level": 30})).summary == "Volume is 30%"
         assert (await run(tk, "volume", {"action": "up", "step": 5})).data["level"] == 35

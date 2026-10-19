@@ -69,6 +69,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 STATS_INTERVAL_S = 2.0
+PROCESS_PRIME_S = 30.0      # how often the busiest-process reading is refreshed in the background
 RUNTIME_FILE = "runtime.json"
 # Files the UI only shows in Explorer, never opens: opening them would run code.
 REVEAL_ONLY_EXT = RUNS_CODE_EXT
@@ -179,6 +180,9 @@ class JarvisApp:
                                bus=self.bus, broker=self.broker, kill_switch=self.kill_switch, activity=self.activity,
                                router=lambda: self.runtime.router, window=self.window_action)
 
+        for part in (self.core, self.manager, self.router):
+            part.metrics = self.metrics
+
         from jarvis.devmode.service import DevService
         from jarvis.integrations.apps import AppsService
         from jarvis.media.service import MediaService
@@ -260,6 +264,7 @@ class JarvisApp:
         if self.serve_api:
             await self._start_server()
         self.spawn(self._monitor_loop(), "system-monitor")
+        self.metrics.record("app.start", (time.monotonic() - self.started_at) * 1000)
         await self.activity.log(t(self.lang, f"JARVIS {__version__} פעיל", f"JARVIS {__version__} is online")
                                 + (f" ({self.url})" if self.server else ""), source="JARVIS", level="success",
                                 kind="system")
@@ -442,10 +447,17 @@ class JarvisApp:
         return stats
 
     async def _monitor_loop(self) -> None:
+        from jarvis.tools.apps import prime_processes
+
+        primed_at = -1e9
         while True:
             try:
                 stats = await self.sample_system()
                 await self.bus.publish(event("system.stats", stats, sender="monitor"))
+                if time.monotonic() - primed_at >= PROCESS_PRIME_S:
+                    # A recent per-process reading lets "how is the computer?" answer without waiting to measure.
+                    await asyncio.to_thread(prime_processes)
+                    primed_at = time.monotonic()
             except asyncio.CancelledError:
                 raise
             except Exception:
@@ -712,6 +724,9 @@ class _VoiceEvents:
 
     async def on_speech(self, text: str, language: str) -> None:
         await self.app.bus.publish(event("speech", {"text": text, "language": language}, sender="voice"))
+
+    async def on_timing(self, name: str, ms: float, ok: bool) -> None:
+        self.app.metrics.record(name, ms, ok=ok)
 
 
 def _apply_in_place(live: Any, fresh: Any, patch: dict[str, Any]) -> None:

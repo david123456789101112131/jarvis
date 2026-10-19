@@ -268,6 +268,9 @@ class Recorder:
     async def on_speech(self, text: str, language: str) -> None:
         self.events.append(("speech", text, language))
 
+    async def on_timing(self, name: str, ms: float, ok: bool) -> None:
+        self.events.append(("timing", name, ms, ok))
+
     def of(self, kind: str) -> list[tuple]:
         return [e[1:] for e in self.events if e[0] == kind]
 
@@ -1246,6 +1249,9 @@ class TestPipeline:
         assert h.wake.resets >= 1  # stale wake audio cleared when the command started
         assert h.pipeline.last_transcript.text == "open chrome"
         assert h.pipeline.stats["turns"] == 1 and h.pipeline.stats["wakes"] == 1
+        timings = {name: ms for name, ms, _ok in h.events.of("timing")}
+        assert {"voice.stt", "voice.reply", "voice.tts.fake_tts"} <= set(timings), timings
+        assert 0 <= timings["voice.stt"] <= timings["voice.reply"]   # recognition, then the first sound of the reply
 
     async def test_follow_up_without_wake_word(self, tmp_path: Path) -> None:
         async with Harness(tmp_path, texts=["open chrome", "and youtube"], reply="Sure.") as h:

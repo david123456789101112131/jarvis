@@ -24,7 +24,7 @@ from collections import deque
 from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jarvis.agents.base import (
     AGENT_INFO,
@@ -52,6 +52,9 @@ from jarvis.common.errors import (
 from jarvis.memory.models import ResultRecord
 from jarvis.permissions.confirm import ConfirmationBroker
 from jarvis.security.killswitch import KillEvent, KillSwitch
+
+if TYPE_CHECKING:
+    from jarvis.metrics import Metrics
 
 log = logging.getLogger(__name__)
 
@@ -134,6 +137,7 @@ class AgentManager:
         self._subs: list[Any] = []
         self._started = False
         self._tasks: set[asyncio.Task[Any]] = set()
+        self.metrics: Metrics | None = None      # how long each skill takes (names and times only)
 
     # ================================================================== lifecycle
     async def start(self) -> None:
@@ -416,6 +420,9 @@ class AgentManager:
         if a.started is not None:
             result.duration_s = round(time.perf_counter() - a.started, 6)
             st.durations.append(result.duration_s)
+            if self.metrics is not None and not a.confirmations:   # waiting for the user is not the agent's speed
+                self.metrics.record(f"agent.{a.task.agent.value}.{a.task.skill or 'ai'}", result.duration_s * 1000,
+                                    ok=result.status in (ResultStatus.SUCCESS, ResultStatus.PARTIAL))
         if result.status in (ResultStatus.SUCCESS, ResultStatus.PARTIAL):
             st.completed += 1
         elif result.status == ResultStatus.FAILED:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import threading
 import time
 from typing import Any
 
@@ -194,26 +195,73 @@ class RunningAppsTool(Tool):
         return ToolResult(summary=ctx.t(f"{len(apps)} תוכנות פתוחות", f"{len(apps)} apps open"), data={"apps": apps})
 
 
+# A process's CPU use is the change in its CPU time since an earlier reading of the same psutil Process
+# (psutil keeps those objects between `process_iter` calls). A reading up to PROCESS_WINDOW_MAX_S old,
+# by the last call or by `prime_processes` in the background, starts the measured window, so nobody
+# waits; a process that started since then is measured from its own start. Without such a reading the
+# call takes one and waits `sample_s`, as before.
+PROCESS_WINDOW_MAX_S = 60.0
+_process_lock = threading.Lock()
+_process_read_at: float | None = None
+_process_read: dict[int, psutil.Process] = {}       # pid -> the Process object that was read then
+
+
+def prime_processes() -> None:
+    """Take a reading now, so the next `top_processes` answers without waiting."""
+    global _process_read_at, _process_read
+    with _process_lock:
+        procs = _processes()
+        for p in procs:
+            with contextlib.suppress(psutil.Error):
+                p.cpu_percent(None)
+        _process_read, _process_read_at = {p.pid: p for p in procs}, time.monotonic()
+
+
 def top_processes(limit: int = 15, sort: str = "cpu", sample_s: float = 0.4) -> list[dict[str, Any]]:
+    global _process_read_at, _process_read
+    with _process_lock:
+        procs = _processes()
+        since = None if _process_read_at is None else time.monotonic() - _process_read_at
+        if since is None or since > PROCESS_WINDOW_MAX_S:
+            for p in procs:
+                with contextlib.suppress(psutil.Error):
+                    p.cpu_percent(None)
+            _process_read = {p.pid: p for p in procs}
+            time.sleep(sample_s)
+        elif since < sample_s:                  # too short a window to mean anything: wait out the rest
+            time.sleep(sample_s - since)
+        rows = _process_rows(procs, _process_read)
+        _process_read, _process_read_at = {p.pid: p for p in procs}, time.monotonic()
+    key = "memory_mb" if sort == "memory" else "cpu"
+    rows.sort(key=lambda r: r[key], reverse=True)
+    return rows[:limit]
+
+
+def _processes() -> list[psutil.Process]:
     procs = []
     for p in psutil.process_iter(["pid", "name"]):
         with contextlib.suppress(psutil.Error):
-            p.cpu_percent(None)
             procs.append(p)
-    time.sleep(sample_s)
+    return procs
+
+
+def _process_rows(procs: list[psutil.Process], read: dict[int, psutil.Process]) -> list[dict[str, Any]]:
     cores = psutil.cpu_count() or 1
     rows = []
     for p in procs:
         with contextlib.suppress(psutil.Error):
+            percent = p.cpu_percent(None)
+            if read.get(p.pid) is not p:       # new since the reading: its average since it started
+                times = p.cpu_times()
+                alive = max(1e-3, time.time() - p.create_time())
+                percent = min(100.0 * cores, 100.0 * (times.user + times.system) / alive)
             rows.append({
                 "pid": p.pid,
                 "name": p.info.get("name") or "",
-                "cpu": round(p.cpu_percent(None) / cores, 1),
+                "cpu": round(percent / cores, 1),
                 "memory_mb": round(p.memory_info().rss / 1_048_576, 1),
             })
-    key = "memory_mb" if sort == "memory" else "cpu"
-    rows.sort(key=lambda r: r[key], reverse=True)
-    return rows[:limit]
+    return rows
 
 
 class ListProcessesParams(BaseModel):

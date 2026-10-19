@@ -133,6 +133,22 @@ CASES: list[tuple[str, str, dict]] = [
     ("hello", I.GREETING, {}),
     ("JARVIS", I.GREETING, {}),
     ("תודה רבה", I.THANKS, {}),
+    # Everyday forms answered on the spot (the name at the end, two greetings, other wordings)
+    ("שלום ג'רוויס", I.GREETING, {}),
+    ("בוקר טוב גרביס", I.GREETING, {}),
+    ("hello jarvis", I.GREETING, {}),
+    ("שלום, מה שלומך?", I.GREETING, {}),
+    ("how are you doing today", I.GREETING, {}),
+    ("לילה טוב", I.GREETING, {}),
+    ("תודה רבה ג'רוויס", I.THANKS, {}),
+    ("thanks a lot jarvis", I.THANKS, {}),
+    ("מה אתה יודע לעשות?", I.HELP, {}),
+    ("what do you know how to do", I.HELP, {}),
+    ("מה השעה ג'רוויס?", I.TIME, {}),
+    ("what day is it today", I.DATE, {}),
+    ("איזה תאריך היום", I.DATE, {}),
+    ("how's the computer doing", I.SYSTEM_STATUS, {}),
+    ("how much free disk space", I.SYSTEM_STATUS, {"focus": "disk"}),
     # Windows controls
     ("volume up", I.VOLUME, {"action": "up"}),
     ("תגביר את הווליום", I.VOLUME, {"action": "up"}),
@@ -205,8 +221,15 @@ CASES: list[tuple[str, str, dict]] = [
     ("remember that my favorite color is blue", I.REMEMBER, {"fact": "my favorite color is blue"}),
     ("תזכור שאני אוהב קפה", I.REMEMBER, {"fact": "אני אוהב קפה"}),
     ("what do you remember about coffee", I.RECALL, {"query": "coffee"}),
+    ("מה אתה זוכר עליי?", I.RECALL, {"query": "", "about": "me"}),
+    ("what do you know about me", I.RECALL, {"query": "", "about": "me"}),
+    ("מה אתה זוכר", I.RECALL, {"query": "", "about": "me"}),
     # Conversation
     ("ספר לי בדיחה", I.CHAT, {}),
+    ("help me write a letter", I.CHAT, {}),
+    # The name inside the object is the object, not a sign-off
+    ("תפתח את ג'רוויס", I.WINDOW, {"action": "show"}),
+    ("מה אתה זוכר על הפרויקט ג'רוויס", I.RECALL, {"query": "הפרויקט ג'רוויס"}),
 ]
 
 

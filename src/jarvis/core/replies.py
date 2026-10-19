@@ -85,6 +85,15 @@ def greeting(lang: str, user_name: str = "", now: datetime | None = None) -> str
     return f"{hello}{name}. How can I help?"
 
 
+def how_are_you(lang: str) -> str:
+    return t(lang, "מצוין, תודה. במה אפשר לעזור?", "Doing well, thanks. How can I help?")
+
+
+def good_night(lang: str, user_name: str = "") -> str:
+    name = f" {user_name}" if user_name else ""
+    return t(lang, f"לילה טוב{name}.", f"Good night{name}.")
+
+
 def thanks(lang: str) -> str:
     return t(lang, "בשמחה.", "Anytime.")
 
@@ -350,6 +359,20 @@ def forgot(n: int, lang: str) -> str:
 
 def recall_nothing(query: str, lang: str) -> str:
     return t(lang, f"אני לא זוכר שום דבר על {query}.", f"I don't remember anything about {query}.")
+
+
+def recall_answer(fact: str, lang: str) -> str:
+    return t(lang, f"לפי מה שביקשת שאזכור: {fact}", f"From what you asked me to remember: {fact}")
+
+
+def recall_about_me_nothing(lang: str) -> str:
+    return t(lang, "עוד לא ביקשת ממני לזכור משהו. אפשר להגיד \"תזכור ש...\".",
+             "You haven't asked me to remember anything yet. Say \"remember that...\".")
+
+
+def recall_about_me(items: list[str], lang: str) -> str:
+    return t(lang, "זה מה שאני זוכר עליך:", "Here's what I remember about you:") + "\n" + "\n".join(
+        f"• {x}" for x in items[:8])
 
 
 def recall_list(query: str, items: list[str], lang: str) -> str:
