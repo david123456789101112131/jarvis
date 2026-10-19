@@ -16,7 +16,7 @@ end-to-end tests start their own JARVIS processes on free ports and stop them th
 | Integration | the local server (auth, REST, WebSocket) and the CLI against a real core | any OS | `python -m pytest tests/integration` |
 | End to end: process | a real `python -m jarvis --no-window` process driven over HTTP and WebSocket, the way the window drives it | any OS | `python -m pytest tests/e2e` |
 | End to end: window | the built interface in a real browser engine against a real JARVIS: typing, clicking, approvals, the kill switch | any OS with Chromium, Edge or Chrome | `python -m pytest tests/e2e/test_ui_browser.py` |
-| Real Windows | Start-menu apps, clipboard, volume, known folders, process flags, the system monitor on a real desktop | Windows | `python -m pytest -m windows` |
+| Real Windows | Start-menu apps, clipboard, volume, known folders, process flags, the one-call process list, the system monitor on a real desktop | Windows | `python -m pytest -m windows` |
 | Real voice models | openWakeWord hears "Hey Jarvis", faster-whisper transcribes speech | anywhere the models are downloaded | `python -m pytest -m voice_models` |
 | Interface | the UI's state, Markdown and path rendering, the approval dialog, translations | Node.js 20+ | `cd ui; npm test` |
 | Static | lint, types (checked as Windows), the interface's types | any OS | `ruff check src tests scripts`; `python -m mypy`; `cd ui; npm run typecheck` |

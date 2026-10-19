@@ -2088,6 +2088,63 @@ class TestWinapi:
         assert guid.Data1 == 0xB4BFCC3A and str(guid) == "{B4BFCC3A-DB2C-424C-B029-7FE99A87C641}"
         assert str(winapi.GUID.from_string("5cdf2c82-841e-4546-9722-0cf74078229a")) == winapi.IID_IAUDIO_ENDPOINT_VOLUME
 
+    def test_every_process_is_read_from_the_one_buffer_windows_fills(self) -> None:
+        size = ctypes.sizeof(winapi.SYSTEM_PROCESS_INFORMATION)
+        if ctypes.sizeof(ctypes.c_void_p) == 8:
+            layout = winapi.SYSTEM_PROCESS_INFORMATION
+            assert size == 152 and layout.ImageName.offset == 56 and layout.UniqueProcessId.offset == 80
+            assert layout.WorkingSetSize.offset == 144
+        stride = size + 64                           # each entry, then room for its name (and, on Windows, its threads)
+        listed = [(0, None), (4, "System"), (1234, "python.exe"), (77, "בדיקה.exe"), (99, "outside")]
+        buf = ctypes.create_string_buffer(stride * len(listed))
+        base = ctypes.addressof(buf)
+        for i, (pid, name) in enumerate(listed):
+            entry = winapi.SYSTEM_PROCESS_INFORMATION.from_buffer(buf, i * stride)
+            entry.NextEntryOffset = stride if i < len(listed) - 1 else 0
+            entry.UniqueProcessId = pid or None
+            entry.UserTime, entry.KernelTime = 25_000_000 * i, 5_000_000 * i          # 100 ns units
+            entry.CreateTime = 0 if pid == 0 else (winapi._FILETIME_TO_UNIX + 1_700_000_000) * 10_000_000
+            entry.WorkingSetSize = (i + 1) << 20
+            if name:
+                data = name.encode("utf-16-le")
+                at = base + i * stride + size
+                ctypes.memmove(at, data, len(data))
+                entry.ImageName.Length = entry.ImageName.MaximumLength = len(data)
+                entry.ImageName.Buffer = at if pid != 99 else 0x10                 # 99's name points outside
+
+        found = winapi.parse_process_list(buf, len(buf))
+        assert sorted(found) == [0, 4, 77, 99, 1234]
+        assert (found[0].name, found[0].started) == ("System Idle Process", 0.0)
+        assert [found[pid].name for pid in (4, 1234, 77, 99)] == ["System", "python.exe", "בדיקה.exe", ""]
+        assert found[1234].cpu_s == pytest.approx(6.0) and found[1234].rss == 3 << 20
+        assert found[4].started == pytest.approx(1_700_000_000)
+        assert sorted(winapi.parse_process_list(buf, stride * 2)) == [0, 4]   # only the part Windows filled
+
+    def test_the_listing_grows_its_buffer_until_every_process_fits(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        asked: list[int] = []
+        refuse = False
+
+        def query(kind: int, buf: Any, length: int, needed: Any) -> int:
+            asked.append(length)
+            assert kind == winapi.SYSTEM_PROCESS_INFORMATION_CLASS
+            if refuse:
+                return 0xC0000022 - (1 << 32)                        # STATUS_ACCESS_DENIED; NTSTATUS is signed
+            if length < 0x100000:
+                needed._obj.value = 0x100000
+                return winapi.STATUS_INFO_LENGTH_MISMATCH - (1 << 32)
+            winapi.SYSTEM_PROCESS_INFORMATION.from_buffer(buf).UniqueProcessId = 4
+            needed._obj.value = ctypes.sizeof(winapi.SYSTEM_PROCESS_INFORMATION)
+            return 0
+
+        monkeypatch.setattr(winapi, "_api", lambda feature: SimpleNamespace(
+            dll=lambda name: SimpleNamespace(NtQuerySystemInformation=query)))
+        monkeypatch.setattr(winapi, "_process_buffer_size", 0x80000)
+        assert list(winapi.process_list()) == [4]
+        assert asked == [0x80000, 0x110000] and winapi._process_buffer_size == 0x110000   # kept for next time
+        refuse = True
+        with pytest.raises(OSError, match="0xC0000022"):
+            winapi.process_list()
+
     @not_windows
     @pytest.mark.parametrize(
         "call",
@@ -2106,6 +2163,7 @@ class TestWinapi:
             lambda: winapi.set_master_volume(50),
             winapi.get_master_mute,
             lambda: winapi.set_master_mute(True),
+            winapi.process_list,
         ],
     )
     def test_off_windows_every_call_is_unsupported(self, call: Callable[[], Any]) -> None:
@@ -2152,6 +2210,15 @@ class TestRealWindows:
             assert await host.get_clipboard() == "JARVIS ✓ בדיקה 123"
         finally:
             await host.set_clipboard(before)
+
+    def test_one_call_lists_every_process_as_psutil_sees_it(self) -> None:
+        found = winapi.process_list()
+        assert len(found) >= 20 and found[4].name == "System"
+        me, mine = found[os.getpid()], psutil.Process()
+        assert me.name.lower().startswith("python")
+        assert abs(me.rss - mine.memory_info().rss) < 64 << 20
+        assert abs(me.cpu_s - sum(mine.cpu_times()[:2])) < 1.0
+        assert abs(me.started - mine.create_time()) < 2.0
 
     async def test_running_apps_non_empty(self) -> None:
         apps = await WindowsHost().running_apps()

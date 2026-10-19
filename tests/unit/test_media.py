@@ -439,6 +439,8 @@ async def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     for name in ("Documents", "Pictures"):
         (home / name).mkdir(parents=True)
     monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))        # what Path.home() reads on Windows
+    assert Path.home() == home                          # never the real Documents or Pictures
     monkeypatch.setattr(catalog, "VIDEO_POLL_S", 0.01)
     settings = Settings()
     jarvis = JarvisApp(settings, host=FakeHost(), router=ProviderRouter(settings.ai, []), voice=False, use_keyring=False,
@@ -649,7 +651,7 @@ class TestSave:
             job = await app.media.save(SaveRequest(item_id=item["id"], target=str(picked), lang="en"))
             assert job.sends == [] and any(".png" in line for line in job.plan)
             req = await asked(app.broker)                              # outside the agents' folders: always asked
-            assert req.tool == "copy_path" and str(picked.with_suffix(".png")) in json.dumps(req.details)
+            assert req.tool == "copy_path" and str(picked.with_suffix(".png")) in req.details["paths"]
             app.broker.respond(req.id, approve)
             done = await finished(app, job)
             assert done.status == ("done" if approve else "failed")

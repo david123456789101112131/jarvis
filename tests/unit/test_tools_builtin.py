@@ -271,20 +271,23 @@ class TestSystemAndMemory:
         from jarvis.tools import apps
 
         monkeypatch.setattr(apps, "_process_read_at", None)
+        monkeypatch.setattr(apps, "_listed_read", None)
+        waits: list[float] = []
+        pause = time.sleep
+        monkeypatch.setattr(time, "sleep", lambda s: (waits.append(s), pause(s)))
         busy = subprocess.Popen([sys.executable, "-c", "while True: sum(range(1000))"])
         try:
-            time.sleep(0.3)
-            started = time.perf_counter()
+            pause(0.3)
             apps.top_processes(5)                          # no reading yet: it measures for sample_s
-            assert time.perf_counter() - started >= 0.35
+            assert waits == [0.4]
             apps.prime_processes()                         # what the background monitor does every 30 s
-            time.sleep(0.6)
+            pause(0.6)
             late = subprocess.Popen([sys.executable, "-c", "while True: sum(range(1000))"])
             try:
-                time.sleep(0.6)
-                started = time.perf_counter()
+                pause(0.6)
+                waits.clear()
                 rows = apps.top_processes(400)
-                assert time.perf_counter() - started < 0.3   # the reading 1.2 s ago starts the window
+                assert waits == []                         # the reading 1.2 s ago starts the window
                 by_pid = {r["pid"]: r for r in rows}
                 cores = __import__("psutil").cpu_count() or 1
                 assert by_pid[busy.pid]["cpu"] > 40 / cores      # one busy core, measured since the reading
@@ -293,6 +296,38 @@ class TestSystemAndMemory:
                 late.kill()
         finally:
             busy.kill()
+
+    def test_the_busiest_processes_from_one_listing_of_every_process(self, monkeypatch) -> None:
+        """What Windows answers in one system call: the CPU use is the change since the last reading, a reused
+        pid counts from its own start, and the System Idle Process is not a busy program."""
+        import time
+
+        from jarvis.host.winapi import ProcessInfo
+        from jarvis.tools import apps
+
+        now = time.time()
+        first = {0: ProcessInfo(0, "System Idle Process", 500.0, 8192, 0.0),
+                 4: ProcessInfo(4, "System", 10.0, 1 << 20, now - 3600),
+                 100: ProcessInfo(100, "busy.exe", 5.0, 50 << 20, now - 60),
+                 200: ProcessInfo(200, "old.exe", 1.0, 10 << 20, now - 60)}
+        second = {0: ProcessInfo(0, "System Idle Process", 504.0, 8192, 0.0),
+                  4: ProcessInfo(4, "System", 10.0, 1 << 20, now - 3600),
+                  100: ProcessInfo(100, "busy.exe", 6.0, 50 << 20, now - 60),
+                  200: ProcessInfo(200, "new.exe", 0.5, 300 << 20, now - 1.0)}   # the pid, now another program
+        listings = [first, second]
+        monkeypatch.setattr(apps, "_list_all", lambda: listings.pop(0) if len(listings) > 1 else listings[0])
+        monkeypatch.setattr(apps.psutil, "cpu_count", lambda logical=True: 2)
+        monkeypatch.setattr(apps, "_process_read_at", None)
+        monkeypatch.setattr(apps, "_listed_read", None)
+
+        apps.prime_processes()
+        monkeypatch.setattr(apps, "_process_read_at", time.monotonic() - 2.0)      # that reading, 2 s ago
+        rows = {r["pid"]: r for r in apps.top_processes(10)}
+        assert 0 not in rows and rows[4]["cpu"] == 0.0
+        assert 24.0 <= rows[100]["cpu"] <= 25.0       # 1 s of CPU in 2 s: half of one of the 2 cores
+        assert 23.0 <= rows[200]["cpu"] <= 25.0       # 0.5 s of CPU since it started 1 s ago
+        assert rows[200]["name"] == "new.exe" and rows[200]["memory_mb"] == 300.0
+        assert [r["pid"] for r in apps.top_processes(3, sort="memory", sample_s=0.0)] == [200, 100, 4]
 
     async def test_volume_brightness_media_power(self, tk) -> None:
         assert (await run(tk, "volume", {"action": "set", "level": 30})).summary == "Volume is 30%"

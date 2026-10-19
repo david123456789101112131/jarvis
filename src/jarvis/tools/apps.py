@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import threading
 import time
 from typing import Any
@@ -12,11 +13,13 @@ import psutil
 from pydantic import BaseModel, Field
 
 from jarvis.common.enums import Capability, RiskLevel
-from jarvis.host import catalog
+from jarvis.host import catalog, winapi
+from jarvis.host.base import HostUnsupported
 from jarvis.permissions.risk import analyze_command
 from jarvis.tools.base import ActionPlan, Tool, ToolContext, ToolResult
 
 C = Capability
+log = logging.getLogger(__name__)
 
 # Closing or killing these breaks Windows; never allowed.
 CRITICAL_PROCESSES = {
@@ -195,21 +198,39 @@ class RunningAppsTool(Tool):
         return ToolResult(summary=ctx.t(f"{len(apps)} תוכנות פתוחות", f"{len(apps)} apps open"), data={"apps": apps})
 
 
-# A process's CPU use is the change in its CPU time since an earlier reading of the same psutil Process
-# (psutil keeps those objects between `process_iter` calls). A reading up to PROCESS_WINDOW_MAX_S old,
-# by the last call or by `prime_processes` in the background, starts the measured window, so nobody
-# waits; a process that started since then is measured from its own start. Without such a reading the
-# call takes one and waits `sample_s`, as before.
+# A process's CPU use is the change in its CPU time since an earlier reading. On Windows one system call
+# reads every process at once (`winapi.process_list`); elsewhere, or when that call fails, psutil keeps the
+# earlier CPU times in its own Process objects between `process_iter` calls. A reading up to
+# PROCESS_WINDOW_MAX_S old, by the last call or by `prime_processes` in the background, starts the
+# measured window, so nobody waits; a process that started since then is measured from its own start.
+# Without such a reading the call takes one and waits `sample_s`, as before. The System Idle Process
+# (pid 0 on Windows) is left out: its "CPU time" is the time the CPU had nothing to do.
 PROCESS_WINDOW_MAX_S = 60.0
 _process_lock = threading.Lock()
 _process_read_at: float | None = None
 _process_read: dict[int, psutil.Process] = {}       # pid -> the Process object that was read then
+_listed_read: dict[int, winapi.ProcessInfo] | None = None     # the same reading from the system call
+
+
+def _list_all() -> dict[int, winapi.ProcessInfo] | None:
+    """Every process from one system call on Windows; None elsewhere, or when Windows refuses it."""
+    if not winapi.IS_WINDOWS:
+        return None
+    try:
+        return winapi.process_list()
+    except (OSError, HostUnsupported, ValueError):
+        log.debug("Listing the processes in one call failed; psutil reads them instead", exc_info=True)
+        return None
 
 
 def prime_processes() -> None:
     """Take a reading now, so the next `top_processes` answers without waiting."""
-    global _process_read_at, _process_read
+    global _process_read_at, _process_read, _listed_read
     with _process_lock:
+        listed = _list_all()
+        if listed is not None:
+            _listed_read, _process_read_at = listed, time.monotonic()
+            return
         procs = _processes()
         for p in procs:
             with contextlib.suppress(psutil.Error):
@@ -218,20 +239,35 @@ def prime_processes() -> None:
 
 
 def top_processes(limit: int = 15, sort: str = "cpu", sample_s: float = 0.4) -> list[dict[str, Any]]:
-    global _process_read_at, _process_read
+    global _process_read_at, _process_read, _listed_read
     with _process_lock:
-        procs = _processes()
         since = None if _process_read_at is None else time.monotonic() - _process_read_at
-        if since is None or since > PROCESS_WINDOW_MAX_S:
-            for p in procs:
-                with contextlib.suppress(psutil.Error):
-                    p.cpu_percent(None)
-            _process_read = {p.pid: p for p in procs}
-            time.sleep(sample_s)
-        elif since < sample_s:                  # too short a window to mean anything: wait out the rest
-            time.sleep(sample_s - since)
-        rows = _process_rows(procs, _process_read)
-        _process_read, _process_read_at = {p.pid: p for p in procs}, time.monotonic()
+        fresh = since is not None and since <= PROCESS_WINDOW_MAX_S
+        listed = _list_all()
+        if listed is not None:
+            before, read_at = _listed_read, _process_read_at
+            if not fresh or before is None or read_at is None:
+                before, read_at = listed, time.monotonic()
+                time.sleep(sample_s)
+                listed = _list_all() or listed
+            elif since is not None and since < sample_s:   # too short a window to mean anything: wait out the rest
+                time.sleep(sample_s - since)
+                listed = _list_all() or listed
+            now = time.monotonic()
+            rows = _listed_rows(listed, before, now - read_at)
+            _listed_read, _process_read_at = listed, now
+        else:
+            procs = _processes()
+            if not fresh:
+                for p in procs:
+                    with contextlib.suppress(psutil.Error):
+                        p.cpu_percent(None)
+                _process_read = {p.pid: p for p in procs}
+                time.sleep(sample_s)
+            elif since is not None and since < sample_s:   # too short a window to mean anything: wait out the rest
+                time.sleep(sample_s - since)
+            rows = _process_rows(procs, _process_read)
+            _process_read, _process_read_at = {p.pid: p for p in procs}, time.monotonic()
     key = "memory_mb" if sort == "memory" else "cpu"
     rows.sort(key=lambda r: r[key], reverse=True)
     return rows[:limit]
@@ -249,6 +285,8 @@ def _process_rows(procs: list[psutil.Process], read: dict[int, psutil.Process]) 
     cores = psutil.cpu_count() or 1
     rows = []
     for p in procs:
+        if p.pid == 0:
+            continue
         with contextlib.suppress(psutil.Error):
             percent = p.cpu_percent(None)
             if read.get(p.pid) is not p:       # new since the reading: its average since it started
@@ -261,6 +299,30 @@ def _process_rows(procs: list[psutil.Process], read: dict[int, psutil.Process]) 
                 "cpu": round(percent / cores, 1),
                 "memory_mb": round(p.memory_info().rss / 1_048_576, 1),
             })
+    return rows
+
+
+def _listed_rows(listed: dict[int, winapi.ProcessInfo], before: dict[int, winapi.ProcessInfo],
+                 window_s: float) -> list[dict[str, Any]]:
+    cores = psutil.cpu_count() or 1
+    wall = time.time()
+    rows = []
+    for pid, p in listed.items():
+        if pid == 0:
+            continue
+        old = before.get(pid)
+        if old is not None and old.started == p.started and window_s > 0:
+            percent = 100.0 * max(0.0, p.cpu_s - old.cpu_s) / window_s
+        elif p.started:                        # new since the reading (or a reused pid): since it started
+            percent = 100.0 * p.cpu_s / max(1e-3, wall - p.started)
+        else:
+            percent = 0.0
+        rows.append({
+            "pid": pid,
+            "name": p.name,
+            "cpu": round(min(100.0 * cores, percent) / cores, 1),
+            "memory_mb": round(p.rss / 1_048_576, 1),
+        })
     return rows
 
 

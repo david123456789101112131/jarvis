@@ -6,7 +6,8 @@
 * master volume and mute through Core Audio (`IAudioEndpointVolume`, called through raw COM
   vtables, so it works without comtypes),
 * lock (`LockWorkStation`), sleep (`SetSuspendState`), Unicode clipboard text, top-level
-  window enumeration / closing, file version descriptions and URL-protocol lookups.
+  window enumeration / closing, file version descriptions and URL-protocol lookups,
+* every process's name, CPU time and memory in one call (`NtQuerySystemInformation`).
 
 Every public function raises `HostUnsupported` on other platforms, so this module imports
 everywhere and its pure parts (structures, GUID parsing) are unit-tested on Linux. Failing
@@ -193,12 +194,54 @@ class TOKEN_PRIVILEGES(ctypes.Structure):
     _fields_ = [("PrivilegeCount", ctypes.c_uint32), ("Privileges", LUID_AND_ATTRIBUTES * 1)]
 
 
+class UNICODE_STRING(ctypes.Structure):
+    _fields_ = [("Length", ctypes.c_uint16), ("MaximumLength", ctypes.c_uint16), ("Buffer", ctypes.c_void_p)]
+
+
+class SYSTEM_PROCESS_INFORMATION(ctypes.Structure):
+    """The start of each entry of NtQuerySystemInformation(SystemProcessInformation), up to the working set
+    (the bytes winternl.h calls Reserved1 are named as in System Informer's ntexapi.h)."""
+
+    _fields_ = [
+        ("NextEntryOffset", ctypes.c_uint32),
+        ("NumberOfThreads", ctypes.c_uint32),
+        ("WorkingSetPrivateSize", ctypes.c_int64),
+        ("HardFaultCount", ctypes.c_uint32),
+        ("NumberOfThreadsHighWatermark", ctypes.c_uint32),
+        ("CycleTime", ctypes.c_uint64),
+        ("CreateTime", ctypes.c_int64),
+        ("UserTime", ctypes.c_int64),
+        ("KernelTime", ctypes.c_int64),
+        ("ImageName", UNICODE_STRING),
+        ("BasePriority", ctypes.c_int32),
+        ("UniqueProcessId", ctypes.c_void_p),
+        ("InheritedFromUniqueProcessId", ctypes.c_void_p),
+        ("HandleCount", ctypes.c_uint32),
+        ("SessionId", ctypes.c_uint32),
+        ("UniqueProcessKey", ctypes.c_size_t),
+        ("PeakVirtualSize", ctypes.c_size_t),
+        ("VirtualSize", ctypes.c_size_t),
+        ("PageFaultCount", ctypes.c_uint32),
+        ("PeakWorkingSetSize", ctypes.c_size_t),
+        ("WorkingSetSize", ctypes.c_size_t),
+    ]
+
+
 @dataclass(frozen=True)
 class WindowInfo:
     hwnd: int
     pid: int
     title: str
     class_name: str
+
+
+@dataclass(frozen=True)
+class ProcessInfo:
+    pid: int
+    name: str
+    cpu_s: float        # user + kernel CPU time so far
+    rss: int            # working set in bytes (psutil's memory_info().rss on Windows)
+    started: float      # Unix time; 0.0 where Windows gives none (the System Idle Process)
 
 
 # =============================================================================================
@@ -276,7 +319,7 @@ class _Win32:
                ctypes.c_void_p, ctypes.c_void_p)
 
     def dll(self, name: str) -> Any:
-        """Optional DLLs (powrprof, dwmapi, version, shlwapi), loaded and bound on first use."""
+        """Optional DLLs (powrprof, dwmapi, version, shlwapi, ntdll), loaded and bound on first use."""
         with self._optional_lock:
             lib = self._optional.get(name)
             if lib is not None:
@@ -294,6 +337,9 @@ class _Win32:
             elif name == "shlwapi":
                 _proto(lib.AssocQueryStringW, ctypes.c_long, w.DWORD, ctypes.c_int, w.LPCWSTR, w.LPCWSTR,
                        w.LPWSTR, w.LPDWORD)
+            elif name == "ntdll":
+                _proto(lib.NtQuerySystemInformation, ctypes.c_int32, ctypes.c_uint32, ctypes.c_void_p,
+                       ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32))
             self._optional[name] = lib
             return lib
 
@@ -589,6 +635,59 @@ def close_windows(*, class_names: Iterable[str] = (), pids: Iterable[int] = ()) 
             if api.user32.PostMessageW(win.hwnd, WM_CLOSE, 0, 0):
                 closed += 1
     return closed
+
+
+# =============================================================================================
+# Processes
+# =============================================================================================
+SYSTEM_PROCESS_INFORMATION_CLASS = 5
+STATUS_INFO_LENGTH_MISMATCH = 0xC0000004
+_FILETIME_TICKS = 10_000_000                 # 100-ns units per second
+_FILETIME_TO_UNIX = 11_644_473_600           # seconds from 1601-01-01 to 1970-01-01
+_process_buffer_size = 0x80000               # grows to what the last call needed
+
+
+def parse_process_list(buf: Any, used: int) -> dict[int, ProcessInfo]:
+    """The entries NtQuerySystemInformation wrote into `buf` (`used` bytes), by pid. A name is read only
+    when it lies inside the buffer, so a malformed entry never makes this read other memory."""
+    used = min(used, len(buf))
+    base, size = ctypes.addressof(buf), ctypes.sizeof(SYSTEM_PROCESS_INFORMATION)
+    found: dict[int, ProcessInfo] = {}
+    offset = 0
+    while offset + size <= used:
+        entry = SYSTEM_PROCESS_INFORMATION.from_buffer(buf, offset)
+        pid = int(entry.UniqueProcessId or 0)
+        at, length = int(entry.ImageName.Buffer or 0), int(entry.ImageName.Length)
+        if at and length and base <= at and at + length <= base + used:
+            name = ctypes.string_at(at, length).decode("utf-16-le", "replace")
+        else:
+            name = "System Idle Process" if pid == 0 else ""
+        started = entry.CreateTime / _FILETIME_TICKS - _FILETIME_TO_UNIX if entry.CreateTime > 0 else 0.0
+        found[pid] = ProcessInfo(pid, name, (entry.UserTime + entry.KernelTime) / _FILETIME_TICKS,
+                                 int(entry.WorkingSetSize), started)
+        if not entry.NextEntryOffset:
+            break
+        offset += entry.NextEntryOffset
+    return found
+
+
+def process_list() -> dict[int, ProcessInfo]:
+    """Every process with its name, CPU time, working set and start time, from one system call (what Task
+    Manager reads). psutil asks about one process at a time and, for each protected one, lists every
+    process again to find it: about 0.7 s for 300 processes, against a few milliseconds here."""
+    global _process_buffer_size
+    query = _api("Listing processes").dll("ntdll").NtQuerySystemInformation
+    for _ in range(8):
+        buf = ctypes.create_string_buffer(_process_buffer_size)
+        needed = ctypes.c_uint32(0)
+        status = query(SYSTEM_PROCESS_INFORMATION_CLASS, buf, len(buf), ctypes.byref(needed)) & 0xFFFFFFFF
+        if status == STATUS_INFO_LENGTH_MISMATCH:          # processes can start between two calls
+            _process_buffer_size = max(_process_buffer_size * 2, needed.value + 0x10000)
+            continue
+        if status:
+            raise OSError(f"NtQuerySystemInformation failed (NTSTATUS 0x{status:08X})")
+        return parse_process_list(buf, needed.value or len(buf))
+    raise OSError("NtQuerySystemInformation kept asking for a larger buffer")
 
 
 # =============================================================================================
