@@ -284,6 +284,25 @@ class TestCodeScreen:
         codes = [[p["code"] for p in f["problems"]] for f in change["files"]]
         assert codes == [["syntax"], ["missing"], ["path"]] and change["can_apply"] is False
 
+    async def test_a_proposal_can_be_revised_in_words(self, dev: tuple[Live, FakeGrok], tmp_path: Path) -> None:
+        live, grok = dev
+        session = await open_project(live, project(tmp_path / "shop"))
+        grok.push(answer(proposal(edits=[{"path": "shop/config.py", "action": "modify", "why": "timeout",
+                                          "replacements": [{"find": "TIMEOUT = 5\n", "replace": "TIMEOUT = 10\n"}]}])))
+        job = await live.post(f"/api/dev/sessions/{session['id']}/propose",
+                              {"request": "להגדיל את הזמן", "files": ["shop/config.py"]})
+        await approve(live)
+        first = (await done(live, job))["result"]["change_id"]
+
+        grok.push(answer(proposal(edits=[])))
+        job = await live.post(f"/api/dev/sessions/{session['id']}/propose",
+                              {"request": "לא 10, אלא 30", "files": ["shop/config.py"], "parent_id": first})
+        await approve(live)
+        assert (await done(live, job))["status"] == "done"
+        sent = grok.requests[1].messages[0].text
+        assert sent.startswith("REQUEST:\nלא 10, אלא 30") and "YOUR PREVIOUS PROPOSAL, NOT APPLIED" in sent
+        assert "להגדיל את הזמן" in sent and "+TIMEOUT = 10" in sent and CONFIG_SECRET not in sent
+
     async def test_a_bad_answer_changes_nothing(self, dev: tuple[Live, FakeGrok], tmp_path: Path) -> None:
         live, grok = dev
         session = await open_project(live, project(tmp_path / "shop"))

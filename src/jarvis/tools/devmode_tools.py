@@ -204,7 +204,11 @@ class DevProposeTool(Tool):
         masked += n
         request, n = ctx.services.redactor.mask_code(params.request)
         masked += n
-        previous = dev.previous_diff(params.parent_id) if params.parent_id else ""
+        previous = dev.previous(params.parent_id) if params.parent_id else None
+        if previous:
+            for key in ("diff", "request"):
+                previous[key], n = ctx.services.redactor.mask_code(previous[key])
+                masked += n
         listing = sorted(f.path for f in scanned.files if not f.secret)
         system, user = build_messages(request, facts, listing, sent, error_text=error_text, previous=previous,
                                       lang=ctx.lang)

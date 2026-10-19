@@ -1,1 +1,453 @@
-/* The "code" area. */
+/* The "code" area: the workflow strip, the project report, the files to send, the change review (diffs,
+   problems, warnings), the test results and the summary. */
+
+/* ------------------------------------------------------------------ the workflow strip */
+.code-flow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.code-flow__step {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line);
+  background: var(--surface-0);
+  color: var(--text-3);
+  font-size: 12px;
+}
+
+.code-flow__num {
+  font-size: 11px;
+  opacity: 0.8;
+}
+
+.code-flow__step[data-state='active'] {
+  color: rgb(var(--tone-work));
+  border-color: rgba(var(--tone-work), 0.45);
+  box-shadow: 0 0 10px rgba(var(--tone-work), 0.18);
+}
+
+.code-flow__step[data-state='done'] {
+  color: rgb(var(--tone-ok));
+  border-color: rgba(var(--tone-ok), 0.35);
+}
+
+.code-flow__step[data-state='failed'] {
+  color: rgb(var(--tone-danger));
+  border-color: rgba(var(--tone-danger), 0.4);
+}
+
+/* ------------------------------------------------------------------ the project */
+.code-report {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 6px var(--s3);
+  margin: 0;
+  font-size: 13px;
+}
+
+.code-report dt {
+  color: var(--text-2);
+  font-size: 12px;
+}
+
+.code-report dd {
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  color: var(--text-1);
+}
+
+.code-report__wrap {
+  overflow-wrap: anywhere;
+}
+
+.code-report__missing {
+  margin: 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 2px;
+  color: rgb(var(--tone-warn));
+}
+
+.code-allow {
+  display: grid;
+  gap: 4px;
+  padding-top: var(--s2);
+  border-top: 1px solid var(--line);
+}
+
+.code-inline-btn {
+  justify-self: start;
+}
+
+/* ------------------------------------------------------------------ the files to send */
+.code-files {
+  display: grid;
+  gap: 6px;
+}
+
+.code-files ul {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 4px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.code-files__item {
+  display: grid;
+  gap: 2px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-0);
+}
+
+.code-files__item[data-picked] {
+  border-color: var(--line-2);
+}
+
+.code-files__item label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.code-files__item .mono {
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.code-files__why {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding-inline-start: 24px;
+  font-size: 11px;
+  color: var(--text-3);
+}
+
+.code-files__add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  align-items: center;
+}
+
+.code-files__add .input {
+  flex: 1 1 200px;
+  min-width: 0;
+}
+
+.code-error-inline {
+  font-size: 12px;
+  color: rgb(var(--tone-danger));
+}
+
+.code-send {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px dashed var(--line-2);
+  background: rgba(var(--accent-rgb), 0.04);
+  font-size: 13px;
+}
+
+.code-send ul,
+.code-lines ul,
+.code-notes ul {
+  margin: 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 2px;
+}
+
+.code-send p {
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ the change */
+.code-understood,
+.code-lines {
+  display: grid;
+  gap: 4px;
+  font-size: 13px;
+}
+
+.code-lines--warn li::marker {
+  color: rgb(var(--tone-warn));
+}
+
+.code-change-files {
+  display: grid;
+  gap: var(--s3);
+}
+
+.code-file {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-0);
+  min-width: 0;
+}
+
+.code-file[data-blocked] {
+  border-color: rgba(var(--tone-danger), 0.45);
+}
+
+.code-file__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.code-file__path {
+  font-size: 13px;
+  color: var(--text-0);
+  overflow-wrap: anywhere;
+}
+
+.code-file__include input {
+  margin: 0;
+}
+
+.code-file__why {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.code-plus {
+  color: rgb(var(--tone-ok));
+  font-size: 12px;
+}
+
+.code-minus {
+  color: rgb(var(--tone-danger));
+  font-size: 12px;
+}
+
+.code-tag {
+  padding: 1px 7px;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--line-2);
+  font-size: 11px;
+  color: var(--text-1);
+}
+
+.code-tag--muted {
+  color: var(--text-3);
+  border-color: var(--line);
+}
+
+.code-notes {
+  display: grid;
+  gap: 4px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.code-notes--problem {
+  border: 1px solid rgba(var(--tone-danger), 0.4);
+  background: rgba(var(--tone-danger), 0.07);
+  color: rgb(var(--tone-danger));
+}
+
+.code-notes--warning {
+  border: 1px solid rgba(var(--tone-warn), 0.35);
+  background: rgba(var(--tone-warn), 0.06);
+  color: rgb(var(--tone-warn));
+}
+
+.code-file__editor {
+  display: grid;
+  gap: var(--s2);
+}
+
+.code-file__editor .textarea {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  white-space: pre;
+  overflow: auto;
+}
+
+.code-change-actions {
+  align-items: center;
+}
+
+.code-revise {
+  display: grid;
+  gap: var(--s2);
+  padding-top: var(--s2);
+  border-top: 1px solid var(--line);
+}
+
+.code-revise .btn {
+  justify-self: start;
+}
+
+/* ------------------------------------------------------------------ the diff */
+.diff {
+  margin: 0;
+  max-height: 420px;
+  overflow: auto;
+  padding: 6px 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(0, 0, 0, 0.3);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  unicode-bidi: plaintext;
+}
+
+.diff__line {
+  display: block;
+  padding: 0 12px;
+  white-space: pre;
+  color: var(--text-1);
+}
+
+.diff__line--add {
+  background: rgba(var(--tone-ok), 0.12);
+  color: #bff5dc;
+}
+
+.diff__line--del {
+  background: rgba(var(--tone-danger), 0.12);
+  color: #ffc9cf;
+}
+
+.diff__line--hunk {
+  color: rgb(var(--tone-think));
+  margin-top: 4px;
+}
+
+.diff__line--meta {
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------ tests */
+.code-results {
+  display: grid;
+  gap: var(--s2);
+  font-size: 13px;
+}
+
+.code-results p {
+  margin: 0;
+}
+
+.code-results__head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  align-items: center;
+}
+
+.code-count {
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.code-count--passed .num {
+  color: rgb(var(--tone-ok));
+}
+
+.code-count--failed .num,
+.code-count--error .num,
+.code-count--errors .num {
+  color: rgb(var(--tone-danger));
+}
+
+.code-hint {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: rgb(var(--tone-warn));
+}
+
+.code-output summary {
+  cursor: pointer;
+  color: var(--text-2);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+
+/* ------------------------------------------------------------------ summary and history */
+.code-done {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 8px var(--s3);
+  margin: 0;
+  font-size: 13px;
+}
+
+.code-done dt {
+  color: var(--text-2);
+}
+
+.code-done dd {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.code-done__files {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+}
+
+.code-history {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+  font-size: 13px;
+}
+
+.code-history li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: center;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+
+.code-history li[data-current] {
+  border-color: var(--line-strong);
+}
+
+.code-history__status {
+  font-size: 11px;
+  color: var(--text-2);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}

@@ -464,11 +464,16 @@ class DevService:
                                                                    "the file changed since the proposal; ask for a new one")))
         self._save(change)
 
-    def previous_diff(self, change_id: str) -> str:
+    def previous(self, change_id: str) -> dict[str, str] | None:
+        """What a follow-up request builds on: the change already applied (a fix after it), or a proposal not
+        applied yet (a revision the user asked for), with its diff and its request."""
         change = self.change(change_id)
         if change is None:
-            return ""
-        return "\n".join(f.diff for f in change.files if f.status == "applied")[:20_000]
+            return None
+        applied = [f.diff for f in change.files if f.status == "applied"]
+        kind = "applied" if applied else "proposed"
+        diff = "\n".join(applied or [f.diff for f in change.files if f.include and not f.blocked])
+        return {"kind": kind, "diff": diff[:20_000], "request": change.request}
 
     async def apply(self, change_id: str, *, lang: str, undo: bool = False) -> Job:
         change = self._require(change_id, lang)

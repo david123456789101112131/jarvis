@@ -275,6 +275,11 @@ class TestPrompt:
         assert user.startswith("REQUEST:\nmake the total") and "ERROR OR TEST OUTPUT" in user
         assert "=== shop/cart.py (2 lines) — CUT" in user and "FILE LIST (2 files)" in user
         assert str(tmp_path) not in user and "A small shop" not in user   # no local paths, no README
+        _, revise = build_messages("make it 30", report, [], [], previous={"kind": "proposed", "diff": "+x = 10",
+                                                                           "request": "raise the timeout"})
+        assert "YOUR PREVIOUS PROPOSAL, NOT APPLIED" in revise and "raise the timeout" in revise
+        _, after = build_messages("fix the test", report, [], [], previous={"kind": "applied", "diff": "+x = 10"})
+        assert "ALREADY APPLIED" in after and "+x = 10" in after
 
 
 # ============================================================================ secrets in code

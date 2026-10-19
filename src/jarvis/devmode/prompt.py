@@ -146,15 +146,23 @@ Rules:
 
 
 def build_messages(request: str, facts: dict[str, Any], file_list: list[str], files: list[tuple[str, str, bool]],
-                   *, error_text: str = "", previous: str = "", lang: str = "he") -> tuple[str, str]:
-    """(system, user message). `files` holds (path, text, cut) for each file sent in full."""
+                   *, error_text: str = "", previous: dict[str, str] | None = None,
+                   lang: str = "he") -> tuple[str, str]:
+    """(system, user message). `files` holds (path, text, cut) for each file sent in full; `previous` is the
+    change this request follows ({kind: "applied" | "proposed", diff, request})."""
     language = "Hebrew" if lang == "he" else "English"
     system = SYSTEM.replace("{language}", language)
     parts = [f"REQUEST:\n{request.strip()}"]
     if error_text.strip():
         parts.append("ERROR OR TEST OUTPUT (what the user wants fixed):\n" + error_text.strip()[-MAX_ERROR_CHARS:])
-    if previous.strip():
-        parts.append("THE CHANGE ALREADY APPLIED BEFORE THIS ONE (its diff):\n" + previous.strip()[:20_000])
+    if previous and previous.get("diff", "").strip():
+        diff = previous["diff"].strip()[:20_000]
+        if previous.get("kind") == "proposed":
+            parts.append("YOUR PREVIOUS PROPOSAL, NOT APPLIED: the REQUEST above says how to revise it. Its original "
+                         f"request was:\n{previous.get('request', '').strip()[:4000]}\nIts diff (the files are still "
+                         f"as shown below, unchanged):\n{diff}")
+        else:
+            parts.append("THE CHANGE ALREADY APPLIED BEFORE THIS ONE (its diff; the files below include it):\n" + diff)
     parts.append("PROJECT FACTS (found by JARVIS without running anything):\n" + json.dumps(_brief(facts), ensure_ascii=False, indent=1))
     listed = file_list[:MAX_LIST]
     more = len(file_list) - len(listed)
