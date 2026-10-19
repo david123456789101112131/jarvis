@@ -10,6 +10,7 @@ import json
 import logging
 import re
 import sqlite3
+from collections.abc import Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -26,7 +27,7 @@ from jarvis.memory.models import (
     SearchHit,
     TaskRecord,
 )
-from jarvis.memory.store import MemoryStore
+from jarvis.memory.store import CLEARABLE, FINISHED_TASKS, MemoryStore
 
 log = logging.getLogger(__name__)
 
@@ -74,6 +75,11 @@ CREATE TABLE IF NOT EXISTS commands (
 );
 CREATE INDEX IF NOT EXISTS commands_ts ON commands(ts);
 """
+
+# The table and search-index layer behind each kind `clear` deletes whole ("tasks" is handled on its own).
+_WHOLE = {"chat": ("chat", "conversation"), "commands": ("commands", "command"), "files": ("files", "file"),
+          "facts": ("facts", "long_term"), "projects": ("projects", "project")}
+_CHUNK = 400                     # ids per `IN (...)`, well under SQLite's limit on bound values
 
 _WORD = re.compile(r"[\w'\-\.]+", re.UNICODE)
 _HEBREW_WORD = re.compile(r"^[\u05d0-\u05ea]+$")
@@ -440,4 +446,57 @@ class SQLiteMemoryStore(MemoryStore):
         out: dict[str, int] = {}
         for table in ("chat", "facts", "projects", "tasks", "results", "files", "commands"):
             out[table] = int(self.db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])
+        marks = ",".join("?" * len(FINISHED_TASKS))
+        out["finished_tasks"] = int(self.db.execute(f"SELECT COUNT(*) FROM tasks WHERE status IN ({marks})",
+                                                    FINISHED_TASKS).fetchone()[0])
         return out
+
+    # -- forgetting ----------------------------------------------------------------------------
+    def clear(self, kinds: Iterable[str]) -> dict[str, int]:
+        """Delete whole kinds of records for good, with their search entries.
+
+        The deleted text does not linger in the file: the freed pages are zeroed (secure_delete), the search
+        index drops what it had marked deleted ("optimize"), the database is rebuilt without the free pages
+        (VACUUM) and the write-ahead log, which still holds earlier copies of the pages, is emptied."""
+        wanted = list(dict.fromkeys(kinds))
+        unknown = [k for k in wanted if k not in CLEARABLE]
+        if unknown:
+            raise ValueError(f"cannot clear {', '.join(unknown)} (only {', '.join(CLEARABLE)})")
+        if not wanted:
+            return {}
+        db = self.db
+        out: dict[str, int] = {}
+        db.execute("PRAGMA secure_delete=ON")
+        try:
+            with db:                                   # one transaction: all of it, or nothing
+                for kind in wanted:
+                    if kind == "tasks":
+                        out[kind] = self._clear_finished_tasks(db)
+                        continue
+                    table, layer = _WHOLE[kind]
+                    out[kind] = db.execute(f"DELETE FROM {table}").rowcount
+                    db.execute("DELETE FROM search_index WHERE layer=?", (layer,))
+                db.execute("INSERT INTO search_index(search_index) VALUES('optimize')")
+            db.execute("VACUUM")
+            db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            db.execute("PRAGMA secure_delete=OFF")
+        return out
+
+    def _clear_finished_tasks(self, db: sqlite3.Connection) -> int:
+        marks = ",".join("?" * len(FINISHED_TASKS))
+        ids = [r[0] for r in db.execute(f"SELECT id FROM tasks WHERE status IN ({marks})", FINISHED_TASKS)]
+        for chunk in _chunks(ids):
+            q = ",".join("?" * len(chunk))
+            results = [f"result:{r[0]}" for r in db.execute(f"SELECT id FROM results WHERE task_id IN ({q})", chunk)]
+            db.execute(f"DELETE FROM results WHERE task_id IN ({q})", chunk)
+            db.execute(f"DELETE FROM task_context WHERE task_id IN ({q})", chunk)
+            db.execute(f"DELETE FROM tasks WHERE id IN ({q})", chunk)
+            for refs in (chunk, *_chunks(results)):
+                db.execute(f"DELETE FROM search_index WHERE layer='task' AND ref IN ({','.join('?' * len(refs))})",
+                           refs)
+        return len(ids)
+
+
+def _chunks(items: Sequence[str]) -> list[Sequence[str]]:
+    return [items[i:i + _CHUNK] for i in range(0, len(items), _CHUNK)]

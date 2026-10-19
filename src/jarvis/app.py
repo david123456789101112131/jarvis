@@ -186,11 +186,13 @@ class JarvisApp:
         from jarvis.devmode.service import DevService
         from jarvis.integrations.apps import AppsService
         from jarvis.media.service import MediaService
+        from jarvis.privacy import PrivacyService
 
         # The work screens' services (code, images and video, apps): their actions run as jobs.
         self.dev = DevService(self)
         self.media = MediaService(self)
         self.apps = AppsService(self)
+        self.privacy = PrivacyService(self)
 
         self.voice: VoiceService | None = None
         self.voice_wanted = s.voice.enabled if voice is None else voice

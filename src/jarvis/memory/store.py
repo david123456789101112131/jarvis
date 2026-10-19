@@ -8,6 +8,7 @@ runs them on a dedicated worker thread.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Iterable
 from typing import Any
 
 from jarvis.memory.models import (
@@ -20,6 +21,13 @@ from jarvis.memory.models import (
     SearchHit,
     TaskRecord,
 )
+
+#: What `MemoryStore.clear` deletes: the conversation, the command history, the finished tasks (with their
+#: results and context), the list of files JARVIS created, the long-term facts, and the known projects.
+CLEARABLE = ("chat", "commands", "tasks", "files", "facts", "projects")
+#: The task states that `clear(["tasks"])` deletes; tasks still in progress, or interrupted (which can
+#: still be continued), stay.
+FINISHED_TASKS = ("completed", "failed", "cancelled", "skipped")
 
 
 class MemoryStore(ABC):
@@ -107,3 +115,8 @@ class MemoryStore(ABC):
 
     @abstractmethod
     def stats(self) -> dict[str, int]: ...
+
+    # forgetting
+    @abstractmethod
+    def clear(self, kinds: Iterable[str]) -> dict[str, int]:
+        """Delete whole kinds of records (`CLEARABLE`) for good; how many went, per kind."""

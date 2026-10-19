@@ -16,7 +16,7 @@ import asyncio
 import functools
 import logging
 from collections import deque
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
@@ -373,3 +373,17 @@ class MemoryManager:
 
     async def stats(self) -> dict[str, int]:
         return await self._run(self.store.stats)
+
+    # -- forgetting ----------------------------------------------------------------------------
+    async def clear(self, kinds: Iterable[str]) -> dict[str, int]:
+        """Delete whole kinds of memory for good (`jarvis.memory.store.CLEARABLE`): the privacy screen.
+
+        Clearing the conversation also empties the short-term memory (the recent turns and what they referred
+        to). Tasks still in progress, or interrupted, stay."""
+        kinds = list(kinds)
+        out = await self._run(self.store.clear, kinds)
+        if "chat" in kinds:
+            self.short.clear()
+        for kind in out:
+            self._changed("cleared", kind)
+        return out

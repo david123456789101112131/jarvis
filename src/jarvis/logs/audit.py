@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -93,3 +94,12 @@ class AuditLog:
             if (agent_id is None or e.agent_id == agent_id) and (task_id is None or e.task_id == task_id)
         ]
         return items[-limit:]
+
+    def clear(self) -> int:
+        """Forget every entry, in memory and in `audit.jsonl`; how many were in memory."""
+        count = len(self._entries)
+        self._entries.clear()
+        if self._file:
+            with contextlib.suppress(OSError):
+                self._file.write_text("", encoding="utf-8")
+        return count

@@ -1243,6 +1243,14 @@ class TaskOrchestrator:
             except Exception:
                 log.exception("Task listener failed (%s)", kind)
 
+    def forget_finished(self) -> int:
+        """Drop the finished tasks kept in RAM for fast views (the privacy screen deletes them from task
+        memory too); running and interrupted tasks stay."""
+        gone = [tid for tid, task in self._tasks.items() if tid not in self._runs and task.status.is_terminal]
+        for tid in gone:
+            del self._tasks[tid]
+        return len(gone)
+
     def _keep(self, task: JarvisTask) -> None:
         self._tasks.pop(task.id, None)
         self._tasks[task.id] = task

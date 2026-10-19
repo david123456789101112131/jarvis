@@ -572,9 +572,10 @@ def create_api(app: JarvisApp) -> FastAPI:
     from jarvis.server.routes_apps import apps_routes
     from jarvis.server.routes_dev import dev_routes
     from jarvis.server.routes_media import media_routes
+    from jarvis.server.routes_privacy import privacy_routes
     from jarvis.server.routes_work import work_routes
 
-    for router in (work_routes(app), dev_routes(app), media_routes(app), apps_routes(app)):
+    for router in (work_routes(app), dev_routes(app), media_routes(app), apps_routes(app), privacy_routes(app)):
         api.include_router(router)
 
     # ---------------------------------------------------------------------------- the page
