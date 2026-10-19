@@ -1,7 +1,8 @@
 """The "Apps & tools" routes over the real local server: what is possible here, the lists, opening an app, and
 a look, a suggestion and a step that each wait for the approval on the socket before anything happens.
 
-This machine has no Windows desktop, so the screen jobs first fail with that reason; then the screen and the
+The screen is first the one of a machine with no Windows desktop (the same on every computer, so a run on
+Windows never looks at the real screen), and the screen jobs fail with that reason; then the screen and the
 model are replaced by the same fakes the unit tests use, and the whole flow runs through the real gate."""
 
 from __future__ import annotations
@@ -11,7 +12,12 @@ import base64
 import pytest
 
 from integration.test_server import Live, connect, live  # noqa: F401  (the running-app fixture)
+from jarvis.computer.backend import UnsupportedBackend
 from unit.test_apps import PNG, FakeBackend, FakeHolo, FakeModelServer, _click, acted
+
+
+def _no_desktop(live: Live) -> None:  # noqa: F811
+    live.app.computer.backend = UnsupportedBackend()  # type: ignore[assignment]
 
 
 def _fake_screen(live: Live, monkeypatch: pytest.MonkeyPatch, holo: FakeHolo) -> FakeBackend:  # noqa: F811
@@ -28,6 +34,7 @@ def _fake_screen(live: Live, monkeypatch: pytest.MonkeyPatch, holo: FakeHolo) ->
 
 class TestAppsRoutes:
     async def test_status_lists_and_opening_an_app(self, live: Live) -> None:  # noqa: F811
+        _no_desktop(live)
         status = await live.get("/api/apps/status", params={"lang": "en"})
         ways = {w["key"]: w for w in status["ways"]}
         assert set(ways) == {"launch", "windows", "uia", "vision", "connectors"}
@@ -52,6 +59,7 @@ class TestAppsRoutes:
         await events.close()
 
     async def test_without_a_windows_desktop_the_screen_jobs_say_why(self, live: Live) -> None:  # noqa: F811
+        _no_desktop(live)
         job = await live.post("/api/apps/look", {"lang": "en"})
         done = await live.app.jobs.wait(job["id"], 10)
         assert done is not None and done.status == "failed" and "Windows" in (done.error or "")
