@@ -199,6 +199,7 @@ def offer(lang: str) -> dict[str, object]:
             "seconds": {"min": MIN_SECONDS, "max": MAX_SECONDS, "default": DEFAULT_SECONDS},
             "max_references": MAX_REFERENCES,
             "parts": [key for key, _label in VIDEO_PARTS],
+            "part_labels": dict(VIDEO_PARTS),            # the labels the text sent to xAI uses (`video_prompt`)
             "input_formats": list(INPUT_FORMATS),
             "max_input_bytes": MAX_INPUT_BYTES,
             "wait_minutes": VIDEO_WAIT_S // 60,
