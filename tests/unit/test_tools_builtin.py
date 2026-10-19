@@ -275,14 +275,16 @@ class TestSystemAndMemory:
         waits: list[float] = []
         pause = time.sleep
         monkeypatch.setattr(time, "sleep", lambda s: (waits.append(s), pause(s)))
-        busy = subprocess.Popen([sys.executable, "-c", "while True: sum(range(1000))"])
+        # A Windows venv's python.exe is a launcher that runs the real interpreter as its child: spin that one.
+        spin = [getattr(sys, "_base_executable", None) or sys.executable, "-c", "while True: sum(range(1000))"]
+        busy = subprocess.Popen(spin)
         try:
             pause(0.3)
             apps.top_processes(5)                          # no reading yet: it measures for sample_s
             assert waits == [0.4]
             apps.prime_processes()                         # what the background monitor does every 30 s
             pause(0.6)
-            late = subprocess.Popen([sys.executable, "-c", "while True: sum(range(1000))"])
+            late = subprocess.Popen(spin)
             try:
                 pause(0.6)
                 waits.clear()
