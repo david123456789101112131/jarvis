@@ -56,7 +56,7 @@ def is_mp4(path: Path) -> bool:
     return len(data) > 100 and data[4:8] == b"ftyp" and b"avc1" in data      # H.264 in an MP4
 
 
-@pytest.mark.parametrize("offload", ["auto", "gpu8"])
+@pytest.mark.parametrize("offload", ["auto", "gpu8", "seq8"])
 async def test_images_and_videos_from_the_real_pipelines(tiny_root: Path, tmp_path: Path, offload: str) -> None:
     eng = engine(tiny_root, tmp_path / "logs", offload)
     seen: list[dict[str, Any]] = []
@@ -72,7 +72,8 @@ async def test_images_and_videos_from_the_real_pipelines(tiny_root: Path, tmp_pa
         first = tmp_path / "out" / "a.png"
         result = await eng.request("image", {"prompt": "a fox", "width": 96, "height": 64, "out": [str(first)],
                                              "steps": 2, "seed": 1}, progress=progress)
-        assert png_size(first) == (96, 64) and result["mode"] == ("cpu8" if offload == "gpu8" else "cpu")
+        assert png_size(first) == (96, 64)
+        assert result["mode"] == {"auto": "cpu", "gpu8": "cpu8", "seq8": "cpuseq8"}[offload]
         assert result["ram_peak"] > 0 and result["ram_free_min"] > 0
         assert [m["phase"] for m in seen][:1] == ["load"] and any(m["phase"] == "generate" for m in seen)
 

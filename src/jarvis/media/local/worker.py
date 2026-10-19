@@ -53,13 +53,20 @@ TRANSLATE_DIR = "opus-mt-tc-big-he-en"
 # The modes a model can run in, from the fastest down. An "8" keeps the big parts' weights in 8 bits (fp8, turned
 # back into bf16 one layer at a time as it runs): half the memory, for a little detail.
 #   gpu, gpu8      all of it on the graphics card
+#   seq8           the text encoder on the card only to read the description (then freed), the rest stays there
 #   model, model8  each part moved onto the card only while it works; the rest waits in RAM ("model" offload)
 #   group8         layers streamed onto the card as they run: little graphics memory, but all of it held in RAM
+# In gpu, gpu8 and seq8 the weights go straight to the card as they are read, so they need little RAM.
 # What decides is the memory free when the model loads, RAM as much as the card's: a computer that runs out of
 # RAM stalls for everyone, so a mode that would not leave RAM_SPARE free is never chosen.
-MODES = ("gpu", "gpu8", "model", "model8", "group8")
+MODES = ("gpu", "gpu8", "seq8", "model", "model8", "group8")
+ON_CARD = ("gpu", "gpu8", "seq8")
+SEQUENTIAL = ("seq8", "cpuseq8")
 GIB = 1 << 30
 HEADROOM = {"image": int(2.5 * GIB), "video": 4 * GIB}     # graphics memory for the work itself, beyond the weights
+STREAM_RAM = 5 * GIB // 2         # RAM for reading weights straight to the card: one tensor at a time (the biggest,
+                                  # Wan's 2.1 GB word table) and its converted copy
+ENCODE_ROOM = GIB                 # graphics memory for reading a description, beyond the text encoder
 RAM_SPARE = 3 * GIB               # RAM left free for Windows and the programs already open
 RAM_FLOOR = 2 * GIB               # below this much free RAM the worker ends itself rather than let the computer stall
 LOW_MEMORY_EXIT = 75              # its exit code then, which JARVIS words as "low_memory"
@@ -301,18 +308,23 @@ def read_safetensors(filename: Any, device: Any = "cpu", **_: Any) -> dict[str, 
     """safetensors.torch.load_file, as diffusers calls it, without the memory map: each tensor is read on its own
     (pread) and made the dtype the part loads in right away, except in the modules the model keeps in fp32 (the same
     test diffusers applies). So loading a part holds that part once, in its final dtype, plus one tensor: not the
-    file mapped beside it (on Windows charged in full, and kept alive by any fp32 tensor still pointing into it)."""
+    file mapped beside it (on Windows charged in full, and kept alive by any fp32 tensor still pointing into it).
+    When the part goes straight onto the card, each tensor is moved there as soon as it is read, so RAM holds one
+    tensor at a time (diffusers itself always asks for "cpu" here)."""
     from safetensors import safe_open
 
     dtype, keep = _READ.get("dtype"), tuple(_READ.get("keep") or ())
+    target = str(_READ.get("device") or device)
     out: dict[str, Any] = {}
     with safe_open(str(filename), framework="pt", device="cpu", backend="pread") as fh:
         for name in fh.keys():
             tensor = fh.get_tensor(name)
+            if target != "cpu":
+                tensor = tensor.to(target)
             if (dtype is not None and tensor.is_floating_point() and tensor.dtype != dtype
                     and not any(m in name.split(".") for m in keep)):
                 tensor = tensor.to(dtype)
-            out[name] = tensor if str(device) == "cpu" else tensor.to(device)
+            out[name] = tensor
     return out
 
 
@@ -368,21 +380,32 @@ def load_order(family: str, parts: dict[str, tuple[int, int]], eight: bool) -> l
     return sorted(parts, key=lambda p: (-shrink(p), -parts[p][0]))
 
 
+def _loading(family: str, parts: dict[str, tuple[int, int]], eight: bool) -> tuple[int, int]:
+    """Loading `parts` in `load_order` where they are kept: the most memory it takes on the way (each part arrives
+    whole, in bf16, beside the ones already made 8-bit, then shrinks), and what they take once loaded."""
+    peak = held = 0
+    for p in load_order(family, parts, eight):
+        peak = max(peak, held + part_bytes(family, p, parts[p], False))
+        held += part_bytes(family, p, parts[p], eight)
+    return max(peak, held), held
+
+
 def needs(family: str, parts: dict[str, tuple[int, int]], mode: str) -> tuple[int, int]:
     """(RAM, graphics memory) that `mode` needs at its peak, loading included, in bytes."""
     eight = mode.endswith("8")
-    final = {p: part_bytes(family, p, n, eight) for p, n in parts.items()}
-    on_card = mode in ("gpu", "gpu8")
-    ram = held = 0
-    for p in load_order(family, parts, eight):
-        ram = max(ram, held + part_bytes(family, p, parts[p], False))   # each part loads whole, then shrinks
-        if not on_card:
-            held += final[p]
-    ram = max(ram, held)
     room = HEADROOM[family]
-    if on_card:
-        vram = sum(final.values()) + room
-    elif mode.startswith("model"):
+    if mode in ("gpu", "gpu8"):
+        peak, held = _loading(family, parts, eight)
+        return STREAM_RAM, max(peak, held + room)
+    if mode == "seq8":
+        # Reading the description: the text encoder alone (whole, it is freed straight after). Making the picture:
+        # the rest, loaded and kept in 8 bits. The two never share the card.
+        peak, held = _loading(family, {p: n for p, n in parts.items() if p != "text_encoder"}, eight)
+        text = part_bytes(family, "text_encoder", parts["text_encoder"], False) if "text_encoder" in parts else 0
+        return STREAM_RAM, max(text + ENCODE_ROOM, peak, held + room)
+    final = {p: part_bytes(family, p, n, eight) for p, n in parts.items()}
+    ram = _loading(family, parts, eight)[0]
+    if mode.startswith("model"):
         vram = max(final.values(), default=0) + room
     else:
         vram = GIB + room
@@ -451,6 +474,7 @@ class Diffusion:
         self.pipe: Any = None
         self._floor: dict[str, int] = {}          # a mode that ran out of memory is not tried again for that family
         self._translator: tuple[Any, Any] | None = None
+        self._embed_cache: dict[tuple[str, str, str | None], dict[str, Any]] = {}
         import safetensors.torch
 
         safetensors.torch.load_file = read_safetensors    # what diffusers reads checkpoints with (transformers
@@ -529,7 +553,23 @@ class Diffusion:
                  ("video", "text"): "WanPipeline", ("video", "picture"): "WanImageToVideoPipeline"}
         return getattr(diffusers, names[(family, variant)])
 
-    def _load(self, family: str, variant: str, progress: Progress) -> Any:
+    def _folder(self, family: str) -> Path:
+        folder = self.root / (IMAGE_DIR if family == "image" else VIDEO_DIR)
+        if not (folder / "model_index.json").is_file():
+            raise WorkerError(f"the {family} model is not installed (expected in {folder})", "missing")
+        return folder
+
+    def _mode(self, family: str, parts: dict[str, tuple[int, int]]) -> str:
+        """The mode `family` runs in: the one it is loaded in, or the fastest that fits the memory free now."""
+        if self.family == family and self.pipe is not None and self.mode:
+            return self.mode
+        if not self.cuda:                                   # tests: the same code, on the processor
+            return "cpuseq8" if self.offload == "seq8" else "cpu8" if self.offload.endswith("8") else "cpu"
+        return choose(family, parts, ram_free=memory()["ram_free"], vram_free=self._free(), offload=self.offload,
+                      floor=self._floor.get(family, 0))
+
+    def _load(self, folder: Path, family: str, variant: str, mode: str, parts: dict[str, tuple[int, int]],
+              progress: Progress) -> Any:
         if self.family == family and self.pipe is not None:
             if self.variant == variant:
                 return self.pipe
@@ -538,16 +578,7 @@ class Diffusion:
                 self.variant = variant
                 return self.pipe
         self.unload()
-        folder = self.root / (IMAGE_DIR if family == "image" else VIDEO_DIR)
-        if not (folder / "model_index.json").is_file():
-            raise WorkerError(f"the {family} model is not installed (expected in {folder})", "missing")
         progress("load", 0.0)
-        parts = weights(folder)
-        if self.cuda:
-            mode = choose(family, parts, ram_free=memory()["ram_free"], vram_free=self._free(),
-                          offload=self.offload, floor=self._floor.get(family, 0))
-        else:
-            mode = "cpu8" if self.offload.endswith("8") else "cpu"          # tests: the same code, on the processor
         pipe = self._build(folder, family, variant, mode, parts, progress)
         self.pipe, self.family, self.variant, self.mode = pipe, family, variant, mode
         progress("load", 1.0, mode=mode)
@@ -555,40 +586,93 @@ class Diffusion:
 
     def _build(self, folder: Path, family: str, variant: str, mode: str, parts: dict[str, tuple[int, int]],
                progress: Progress) -> Any:
-        """Load the parts one at a time (in `load_order`), each made 8-bit (when the mode says so) and moved to where
-        it will run before the next one loads; then the pipeline around them."""
-        import importlib
-
-        torch = self.torch
+        """Load the parts one at a time (in `load_order`), each made 8-bit (when the mode says so) where it will run
+        before the next one loads; then the pipeline around them. In seq8 the text encoder is left out: it is
+        loaded only to read a description (`_embeds`)."""
         index = json.loads((folder / "model_index.json").read_text(encoding="utf-8"))
-        eight = mode.endswith("8")
-        on_card = mode in ("gpu", "gpu8")
         loaded: dict[str, Any] = {}
-        order = load_order(family, parts, eight)
+        order = [p for p in load_order(family, parts, mode.endswith("8"))
+                 if not (mode in SEQUENTIAL and p == "text_encoder")]
         for number, name in enumerate(order):
-            library, class_name = index[name]
-            module_cls = getattr(importlib.import_module(library), class_name)
-            # Wan's video decoder is kept in full precision, as its makers advise.
-            dtype = torch.float32 if (family == "video" and name == "vae") else self.dtype
-            _READ.update(dtype=dtype, keep=getattr(module_cls, "_keep_in_fp32_modules", None))
-            try:
-                module = module_cls.from_pretrained(str(folder / name), dtype=dtype)
-            finally:
-                _READ.clear()
-            if eight and name in EIGHT_BIT_PARTS:
-                self._eight_bit(module)
-            if on_card:
-                module.to("cuda")
-            loaded[name] = module
-            gc.collect()
+            loaded[name] = self._part(folder, index, family, name, mode)
             progress("load", (number + 1) / (len(order) + 1), part=name)
+        if mode in SEQUENTIAL:
+            loaded["text_encoder"] = None
         pipe = self._class(family, variant).from_pretrained(str(folder), **loaded, dtype=self.dtype)
         pipe.set_progress_bar_config(disable=True)
         if mode.startswith("model"):
             pipe.enable_model_cpu_offload()
         elif mode == "group8":
-            pipe.enable_group_offload(onload_device=torch.device("cuda"), offload_type="leaf_level", use_stream=True)
+            pipe.enable_group_offload(onload_device=self.torch.device("cuda"), offload_type="leaf_level",
+                                      use_stream=True)
         return pipe
+
+    def _part(self, folder: Path, index: dict[str, Any], family: str, name: str, mode: str) -> Any:
+        """One part, read a tensor at a time: in gpu, gpu8 and seq8 straight onto the card (little RAM), in the
+        offload modes into RAM. Made 8-bit afterwards where the mode says so (in seq8 not the text encoder, which is
+        freed as soon as it has read the description)."""
+        import importlib
+
+        library, class_name = index[name]
+        module_cls = getattr(importlib.import_module(library), class_name)
+        # Wan's video decoder is kept in full precision, as its makers advise.
+        dtype = self.torch.float32 if (family == "video" and name == "vae") else self.dtype
+        direct = mode in ON_CARD or mode.startswith("cpu")
+        _READ.update(dtype=dtype, keep=getattr(module_cls, "_keep_in_fp32_modules", None),
+                     device=self.device if direct else None)
+        try:
+            module = module_cls.from_pretrained(str(folder / name), dtype=dtype,
+                                                **({"device_map": {"": self.device}} if direct else {}))
+        finally:
+            _READ.clear()
+        if mode.endswith("8") and name in EIGHT_BIT_PARTS and not (mode in SEQUENTIAL and name == "text_encoder"):
+            self._eight_bit(module)
+        gc.collect()
+        if self.cuda:
+            self.torch.cuda.empty_cache()
+        return module
+
+    def _embeds(self, folder: Path, family: str, mode: str, parts: dict[str, tuple[int, int]],
+                texts: tuple[str, str | None, bool], progress: Progress) -> dict[str, Any]:
+        """seq8: read the description with the text encoder alone on the card, then free it. When the rest of the
+        model is loaded and the encoder would not fit beside it, the rest goes first (and loads again after). The
+        last few descriptions are remembered, so asking again, or for another picture of the same, reads nothing."""
+        prompt, negative, guided = texts
+        key = (family, prompt, negative if guided else None)
+        if key in self._embed_cache:
+            return self._embed_cache[key]
+        need = part_bytes(family, "text_encoder", parts["text_encoder"], False) + ENCODE_ROOM
+        if self.pipe is not None and self.cuda and self._free() < need:
+            self.unload()
+        progress("load", 0.0, part="text_encoder")
+        index = json.loads((folder / "model_index.json").read_text(encoding="utf-8"))
+        encoder = self._part(folder, index, family, "text_encoder", mode)
+        try:
+            from transformers import AutoTokenizer
+
+            tokenizer = AutoTokenizer.from_pretrained(str(folder / "tokenizer"))
+            reader = self._class(family, "text")(tokenizer=tokenizer, text_encoder=encoder, vae=None,
+                                                 transformer=None, scheduler=None)
+            with self.torch.no_grad():
+                if family == "image":
+                    embeds, negatives = reader.encode_prompt(
+                        prompt=[prompt], device=self.device, do_classifier_free_guidance=guided,
+                        negative_prompt=[negative or ""], max_sequence_length=512)
+                else:
+                    embeds, negatives = reader.encode_prompt(
+                        prompt=prompt, negative_prompt=negative or "", do_classifier_free_guidance=guided,
+                        num_videos_per_prompt=1, max_sequence_length=512, device=self.device)
+        finally:
+            del encoder
+            reader = None
+            gc.collect()
+            if self.cuda:
+                self.torch.cuda.empty_cache()
+        made = {"prompt_embeds": embeds, "negative_prompt_embeds": negatives if guided else None}
+        self._embed_cache[key] = made
+        while len(self._embed_cache) > 8:
+            self._embed_cache.pop(next(iter(self._embed_cache)))
+        return made
 
     def _eight_bit(self, module: Any) -> None:
         """Keep the weights in fp8; each layer is turned back into bf16 just while it runs."""
@@ -621,18 +705,23 @@ class Diffusion:
         return new
 
     def _retrying(self, family: str, variant: str, progress: Progress,
-                  run: Callable[[Any], dict[str, Any]]) -> dict[str, Any]:
-        """Run on the loaded model; out of graphics memory, reload in the next thriftier mode and try again."""
+                  run: Callable[[Any, dict[str, Any] | None], dict[str, Any]],
+                  texts: tuple[str, str | None, bool]) -> dict[str, Any]:
+        """Load (if need be) and run; out of graphics memory, reload in the next thriftier mode and try again.
+        `run` gets the pipeline, and in seq8 the description already read (`_embeds`)."""
+        folder = self._folder(family)
         while True:
             if self.watch is not None:
                 self.watch.reset()                     # before loading: the load is when RAM runs lowest
-            pipe = self._load(family, variant, progress)
-            if self.cuda:
-                self.torch.cuda.reset_peak_memory_stats()
+            parts = weights(folder)
+            mode = self._mode(family, parts)
             try:
-                result = run(pipe)
+                embeds = self._embeds(folder, family, mode, parts, texts, progress) if mode in SEQUENTIAL else None
+                pipe = self._load(folder, family, variant, mode, parts, progress)
+                if self.cuda:
+                    self.torch.cuda.reset_peak_memory_stats()
+                result = run(pipe, embeds)
             except self.torch.cuda.OutOfMemoryError as exc:
-                mode = self.mode or "gpu"
                 self.unload()
                 if mode not in MODES or mode == MODES[-1]:
                     raise WorkerError("there is not enough free memory on the graphics card for this, even "
@@ -676,13 +765,20 @@ class Diffusion:
             with Image.open(str(source)) as opened:
                 picture = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"), (width, height))
 
-        def run(pipe: Any) -> dict[str, Any]:
+        guidance = float(req.get("guidance") or 0.0)
+
+        def run(pipe: Any, embeds: dict[str, Any] | None) -> dict[str, Any]:
             files = []
             timings: list[float] = []
             for index, path in enumerate(outs):
                 began = time.perf_counter()
-                common = {"prompt": prompt, "height": height, "width": width, "num_inference_steps": steps,
-                          "guidance_scale": float(req.get("guidance") or 0.0),
+                text: dict[str, Any] = {"prompt": prompt}
+                if embeds is not None:                     # seq8: the description was read already
+                    text = {"prompt": None, "prompt_embeds": list(embeds["prompt_embeds"])}
+                    if embeds["negative_prompt_embeds"] is not None:
+                        text["negative_prompt_embeds"] = list(embeds["negative_prompt_embeds"])
+                common = {**text, "height": height, "width": width, "num_inference_steps": steps,
+                          "guidance_scale": guidance,
                           "generator": self._generator(seed + index),
                           "callback_on_step_end": self._stepper(progress, steps, index / len(outs), 1 / len(outs),
                                                                 image=index + 1, images=len(outs))}
@@ -699,7 +795,8 @@ class Diffusion:
             progress("save", 1.0)
             return {"files": files, "seed": seed, "steps": steps, "per_image_s": timings}
 
-        return self._retrying("image", "picture" if picture is not None else "text", progress, run)
+        return self._retrying("image", "picture" if picture is not None else "text", progress, run,
+                              (prompt, None, guidance > 0))
 
     # ------------------------------------------------------------------ videos
     def video(self, req: dict[str, Any], progress: Progress) -> dict[str, Any]:
@@ -720,10 +817,15 @@ class Diffusion:
             with Image.open(str(first)) as opened:
                 picture = ImageOps.fit(ImageOps.exif_transpose(opened).convert("RGB"), (width, height))
 
-        def run(pipe: Any) -> dict[str, Any]:
-            common = {"prompt": prompt, "negative_prompt": str(req.get("negative") or VIDEO_NEGATIVE),
-                      "height": height, "width": width, "num_frames": frames, "num_inference_steps": steps,
-                      "guidance_scale": float(req.get("guidance") or 5.0), "generator": self._generator(seed),
+        negative = str(req.get("negative") or VIDEO_NEGATIVE)
+        guidance = float(req.get("guidance") or 5.0)
+
+        def run(pipe: Any, embeds: dict[str, Any] | None) -> dict[str, Any]:
+            text: dict[str, Any] = {"prompt": prompt, "negative_prompt": negative}
+            if embeds is not None:                         # seq8: the description was read already
+                text = {"prompt": None, "negative_prompt": None, **embeds}
+            common = {**text, "height": height, "width": width, "num_frames": frames, "num_inference_steps": steps,
+                      "guidance_scale": guidance, "generator": self._generator(seed),
                       "callback_on_step_end": self._stepper(progress, steps, 0.0, 0.95), "output_type": "np"}
             began = time.perf_counter()
             video = (pipe(image=picture, **common) if picture is not None else pipe(**common)).frames[0]
@@ -734,7 +836,8 @@ class Diffusion:
                                "seconds": round(frames / fps, 3)}],
                     "seed": seed, "steps": steps, "generate_s": round(made_s, 3)}
 
-        return self._retrying("video", "picture" if picture is not None else "text", progress, run)
+        return self._retrying("video", "picture" if picture is not None else "text", progress, run,
+                              (prompt, negative, guidance > 1.0))
 
     # ------------------------------------------------------------------ translation
     def translate(self, text: str) -> str:

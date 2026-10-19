@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     med.add_argument("--only", choices=["image", "video"], help="install (or measure) one kind only")
     med.add_argument("--no-runtime", action="store_true", help="models only: leave the Python environment as it is")
     med.add_argument("--modes", default="auto", help="bench: the modes to measure, comma separated "
-                                                     "(auto, gpu, gpu8, model, model8, group8)")
+                                                     "(auto, gpu, gpu8, seq8, model, model8, group8)")
     med.add_argument("--keep", help="bench: keep what is made in this folder (otherwise it is deleted)")
     med.add_argument("--resolution", choices=["480p", "720p"], default="480p", help="bench: the video's size")
     med.add_argument("--seconds", type=int, choices=range(1, 6), default=3, help="bench: the video's length")

@@ -37,10 +37,12 @@ from jarvis.media.local.engine import (
     LocalMediaError,
 )
 from jarvis.media.local.worker import (
+    ENCODE_ROOM,
     GIB,
     HEADROOM,
     RAM_FLOOR,
     RAM_SPARE,
+    STREAM_RAM,
     MemoryWatch,
     WorkerError,
     choose,
@@ -209,10 +211,19 @@ class TestMemory:
                                    "text_encoder": (40 + 24 + 4, 40 + 4), "vae": (36, 0)}
 
     def test_what_each_mode_needs(self) -> None:
-        ram, vram = needs("image", Z_IMAGE, "gpu8")
-        assert ram == 6_150_000_000 * 2                            # the biggest part, loaded whole, then on the card
         eight = {"transformer": 6_110_000_000 + 80_000_000, "text_encoder": 3_630_000_000 + 780_000_000}
-        assert vram == eight["transformer"] + eight["text_encoder"] + 84_000_000 * 2 + HEADROOM["image"]
+        vae = 84_000_000 * 2
+        # On the card: the weights stream in a tensor at a time (little RAM). The card holds each part whole, in
+        # bf16, beside the ones already made 8-bit, until it shrinks.
+        ram, vram = needs("image", Z_IMAGE, "gpu8")
+        assert ram == STREAM_RAM
+        assert vram == max(eight["transformer"] + 4_020_000_000 * 2,
+                           eight["transformer"] + eight["text_encoder"] + vae + HEADROOM["image"])
+        # seq8: the text encoder alone on the card to read the description; then the rest, in 8 bits.
+        ram, vram = needs("video", WAN, "seq8")
+        assert ram == STREAM_RAM
+        assert vram == max(5_680_000_000 * 2 + ENCODE_ROOM, 5_000_000_000 * 2,
+                           (4_970_000_000 + 60_000_000) + 705_000_000 * 4 + HEADROOM["video"])
         ram, vram = needs("image", Z_IMAGE, "model8")
         # The transformer is made 8-bit before the text encoder loads whole beside it.
         assert ram == eight["transformer"] + 4_020_000_000 * 2
@@ -220,7 +231,7 @@ class TestMemory:
         ram, _ = needs("image", Z_IMAGE, "model")
         assert ram == (6_150_000_000 + 4_020_000_000 + 84_000_000) * 2
         assert needs("video", WAN, "group8")[1] == GIB + HEADROOM["video"]
-        assert needs("video", WAN, "gpu")[1] > needs("video", WAN, "gpu8")[1]
+        assert needs("video", WAN, "gpu")[1] > needs("video", WAN, "gpu8")[1] > needs("video", WAN, "seq8")[1]
 
     def test_the_fastest_mode_that_fits_is_chosen(self) -> None:
         # The PC with nothing else big open (16 GB card, 32 GB of RAM): all of it on the card, in 8 bits.
@@ -229,7 +240,8 @@ class TestMemory:
         assert choose("image", Z_IMAGE, ram_free=60 * GIB, vram_free=11 * GIB) == "model8"
         assert choose("image", Z_IMAGE, ram_free=60 * GIB, vram_free=6 * GIB) == "group8"
         assert choose("image", Z_IMAGE, ram_free=60 * GIB, vram_free=46 * GIB, offload="model") == "model"
-        assert choose("image", Z_IMAGE, ram_free=20 * GIB, vram_free=15 * GIB, floor=2) == "model8"
+        assert choose("image", Z_IMAGE, ram_free=20 * GIB, vram_free=15 * GIB, floor=2) == "seq8"
+        assert choose("image", Z_IMAGE, ram_free=20 * GIB, vram_free=15 * GIB, floor=3) == "model8"
         # What fits on the card is not enough: loading must leave RAM_SPARE free.
         tight = needs("image", Z_IMAGE, "gpu8")[0] + RAM_SPARE
         assert choose("image", Z_IMAGE, ram_free=tight, vram_free=15 * GIB) == "gpu8"
@@ -253,8 +265,11 @@ class TestMemory:
         ram, vram = needs("video", WAN, "model8")
         assert ram == (5_000_000_000 - 30_000_000 + 60_000_000) + 5_680_000_000 * 2
         assert vram == (5_680_000_000 - 2_050_000_000 + 4_100_000_000) + HEADROOM["video"]
-        # The PC with AvodaAssistant closed, as measured: 19.2 GB of RAM and 14.8 GB of the card free.
-        assert choose("video", WAN, ram_free=int(19.2 * GIB), vram_free=int(14.8 * GIB)) == "model8"
+        # The PC with AvodaAssistant closed, as measured: 19.2 GB of RAM and 14.8 GB of the card free. Video reads
+        # the description first and then makes the frames, straight on the card; it would also load with only
+        # the 2.5 GB of streaming RAM plus the spare free (the PC once had 14 GB free and 1.2 GB left to commit).
+        assert choose("video", WAN, ram_free=int(19.2 * GIB), vram_free=int(14.8 * GIB)) == "seq8"
+        assert choose("video", WAN, ram_free=STREAM_RAM + RAM_SPARE, vram_free=int(14.8 * GIB)) == "seq8"
         assert choose("image", Z_IMAGE, ram_free=int(19.2 * GIB), vram_free=int(14.8 * GIB)) == "gpu8"
 
     def test_the_watch_stops_the_worker_when_ram_stays_short(self) -> None:

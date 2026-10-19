@@ -145,7 +145,7 @@ saved as a named snapshot ("before") to compare with later.
 ## What only the PC can check
 
 The image and video models themselves (about 70 GB, a 16 GB graphics card): `jarvis media status`, then
-`jarvis media bench` (or `--modes gpu8,model8 --keep <folder>` to compare modes picture by picture) measures the
+`jarvis media bench` (or `--modes gpu8,seq8 --keep <folder>` to compare modes picture by picture) measures the
 load, the first and second image and a 3-second video, with the peak graphics memory and RAM, after printing what
 each mode needs against the memory free at that moment.
 

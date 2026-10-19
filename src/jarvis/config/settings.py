@@ -334,9 +334,10 @@ class MediaSettings(_Section):
     # Where the local models and their runtime live ("" = <cache>/models/media; `jarvis media install --dir`).
     models_dir: str = ""
     # The hungriest way a model may run; "auto" picks the fastest that fits the RAM and graphics memory free when it
-    # loads. "gpu" all of it on the card; "model" each part on the card only while it works, the rest in RAM; "group8"
-    # layers streamed in. An "8" keeps the big parts in 8 bits: half the memory, for a little detail.
-    offload: Literal["auto", "gpu", "gpu8", "model", "model8", "group8"] = "auto"
+    # loads. "gpu" all of it on the card; "seq8" the text encoder on the card only to read the description, then the
+    # rest; "model" each part on the card only while it works, the rest in RAM; "group8" layers streamed in. An "8"
+    # keeps the big parts in 8 bits: half the memory, for a little detail.
+    offload: Literal["auto", "gpu", "gpu8", "seq8", "model", "model8", "group8"] = "auto"
     translate: bool = True              # a Hebrew description is translated to English on this computer first
     image_steps: int = 9                # Z-Image-Turbo is made for 8 steps (9 in diffusers' count)
     video_steps: int = 30
