@@ -1,1 +1,486 @@
-/* The "apps" area. */
+/* The "apps" area: what is possible here, the installed apps and open windows, one look at the screen,
+   the task box and the suggested step. Shared pieces (the job card, "not available") are in work.css. */
+
+/* ------------------------------------------------------------------ layout */
+.apps__cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, 400px);
+  gap: var(--s4);
+  align-items: start;
+  min-height: 0;
+}
+
+@media (max-width: 1180px) {
+  .apps__cols {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.apps__main,
+.apps__side {
+  min-width: 0;
+}
+
+.apps-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: rgba(var(--accent-rgb), 0.06);
+  color: var(--text-1);
+  font-size: 13px;
+}
+
+.apps-note > svg {
+  flex: none;
+  color: rgb(var(--tone-ok));
+}
+
+.apps-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  color: var(--text-2);
+}
+
+.apps-panel {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+}
+
+.apps-empty-line {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-3);
+}
+
+/* ------------------------------------------------------------------ a button and why it is disabled */
+.apps-gated {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.apps-why {
+  display: inline-flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: rgb(var(--tone-warn));
+}
+
+.apps-why > svg {
+  flex: none;
+  margin-top: 2px;
+}
+
+.apps-warn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-size: 12px;
+  color: rgb(var(--tone-warn));
+}
+
+.apps-turnon {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin-top: 2px;
+}
+
+.apps-live {
+  display: grid;
+  gap: 6px;
+}
+
+/* ------------------------------------------------------------------ the ways panel */
+.apps-ways {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.apps-ways__list,
+.apps-stop,
+.apps-limits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.apps-way {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 10px;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: var(--surface-0);
+}
+
+.apps-way[data-available='false'] {
+  border-style: dashed;
+}
+
+.apps-way__icon {
+  display: inline-grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  background: rgba(var(--accent-rgb), 0.1);
+  color: var(--text-1);
+}
+
+.apps-way[data-available='false'] .apps-way__icon {
+  background: rgba(var(--tone-warn), 0.1);
+  color: rgb(var(--tone-warn));
+}
+
+.apps-way__body {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.apps-way__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--text-0);
+}
+
+.apps-way__detail {
+  color: var(--text-2);
+}
+
+.apps-way__why {
+  color: rgb(var(--tone-warn));
+}
+
+.apps-way__needs {
+  margin: 0;
+  padding-inline-start: 16px;
+  color: var(--text-1);
+}
+
+.apps-stop li {
+  display: grid;
+  grid-template-columns: auto auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-2);
+}
+
+.apps-stop li > svg {
+  align-self: center;
+  color: rgb(var(--tone-danger));
+}
+
+.apps-stop strong {
+  color: var(--text-0);
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.apps-limits li {
+  position: relative;
+  padding-inline-start: 14px;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-2);
+}
+
+.apps-limits li::before {
+  content: '';
+  position: absolute;
+  inset-inline-start: 2px;
+  top: 7px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+/* ------------------------------------------------------------------ the lists */
+.apps-lists {
+  display: grid;
+  gap: 8px;
+}
+
+.apps-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  max-height: 360px;
+  overflow: auto;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+}
+
+.apps-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--line);
+  min-width: 0;
+}
+
+.apps-row:last-child {
+  border-bottom: 0;
+}
+
+.apps-row:hover {
+  background: rgba(var(--accent-rgb), 0.04);
+}
+
+.apps-row[data-chosen='true'] {
+  background: rgba(var(--accent-rgb), 0.1);
+}
+
+.apps-row__main {
+  display: grid;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.apps-row__name {
+  font-size: 13px;
+  color: var(--text-0);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.apps-row__sub {
+  font-size: 11px;
+  color: var(--text-3);
+  font-family: var(--font-mono);
+}
+
+.apps-row__note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: rgb(var(--tone-warn));
+}
+
+.apps-row__actions {
+  display: inline-flex;
+  flex: none;
+  gap: 4px;
+}
+
+.apps-more {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+}
+
+/* ------------------------------------------------------------------ what do you see */
+.apps-target {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.apps-target__default {
+  color: var(--text-1);
+}
+
+.apps-target__chip {
+  max-width: 100%;
+}
+
+.apps-target__clear {
+  display: inline-grid;
+  place-items: center;
+  margin-inline-start: 2px;
+  padding: 1px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+.apps-target__clear:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.apps-look__how {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.apps-look__how > svg {
+  flex: none;
+  margin-top: 1px;
+  color: rgb(var(--tone-ok));
+}
+
+.apps-seen {
+  display: grid;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line-2);
+  background: var(--surface-0);
+}
+
+.apps-seen__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.apps-seen__control {
+  margin-inline-start: 6px;
+}
+
+.apps-seen__desc p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--text-0);
+  white-space: pre-wrap;
+}
+
+.apps-correct {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.apps-correct__text {
+  min-height: 64px;
+}
+
+.apps-correct__list ul,
+.apps-done ol,
+.apps-reasons ul {
+  margin: 4px 0 0;
+  padding-inline-start: 18px;
+  display: grid;
+  gap: 2px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+/* ------------------------------------------------------------------ the task and the suggested step */
+.apps-goal {
+  min-height: 72px;
+}
+
+.apps-suggestion {
+  display: grid;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line-2);
+  background: var(--surface-1);
+  box-shadow: var(--glow-sm);
+}
+
+.apps-suggestion[data-risk='high'],
+.apps-suggestion[data-risk='critical'] {
+  border-color: rgba(var(--tone-warn), 0.5);
+}
+
+.apps-suggestion__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.apps-suggestion__words {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--text-0);
+}
+
+.apps-suggestion__answer p {
+  margin: 4px 0 0;
+  font-size: 14px;
+  color: var(--text-0);
+  white-space: pre-wrap;
+}
+
+.apps-suggestion__understood {
+  margin: 0;
+  line-height: 1.45;
+}
+
+.apps-preview {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(var(--tone-warn), 0.45);
+  background: rgba(var(--tone-warn), 0.08);
+  color: var(--text-0);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.apps-preview > svg {
+  flex: none;
+  margin-top: 2px;
+  color: rgb(var(--tone-warn));
+}
+
+.apps-suggestion__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.apps-step-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-1);
+}
+
+.apps-jobs {
+  display: grid;
+  gap: var(--s2);
+}
