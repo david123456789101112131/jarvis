@@ -74,15 +74,18 @@ def collect(task: JarvisTask, *, missing_files: list[str] | None = None) -> Task
     for s in subs:
         who = _agent(s, lang)
         rec = s.result or {}
+        mine: list[str] = []
         if s.status == TaskStatus.COMPLETED and rec.get("partial"):
             for err in rec.get("errors", [])[:3]:
-                issues.append(f"{who}: {err}")
+                mine.append(f"{who}: {err}")
         elif s.status == TaskStatus.FAILED:
-            issues.append(f"{who} — {s.title}: {s.error or t(lang, 'נכשל', 'failed')}")
+            mine.append(f"{who} — {s.title}: {s.error or t(lang, 'נכשל', 'failed')}")
         elif s.status == TaskStatus.SKIPPED:
-            issues.append(f"{who} — {s.title}: {s.error or t(lang, 'דילגתי על השלב', 'skipped')}")
+            mine.append(f"{who} — {s.title}: {s.error or t(lang, 'דילגתי על השלב', 'skipped')}")
         for denied in rec.get("denied", [])[:3]:
-            issues.append(t(lang, f"{who}: לא אושר — {denied}", f"{who}: not approved — {denied}"))
+            if not any(denied in line for line in mine):      # the same "not approved" is said once
+                mine.append(t(lang, f"{who}: לא אושר — {denied}", f"{who}: not approved — {denied}"))
+        issues.extend(mine)
     for path in (missing_files or [])[:10]:
         issues.append(t(lang, f"הקובץ {path} כבר לא קיים", f"The file {path} no longer exists"))
     next_step = None
@@ -142,7 +145,12 @@ def template_outcome(task: JarvisTask, *, missing_files: list[str] | None = None
             mark = _MARK.get(s.status, "…")
             lines.append(f"{mark} {_agent(s, lang)} — {s.title}" + (f": {_one_line(text, 240)}" if text else ""))
     elif done and done[0].result and done[0].result.get("details"):
-        lines.append(str(done[0].result["details"])[:3000])
+        body = str(done[0].result["details"])[:3000].strip()
+        head = (done[0].summary or "").strip()
+        if head and body.startswith(head):     # the report's first lines are the summary already said above
+            body = body[len(head):].strip()
+        if body:
+            lines.append(body)
     if outcome.files_created:
         lines.append(t(lang, "קבצים:", "Files:"))
         lines += [f"  {f}" for f in outcome.files_created[:15]]

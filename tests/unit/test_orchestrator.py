@@ -94,7 +94,8 @@ class Probe:
         assert res.ok, res.error
         run.record(ToolResult.fail("The user did not approve: Run fib.py with Python (timed out)",
                                    denied="confirmation", tool="run_python"))
-        return run.result(status=ResultStatus.PARTIAL, summary="wrote fib.py; did not run it")
+        return run.result(status=ResultStatus.PARTIAL, summary="I wrote fib.py.",
+                          details="I wrote fib.py.\n\nIt is ready to run.")
 
     @skill(description="test: crash (raise) on the first `crashes` attempts of this step")
     async def crashy(self, task: AgentTask, run: RunContext, crashes: int = 1) -> AgentResult:
@@ -490,8 +491,11 @@ class TestRecovery:
         assert o.extras["declined"] == {a.id: 1}                   # not again, and not checked into a retry
         assert [Path(f).name for f in a.files_created] == ["fib.py"]
         assert task.outcome is not None and [Path(f).name for f in task.outcome.files_created] == ["fib.py"]
-        assert any("did not approve: Run fib.py" in i for i in task.outcome.issues)
+        assert [i for i in task.outcome.issues if "did not approve" in i] == [
+            "Development Agent: The user did not approve: Run fib.py with Python (timed out)"]   # said once
         assert any(m.endswith("(partly)") for m in (e.message for e in task.timeline if e.kind == "done"))
+        assert task.outcome.summary.startswith("I wrote fib.py.") and task.outcome.details is not None
+        assert task.outcome.details.startswith("It is ready to run.")          # the summary is not said twice
 
     async def test_steps_built_on_a_declined_action_still_do_not_run(self, o: Orch) -> None:
         plan = plan_of(step("a", "development", "wrote_then_declined"), step("b", "system", after=("a",)),
