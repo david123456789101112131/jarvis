@@ -8,6 +8,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import re
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
@@ -323,6 +324,12 @@ class XaiProvider(OpenAICompatibleProvider):
         return False
 
 
+HEBREW = re.compile(r"[\u0590-\u05FF]")
+# Gemma writing Hebrew slips into English ("סינון ו-sorting", "(Decluttering)", even "סorting"); Claude and Grok don't.
+HEBREW_ONLY = ("When you write in Hebrew, use Hebrew words only: no English word or English gloss in parentheses, and "
+               "never Hebrew and Latin letters in one word. Names of apps, products, files and code stay as they are.")
+
+
 class LocalModelProvider(OpenAICompatibleProvider):
     """A model on this computer: JARVIS's own llama-server (`server`, see `jarvis.ai.local_server`), started for
     the first request; or, with `base_url` set, an OpenAI-compatible server that already runs (e.g. Ollama).
@@ -374,7 +381,16 @@ class LocalModelProvider(OpenAICompatibleProvider):
         if self.server is not None and not self.busy():
             await self.server.stop()
 
+    @staticmethod
+    def in_hebrew(request: CompletionRequest) -> CompletionRequest:
+        """A Hebrew request (its instructions or what the user wrote) also gets the Hebrew-only rule."""
+        said = [request.system, *(m.text for m in request.messages if m.role == "user")]
+        if HEBREW_ONLY in request.system or not any(HEBREW.search(text or "") for text in said):
+            return request
+        return request.model_copy(update={"system": f"{request.system}\n\n{HEBREW_ONLY}".strip()})
+
     async def complete(self, request: CompletionRequest) -> AIResponse:
+        request = self.in_hebrew(request)
         if not self.own:
             return await super().complete(request)
         assert self.server is not None

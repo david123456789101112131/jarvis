@@ -240,6 +240,16 @@ class TestRouting:
         assert local.available() and local.json_mode_for("m") == "json_object"     # type: ignore[attr-defined]
         assert not LocalModelProvider(LocalModelSettings(enabled=False), server=None).available()
 
+    def test_hebrew_requests_are_asked_for_hebrew_only(self) -> None:
+        from jarvis.ai.openai_provider import HEBREW_ONLY
+
+        plan = CompletionRequest(messages=[AIMessage.user("תכנן לי שלושה צעדים לסידור החדר")], system="Plan it.")
+        ruled = LocalModelProvider.in_hebrew(plan)
+        assert ruled.system == f"Plan it.\n\n{HEBREW_ONLY}" and plan.system == "Plan it."
+        assert LocalModelProvider.in_hebrew(ruled).system == ruled.system                 # once
+        english = CompletionRequest(messages=[AIMessage.user("plan my week")], system="Plan it.")
+        assert LocalModelProvider.in_hebrew(english) is english
+
 
 # =========================================================================== the installer
 class TestInstall:
