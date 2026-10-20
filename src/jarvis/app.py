@@ -383,7 +383,7 @@ class JarvisApp:
         from jarvis.voice.service import VoiceService
 
         self.voice = VoiceService(self.settings.voice, self.paths, self.secrets, handler=self._voice_command,
-                                  events=_VoiceEvents(self))
+                                  events=_VoiceEvents(self), paid=self.settings.ai.allow_paid)
         self.core.set_speaker(self._speak_reply)
         await self.voice.start()
 

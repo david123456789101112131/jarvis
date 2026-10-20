@@ -60,7 +60,8 @@ export interface PrivacySenses {
     tts_online: boolean;
   };
   screen: { computer_enabled: boolean; model: 'local' | 'remote' | string; remote_host: string | null };
-  cloud: { only_when_told: boolean; ai: { name: string; configured: boolean }[] };
+  /** paid: paid AI is on (off: nothing goes to a cloud AI); media: where images and videos are made. */
+  cloud: { paid?: boolean; media?: 'local' | 'xai'; only_when_told: boolean; ai: { name: string; configured: boolean }[] };
 }
 
 export interface PrivacyInventory {

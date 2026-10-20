@@ -190,9 +190,15 @@ function Senses({ data }: { data: PrivacyInventory }) {
         <h4 className="privacy-sense__title">
           <Icon name="cloud" size={14} /> {t('privacy.cloud')}
         </h4>
-        <p>{t(cloud.only_when_told ? 'privacy.cloud.told' : 'privacy.cloud.notTold')}</p>
-        <p data-testid="privacy-cloud-keys">{keys.length ? t('privacy.cloud.keys', { names: keys.join(', ') }) : t('privacy.cloud.noKeys')}</p>
-        <p>{t('privacy.cloud.media')}</p>
+        {cloud.paid === false ? (
+          <p data-testid="privacy-cloud-paid-off">{t('privacy.cloud.paidOff')}</p>
+        ) : (
+          <>
+            <p>{t(cloud.only_when_told ? 'privacy.cloud.told' : 'privacy.cloud.notTold')}</p>
+            <p data-testid="privacy-cloud-keys">{keys.length ? t('privacy.cloud.keys', { names: keys.join(', ') }) : t('privacy.cloud.noKeys')}</p>
+          </>
+        )}
+        <p>{t(cloud.media === 'xai' ? 'privacy.cloud.media' : 'privacy.cloud.mediaLocal')}</p>
       </section>
     </Panel>
   );

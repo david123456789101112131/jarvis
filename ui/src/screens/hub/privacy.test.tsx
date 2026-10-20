@@ -140,6 +140,16 @@ describe('the privacy screen', () => {
     expect(view.getByTestId('privacy-cloud-keys').textContent).toBe('No cloud AI key is saved, so nothing goes to one.');
   });
 
+  it('with paid AI off, says nothing goes to a cloud AI and pictures are made here', async () => {
+    const first = inventory();
+    first.senses.cloud = { ...first.senses.cloud, paid: false, media: 'local' };
+    const view = renderWith(<PrivacyScreen />, { request: core(first), lang: 'he' });
+    await view.findByTestId('privacy-senses');
+    expect(view.getByTestId('privacy-cloud-paid-off').textContent).toBe('AI בתשלום כבוי: שום דבר לא נשלח ל-Claude, Grok או OpenAI, גם כשיש מפתח שמור. JARVIS עובד עם המודל החינמי שבמחשב.');
+    expect(view.queryByTestId('privacy-cloud-keys')).toBeNull();
+    expect(view.getByText('תמונות וסרטונים נוצרים במחשב הזה, והתיאור לא נשלח לשום מקום.')).toBeTruthy();
+  });
+
   it('speaks Hebrew', async () => {
     const view = renderWith(<PrivacyScreen />, { request: core(inventory({ chat: 5 })), lang: 'he' });
     await view.findByTestId('privacy-items');

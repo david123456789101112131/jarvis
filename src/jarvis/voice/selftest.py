@@ -93,6 +93,7 @@ async def run_selftest(
     wake: bool = True,
     mic_seconds: float = 1.5,
     progress: Callable[[str], None] | None = None,
+    paid: bool = False,
 ) -> dict[str, Any]:
     """Run every check and return ``{"ok", "checks": [{name, status, detail, seconds, data?}], ...}``.
 
@@ -115,7 +116,7 @@ async def run_selftest(
         else:
             report.add("playback", "skip", "skipped (--no-play)")
         if stt:
-            stt_engine = await report.guard("stt", _check_stt(report, settings, paths, secrets, clips))
+            stt_engine = await report.guard("stt", _check_stt(report, settings, paths, secrets, clips, paid))
         else:
             report.add("stt", "skip", "skipped (--no-stt)")
         if wake:
@@ -293,13 +294,14 @@ async def _check_playback(report: CheckReport, settings: VoiceSettings, clips: d
 
 
 async def _check_stt(
-    report: CheckReport, settings: VoiceSettings, paths: AppPaths, secrets: SecretStore | None, clips: dict[str, AudioClip]
+    report: CheckReport, settings: VoiceSettings, paths: AppPaths, secrets: SecretStore | None, clips: dict[str, AudioClip],
+    paid: bool = False,
 ) -> STTEngine | None:
     from jarvis.voice.audio import SAMPLE_RATE, np_module
     from jarvis.voice.stt import create_stt_engine
 
     np = np_module()
-    engine, reason = create_stt_engine(settings, paths, secrets)
+    engine, reason = create_stt_engine(settings, paths, secrets, paid=paid)
     report.note(f"Speech recognition: {reason} (the model is downloaded on first use; this can take minutes)…")
     started = time.monotonic()
     try:
@@ -471,6 +473,7 @@ def main(argv: list[str] | None = None) -> int:
             stt=not args.no_stt,
             wake=not args.no_wake,
             progress=progress,
+            paid=settings.ai.allow_paid,
         )
     )
     print(json.dumps(report, ensure_ascii=False, indent=2) if args.json else "\n" + format_report(report))

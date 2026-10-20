@@ -191,9 +191,14 @@ class MediaService:
         app.services.extras["media_engine"] = self.engine
 
     @property
+    def engine_name(self) -> str:
+        """The engine in use: the one in `media.engine`, but always "local" while paid AI is off."""
+        return self.app.settings.media.engine if self.app.settings.ai.allow_paid else "local"
+
+    @property
     def local(self) -> bool:
         """Images and videos are made on this computer (the default), not by xAI."""
-        return self.app.settings.media.engine == "local"
+        return self.engine_name == "local"
 
     # ------------------------------------------------------------------ status
     def _lang(self, lang: str | None) -> str:
@@ -296,14 +301,13 @@ class MediaService:
                                 code="unavailable")
 
     def _default_model(self, kind: str) -> str:
-        engine = self.app.settings.media.engine
+        engine = self.engine_name
         return (catalog.image_models(engine) if kind == "image" else catalog.video_models(engine))[0].id
 
     def _engine_of(self, model: str, kind: str, lang: str) -> None:
         """A model of the engine in use: Grok's are refused while images and videos are made on this computer."""
         info = catalog.image_model(model) if kind == "image" else catalog.video_model(model)
-        engine = self.app.settings.media.engine
-        if info.engine != engine:
+        if info.engine != self.engine_name:
             raise MediaRequestError(400, t(lang, "Grok כבוי: תמונות וסרטונים נוצרים במחשב שלך, בחינם." if self.local
                                            else "המודל הזה הוא של המחשב, והמנוע שנבחר בהגדרות הוא Grok.",
                                            "Grok is off: images and videos are made on this computer, for free."

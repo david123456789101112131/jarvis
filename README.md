@@ -12,9 +12,11 @@ command center.
 **מה צריך:** Windows 10 או 11 (64 ביט), אינטרנט בזמן ההתקנה, ובערך 3GB פנויים בדיסק (כולל מודלי הדיבור).
 שיחה חופשית, תכנון וחמשת הסוכנים עובדים בחינם על המחשב עצמו, עם Gemma 4 של Google בכרטיס הגרפי:
 `jarvis chat install` (כ־7GB; כרטיס NVIDIA עם 12GB ומעלה). שום דבר לא יוצא מהמחשב. בלי מודל מקומי ובלי
-מפתח, פקודות, פרויקטים ותוכניות עדיין עובדים. AI בענן (Grok, Claude) עולה כסף על כל בקשה, ולכן JARVIS
-משתמש בו רק כשאומרים לו: "תשתמש בגרוק" בתוך הבקשה (למשל "תשתמש בגרוק ותכתוב לי שיר"), או "כן" כשהוא שואל
-"להשתמש ב-Grok?". אחרי זה Grok נשאר בשיחה עד שקט של שתי דקות, ו"בלי גרוק" מפסיק אותו.
+מפתח, פקודות, פרויקטים ותוכניות עדיין עובדים. AI בתשלום (Grok, Claude, ChatGPT) **כבוי** כברירת מחדל: JARVIS
+לא פונה אליו בכלל, גם כשיש מפתח שמור, וגם תמונות, סרטונים וזיהוי דיבור נעשים במחשב. אפשר להדליק אותו
+ב**הגדרות ← ספקי AI ← AI בתשלום**; אז JARVIS משתמש בו רק כשאומרים לו: "תשתמש בגרוק" בתוך הבקשה (למשל
+"תשתמש בגרוק ותכתוב לי שיר"), או "כן" כשהוא שואל "להשתמש ב-Grok?". אחרי זה Grok נשאר בשיחה עד שקט של שתי
+דקות, ו"בלי גרוק" מפסיק אותו.
 
 ### התקנה מתיקיית הקוד
 
@@ -27,7 +29,7 @@ command center.
    (`jarvis check`); ומציע קיצור דרך בשולחן העבודה. אפשר להריץ אותו שוב בכל זמן, הוא משלים רק את מה שחסר.
 2. להפעיל: לחיצה כפולה על `run.bat` או על קיצור הדרך. מאותו רגע JARVIS עולה לבד ברקע בכל כניסה ל-Windows
    ומאזין ל-"Hey Jarvis" (כיבוי: **הגדרות ← כללי ← הפעלה עם Windows**).
-3. מפתח AI (רשות): במסך **הגדרות ← מפתחות API**, או בשורת הפקודה מתוך התיקייה:
+3. מפתח AI בתשלום (רשות, ומשמש רק כש-AI בתשלום דלוק): במסך **הגדרות ← מפתחות API**, או בשורת הפקודה מתוך התיקייה:
    `jarvis keys set XAI_API_KEY` (Grok) או `jarvis keys set ANTHROPIC_API_KEY` (Claude). המפתח נשמר במנהל
    האישורים של Windows ואינו מוצג שוב, לא בממשק ולא ביומנים. באיזה ספק כל סוכן עובד בוחרים ב**הגדרות ← ספקי AI**.
 
@@ -96,7 +98,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
    הגישה היא לקריאה בלבד, ורק לתיקייה הזו.
 2. **מה צריך?** כותבים בקשה חופשית ("להוסיף מתג למצב כהה"), או מדביקים שגיאה. JARVIS מסמן את הקבצים
    הרלוונטיים, ואפשר להוסיף או להוריד קבצים.
-3. **לתכנן עם Grok / Claude / מודל מקומי** (לפי מה שמחובר), במצב **מהיר**, **חזק** או **אוטומטי**. לפני
+3. **לתכנן עם המודל המקומי** (או Grok / Claude, רק כש-AI בתשלום דלוק), במצב **מהיר**, **חזק** או **אוטומטי**. לפני
    השליחה מוצג בדיוק מה יישלח, לאן, ומחיר משוער; ערכים שנראים כמו סיסמאות או מפתחות מוסתרים לפני השליחה,
    ושום דבר לא נשלח בלי אישור.
 4. מתקבלים **תוכנית קצרה, הנחות ושינויים** כ-diff לכל קובץ. אפשר לערוך קובץ ביד, להוציא קובץ מהשינוי,
@@ -118,7 +120,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 - בלי המודלים, המסך אומר מה חסר ומציע רק **הדגמה**: היא מסומנת בבירור ולא יוצרת תמונה אמיתית.
 - תצוגה מקדימה לפני שמירה, וריאציות ותיקונים במילים ("שהשמיים יהיו כתומים"), ו**שמירה** למקום שבוחרים, עם
   שם קובץ והפורמט האמיתי של הקובץ. הדגמה אי אפשר לשמור.
-- Grok Imagine של xAI (בתשלום) נשאר רק כבחירה מפורשת בהגדרות (`media.engine = "xai"`); כברירת מחדל הוא כבוי.
+- Grok Imagine של xAI (בתשלום) נשאר רק כבחירה מפורשת בהגדרות (`media.engine = "xai"`), ורק כש-AI בתשלום דלוק;
+  כברירת מחדל הוא כבוי.
 
 ### יצירת וידאו
 
@@ -147,7 +150,7 @@ powershell -ExecutionPolicy Bypass -File scripts\build.ps1
 - **פרטיות ונתונים**: מה JARVIS שומר, כמה ואיפה (בלי התוכן עצמו), ומחיקה לצמיתות של כל סוג בנפרד או של הכול,
   בלחיצה שנייה לאישור. עבודה שעדיין רצה נשארת. המסך גם מסביר מה מגיע למיקרופון, למסך ולאינטרנט: המיקרופון
   פתוח רק לזיהוי מילת ההפעלה במחשב (הצליל נזרק), והקלטת פקודה מתחילה רק אחרי מילת ההפעלה, Ctrl או כפתור
-  המיקרופון; צילום מסך רק בלחיצה; AI בענן רק כשאומרים לו. מפתחות API, הגדרות, קבצי העבודה והמודלים לא נמחקים
+  המיקרופון; צילום מסך רק בלחיצה; AI בתשלום כבוי (וכשהוא דלוק, רק כשאומרים לו). מפתחות API, הגדרות, קבצי העבודה והמודלים לא נמחקים
   מכאן.
 
 ## שליטה במחשב (עכבר ומקלדת)
@@ -271,8 +274,10 @@ Options: `--no-voice`, `--port N` (default 8765, the next free port if busy), `-
 - AI providers: Anthropic Claude (default model `claude-opus-5-5`, with Anthropic's server-side fallbacks on),
   xAI Grok (`grok-4.7`), OpenAI, or the local model. The five agents ask the
   provider set for them in `ai.agent_providers` first (Grok by default) and fall back to JARVIS's order,
-  Anthropic → xAI → OpenAI → local, which JARVIS's own calls use. With `ai.cloud_only_when_told` (on by default)
-  a cloud provider is used only when the user names it in the request ("use Grok ...", "תשתמש בגרוק ...") or says
+  Anthropic → xAI → OpenAI → local, which JARVIS's own calls use. With `ai.allow_paid` off (the default) none
+  of Anthropic, xAI and OpenAI is ever called, whatever keys are saved: chat, the agents, planning, dev mode,
+  images, videos and speech recognition all run on this computer, and naming a paid AI gets "paid AI is off".
+  With it on and `ai.cloud_only_when_told` (on by default) a cloud provider is used only when the user names it in the request ("use Grok ...", "תשתמש בגרוק ...") or says
   yes when JARVIS asks; the choice lasts for that conversation and goes with the tasks it starts. A local model
   needs no word. API keys: `ANTHROPIC_API_KEY`, `XAI_API_KEY`,
   `OPENAI_API_KEY`; optional `BRAVE_API_KEY` or `TAVILY_API_KEY` (web search), `PICOVOICE_ACCESS_KEY`

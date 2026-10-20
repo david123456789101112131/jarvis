@@ -89,6 +89,7 @@ async def dev(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[
     (static / "index.html").write_text("<!doctype html><title>JARVIS</title>", encoding="utf-8")
     monkeypatch.setattr(api_module, "STATIC_DIR", static)
     settings = Settings()
+    settings.ai.allow_paid = True
     grok = FakeGrok()
     app = JarvisApp(settings, host=FakeHost(), router=ProviderRouter(settings.ai, [grok]), voice=False,
                     use_keyring=False, port=0)
@@ -228,6 +229,20 @@ class TestCodeScreen:
             "dev_propose", {"path": str(root), "session_id": session["id"], "request": "x" * 10,
                             "files": ["shop/cart.py"]}, agent_id="development", task_id=session["id"], lang="en")
         assert not result.ok and "only when you ask" in (result.error or "")
+        assert grok.requests == [] and live.app.broker.pending() == []
+
+    async def test_with_paid_ai_off_grok_is_not_offered_and_nothing_reaches_it(self, dev: tuple[Live, FakeGrok],
+                                                                              tmp_path: Path) -> None:
+        live, grok = dev
+        live.app.settings.ai.allow_paid = False
+        status = await live.get("/api/dev/status")
+        assert status["engines"] == [] and "jarvis chat install" in status["needs"][0]["en"]
+        assert "Grok" not in status["needs"][0]["en"]
+        session = await open_project(live, project(tmp_path / "shop"))
+        grok.push(answer(proposal()))
+        r = await live.http.post(f"/api/dev/sessions/{session['id']}/propose",
+                                 json={"request": "לתקן את הסכום", "engine": "xai", "lang": "he"})
+        assert r.status_code >= 400 and "jarvis chat install" in r.json()["error"]["message"]
         assert grok.requests == [] and live.app.broker.pending() == []
 
     async def test_an_edit_after_review_needs_a_new_approval(self, dev: tuple[Live, FakeGrok], tmp_path: Path) -> None:

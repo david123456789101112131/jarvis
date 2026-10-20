@@ -306,6 +306,7 @@ def mkit(kit: Any) -> Any:
 
     kit.registry.register(CreateImageTool())
     kit.registry.register(CreateVideoTool())
+    kit.services.settings.ai.allow_paid = True
     kit.services.secrets = SecretStore(None, redactor=kit.redactor, use_keyring=False, environ={"XAI_API_KEY": FAKE_KEY})
     kit.out = kit.paths.workspace / "media" / "job_test"
     return kit
@@ -323,6 +324,15 @@ def images_answer(*pictures: bytes, ticks: int = 200_000_000) -> Handler:
 
 
 class TestTools:
+    async def test_with_paid_ai_off_nothing_goes_to_xai(self, mkit: Any) -> None:
+        mkit.services.settings.ai.allow_paid = False
+        seen = use_xai(mkit.services, images_answer())
+        for tool, params in (("create_image", {"prompt": "a fox"}), ("create_video", {"prompt": "a fox"})):
+            result = await mkit.executor.execute(tool, {**params, "out_dir": str(mkit.out)}, agent_id="creative",
+                                                 task_id="t1", lang="he")
+            assert not result.ok and "AI בתשלום כבוי" in (result.error or ""), result.error
+        assert not seen and not mkit.out.exists()
+
     async def test_a_description_alone_runs_without_asking_and_lands_in_the_media_folder(self, mkit: Any) -> None:
         seen = use_xai(mkit.services, images_answer(png(3, 2)))
         result = await mkit.executor.execute("create_image", {"prompt": "a fox", "out_dir": str(mkit.out), "name": "fox"},
@@ -448,6 +458,7 @@ async def app(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(catalog, "VIDEO_POLL_S", 0.01)
     settings = Settings()
     settings.media.engine = "xai"                       # these tests are about Grok Imagine (local: test_local_media)
+    settings.ai.allow_paid = True
     jarvis = JarvisApp(settings, host=FakeHost(), router=ProviderRouter(settings.ai, []), voice=False, use_keyring=False,
                        serve=False)
     await jarvis.start()

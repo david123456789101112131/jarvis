@@ -33,6 +33,7 @@ def setup(monkeypatch: pytest.MonkeyPatch) -> tuple[Settings, object]:
 async def test_every_area_is_reported_and_keys_are_named_never_shown(setup, monkeypatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", SECRET)
     settings, paths = setup
+    settings.ai.allow_paid = True
     notes: list[str] = []
     report = await run_checks(settings, paths, progress=notes.append)
     assert [c["name"] for c in report["checks"]] == NAMES
@@ -44,6 +45,10 @@ async def test_every_area_is_reported_and_keys_are_named_never_shown(setup, monk
     text = json.dumps(report, ensure_ascii=False) + format_report(report)
     assert SECRET not in text and SECRET[-12:] not in text
     assert not list(Path(paths.workspace).glob(".jarvis-check-*"))           # probes cleaned up
+    settings.ai.allow_paid = False                                           # the default: the key is not used
+    ai = next(c for c in (await run_checks(settings, paths))["checks"] if c["name"] == "ai")
+    assert ai["status"] == "warn" and ai["data"]["paid"] is False and not ai["data"]["anthropic"]
+    assert "Paid AI (Grok, Claude, ChatGPT) is off" in ai["data"]["hints"][0]
 
 
 async def test_computer_control_line(setup, monkeypatch, tmp_path) -> None:
@@ -89,6 +94,8 @@ async def test_media_line(setup, tmp_path) -> None:
     assert ready["status"] == "ok" and "for free" in ready["detail"] and "without the Hebrew translator" in ready["detail"]
     assert "GB of RAM free now" in ready["detail"]
     settings.media.engine = "xai"
+    assert "for free" in line(await run_checks(settings, paths))["detail"]    # paid AI off: on this computer anyway
+    settings.ai.allow_paid = True
     assert "Grok Imagine (paid" in line(await run_checks(settings, paths))["detail"]
 
 

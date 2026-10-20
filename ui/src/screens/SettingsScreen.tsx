@@ -325,6 +325,7 @@ function ProvidersSection({ settings, onSaved }: { settings: SettingsObject; onS
   const providers = useAppState((s) => s.providers);
   const fields = useMemo<FieldDef[]>(
     () => [
+      { kind: 'toggle', path: 'ai.allow_paid', label: 'settings.allowPaid', hint: 'settings.allowPaidHint', risky: (v) => v },
       { kind: 'toggle', path: 'ai.cloud_only_when_told', label: 'settings.cloudWhenTold', hint: 'settings.cloudWhenToldHint' },
       {
         kind: 'select',

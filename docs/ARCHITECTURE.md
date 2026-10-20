@@ -85,7 +85,7 @@ Rules:
 | `voice/` | Audio I/O, wake word engines, VAD/endpointing, STT engines, TTS engines with phrase cache, `VoicePipeline`, `VoiceService`. |
 | `computer/` | Computer control: a local vision model (Holo3.1, via llama.cpp) proposes actions; the backend (Win32 screen/input), the safety policy (judged from what Windows reports under the pointer), the look→think→act session, the model server, and `jarvis computer install`. Behind `use_computer`/`computer_act` in the tool layer. |
 | `devmode/` | The code screen: a project the user picked (read access to that folder only), its inspection without AI, which files a request is about, the AI proposal (plan, assumptions, search/replace edits, secret-looking values hidden first), review, apply and undo with byte-exact restore, and the project's own test run. |
-| `media/` | Image and video creation with xAI Grok Imagine (client, catalog with prices, previews store, save), and the marked demonstration used when xAI is not connected. |
+| `media/` | Image and video creation on this computer (`local/`: Z-Image-Turbo and Wan 2.2 in a worker process, its installer and bench), or with xAI Grok Imagine when paid AI is on (client, catalog with prices); the previews store, save, and the marked demonstration used when no engine is ready. |
 | `integrations/` | The apps screen: installed apps and open windows, one look at the screen with the computer-control model, one suggested step, a step done on approval. |
 | `jobs.py` | `JobManager`: the work screens' actions as jobs with steps, progress, what is sent and its cost, stop, retry, a deduplicated repeat, and a history file. |
 | `metrics.py` | Measured durations (median, p90) behind the speed report, with named snapshots ("before"). |

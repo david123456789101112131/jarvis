@@ -351,7 +351,7 @@ class TestXai:
 def router_with(*providers: ScriptedProvider, **settings: Any) -> ProviderRouter:
     for p in providers:
         assert p.name in ("anthropic", "xai", "openai", "local")
-    return ProviderRouter(AISettings(**{"cloud_only_when_told": False, **settings}), list(providers))
+    return ProviderRouter(AISettings(**{"allow_paid": True, "cloud_only_when_told": False, **settings}), list(providers))
 
 
 class TestRouter:
@@ -374,7 +374,7 @@ class TestRouter:
     async def test_role_preference_and_none(self) -> None:
         a = ScriptedProvider([], name="anthropic")
         o = ScriptedProvider([reply("x")], name="openai")
-        settings = AISettings(cloud_only_when_told=False)
+        settings = AISettings(allow_paid=True, cloud_only_when_told=False)
         settings.roles["planner"].provider = "openai"
         router = ProviderRouter(settings, [a, o])
         assert router.chain("planner")[0].name == "openai"
@@ -395,7 +395,7 @@ class TestRouter:
     def test_status_reports_fallbacks(self) -> None:
         router = ProviderRouter.from_settings(AISettings(), None)
         assert [p.name for p in router.providers.values()] == ["anthropic", "xai", "openai", "local"]
-        assert router.status() == {"active": None, "when_told": None, "anthropic": False, "xai": False,
+        assert router.status() == {"active": None, "when_told": None, "paid": False, "anthropic": False, "xai": False,
                                    "openai": False, "local": False,
                                    "fallbacks": False, "agents": dict.fromkeys(
                                        ("research", "system", "development", "creative", "planner"))}
@@ -545,6 +545,40 @@ class TestCloudOnlyWhenTold:
         assert router.has("xai") and not router.has("anthropic")
         router.settings.cloud_only_when_told = False                     # the old rule: whoever has a key
         assert router.status()["active"] == "xai" and router.status()["when_told"] is None
+
+    async def test_paid_ai_off_never_calls_a_cloud_ai(self) -> None:
+        claude, xai, local = self.providers()
+        assert AISettings().allow_paid is False
+        router = router_with(claude, xai, local, allow_paid=False)
+        assert [p.name for p in router.chain("chat")] == ["local"] and router.asks_first("chat") is None
+        with allow_provider("xai"), agent_scope("research"):              # "תשתמש בגרוק", the agent's own Grok
+            assert [p.name for p in router.chain("agent")] == ["local"]
+            assert (await router.ask("agent", "hi")) == "local"
+        assert router.paid_off("xai") and not router.paid_off("local")
+        assert not router.has("xai") and not router.has("anthropic") and router.has("local")
+        status = router.status()
+        assert status["paid"] is False and not status["xai"] and status["active"] == "local"
+        assert set(status["agents"].values()) == {"local"}
+        assert router.agent_info("research")["when_told"] is False
+        local.is_available = False
+        assert router.asks_first("chat") is None and router.asks_first("agent", "research") is None
+        with pytest.raises(ProviderUnavailable) as info:
+            await router.ask("chat", "hi")
+        assert info.value.details == {"code": "no_ai"}
+        assert info.value.message.startswith("No AI can answer: paid AI (Grok, Claude, ChatGPT) is off")
+        assert not claude.requests and not xai.requests
+
+    async def test_without_the_free_model_it_says_how_to_get_it(self) -> None:
+        router = ProviderRouter.from_settings(AISettings(), None)
+        with pytest.raises(ProviderUnavailable) as info:
+            await router.ask("chat", "hi")
+        assert info.value.message == ("No AI can answer: paid AI (Grok, Claude, ChatGPT) is off, and the free model "
+                                      "on this computer is not set up (run: jarvis chat install).")
+        router.settings.local.enabled = False
+        assert router.no_provider_text().endswith("the free model on this computer is switched off in Settings.")
+        router.settings.allow_paid = True
+        assert router.no_provider_text().startswith("No AI provider is configured")
+        await router.aclose()
 
     async def test_the_allowance_follows_tasks_started_inside_it(self) -> None:
         claude, xai, local = self.providers()

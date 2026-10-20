@@ -504,6 +504,7 @@ export function seedSettings(ui: UISettings, lang: Lang): SettingsObject {
     ui: { ...ui, window_width: 1480, window_height: 920 },
     ai: {
       provider: 'auto',
+      allow_paid: true,
       cloud_only_when_told: true,
       agent_providers: { research: 'xai', system: 'xai', development: 'xai', creative: 'xai', planner: 'xai' },
       anthropic: { model: 'claude-opus-5-5', fallbacks: true },

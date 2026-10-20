@@ -272,9 +272,10 @@ async def _ai(report: CheckReport, settings: Settings, paths: AppPaths, secrets:
     else:
         report.add("ai", "warn", "no AI model: commands, projects and plans work; open conversation and "
                    "AI-written code do not",
-                   hints=["Install the free model that runs on this computer: `jarvis chat install` (about "
-                          "7 GB). A paid one (Grok, Claude) is used only when you ask for it, with its key in "
-                          "Settings > API keys."], **st)
+                   hints=["Install the free model that runs on this computer: `jarvis chat install` (about 7 GB). "
+                          + ("A paid one (Grok, Claude) is used only when you ask for it, with its key in Settings > "
+                             "API keys." if settings.ai.allow_paid else
+                             "Paid AI (Grok, Claude, ChatGPT) is off, so a saved key is not used.")], **st)
 
 
 async def _tools(report: CheckReport) -> None:
@@ -390,7 +391,7 @@ async def _media(report: CheckReport, settings: Settings, paths: AppPaths) -> No
     from jarvis.media.local.worker import memory
 
     s = settings.media
-    if s.engine != "local":
+    if s.engine != "local" and settings.ai.allow_paid:
         report.add("media", "ok", "images and videos are made by Grok Imagine (paid, chosen in the settings)")
         return
     root = Path(s.models_dir) if s.models_dir else paths.models / "media"

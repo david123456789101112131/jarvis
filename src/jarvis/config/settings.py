@@ -121,15 +121,19 @@ PROVIDER_NAMES = ("anthropic", "xai", "openai", "local")
 
 
 def _default_agent_providers() -> dict[str, str]:
-    # The five agents work with Grok when an xAI key is set (and, with `cloud_only_when_told`, the user said
-    # so); without one (or when Grok fails) they fall back to the usual order, Claude first.
+    # With paid AI on, the five agents work with Grok when an xAI key is set (and, with `cloud_only_when_told`, the
+    # user said so); without one (or when Grok fails) they fall back to the usual order, Claude first.
     return {a.value: "xai" for a in AgentId}
 
 
 class AISettings(_Section):
     provider: Literal["auto", "anthropic", "xai", "openai", "local", "none"] = "auto"
-    # Grok, Claude and OpenAI cost money per request: use one only when the user says so, by naming it in the
-    # request ("תשתמש בגרוק ...") or with a yes when JARVIS asks. A local model needs no word.
+    # Grok, Claude and OpenAI cost money per request. Off (the default): JARVIS never calls them, not even with a
+    # key saved or when the user names one; it talks, plans and works with the free model on this computer, and
+    # makes pictures, videos and speech recognition on it too.
+    allow_paid: bool = False
+    # With paid AI on: use one only when the user says so, by naming it in the request ("תשתמש בגרוק ...") or with
+    # a yes when JARVIS asks. A local model needs no word.
     cloud_only_when_told: bool = True
     roles: dict[str, AIRoleSettings] = Field(default_factory=_default_roles)
     # Preferred provider for everything an agent asks a model while it works ("auto" = the role's order).

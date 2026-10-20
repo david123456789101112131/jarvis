@@ -635,12 +635,16 @@ class BaseAgent:
                 next_step=t(task.language, f"לבקש שוב ולהוסיף \"תשתמש {say}\".", f"Ask again and add \"use {name}\"."),
                 data={"code": "ai_needs_ok", "provider": told},
             )
+        paid = router is not None and router.settings.allow_paid
         return AgentResult.failed(
             t(task.language,
-              f"{self.name_he} צריך מודל AI כדי לבצע את זה ואין כרגע ספק AI מוגדר.",
-              f"{self.name} needs an AI model for this and no AI provider is configured."),
-            next_step=t(task.language, "להוסיף בהגדרות מפתח API של xAI (Grok), Anthropic או OpenAI, או להפעיל מודל מקומי.",
-                        "Add an xAI (Grok), Anthropic or OpenAI API key in Settings, or enable a local model."),
+              f"{self.name_he} צריך מודל AI כדי לבצע את זה, והמודל החינמי שבמחשב עוד לא מוכן.",
+              f"{self.name} needs an AI model for this, and the free model on this computer is not ready."),
+            next_step=t(task.language,
+                        "להתקין את המודל החינמי: jarvis chat install" + (", או להוסיף בהגדרות מפתח API של xAI (Grok), "
+                                                                           "Anthropic או OpenAI." if paid else "."),
+                        "Install the free model: jarvis chat install" + (", or add an xAI (Grok), Anthropic or OpenAI "
+                                                                          "API key in Settings." if paid else ".")),
             data={"code": "ai_required"},
         )
 

@@ -217,6 +217,8 @@ class PrivacyService:
                 "remote_host": (urlparse(remote).hostname or remote) if remote else None,
             },
             "cloud": {
+                "paid": s.ai.allow_paid,
+                "media": s.media.engine if s.ai.allow_paid else "local",
                 "only_when_told": s.ai.cloud_only_when_told,
                 "ai": [{"name": label, "configured": bool(status.get(key, {}).get("configured"))}
                        for key, label in _AI_KEYS.items()],

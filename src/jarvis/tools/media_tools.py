@@ -57,6 +57,14 @@ def xai_client(services: ToolServices) -> XaiMedia:
     return XaiMedia(key, services.http, redact=services.redactor.redact_text)
 
 
+def _check_paid(ctx: ToolContext) -> None:
+    """Grok Imagine costs money: refused while paid AI is off (`ai.allow_paid`)."""
+    if not ctx.services.settings.ai.allow_paid:
+        raise PermissionDenied(ctx.t("AI בתשלום כבוי: תמונות וסרטונים נוצרים במחשב, בחינם.",
+                                     "Paid AI is off: images and videos are made on this computer, for free."),
+                               details={"code": "paid_off"})
+
+
 def _size(n: int) -> str:
     return f"{n / 1_000_000:.1f} MB" if n >= 100_000 else f"{max(1, round(n / 1000))} KB"
 
@@ -189,6 +197,7 @@ class CreateImageTool(Tool):
     timeout_s = IMAGE_TIMEOUT_S + 120.0
 
     async def plan(self, params: CreateImageParams, ctx: ToolContext) -> ActionPlan:
+        _check_paid(ctx)
         check_network(ctx, BASE_URL)
         out = _out_dir(ctx, params.out_dir)
         inputs = await _inputs(ctx, [params.source] if params.source else [])
@@ -298,6 +307,7 @@ class CreateVideoTool(Tool):
     timeout_s = catalog.VIDEO_WAIT_S + DOWNLOAD_TIMEOUT_S + 120.0
 
     async def plan(self, params: CreateVideoParams, ctx: ToolContext) -> ActionPlan:
+        _check_paid(ctx)
         check_network(ctx, BASE_URL)
         out = _out_dir(ctx, params.out_dir)
         inputs = await _inputs(ctx, [*([params.image] if params.image else []), *params.references])

@@ -95,6 +95,8 @@ export const privacyEn = {
   'privacy.cloud.keys': 'With a key here: {names}',
   'privacy.cloud.noKeys': 'No cloud AI key is saved, so nothing goes to one.',
   'privacy.cloud.media': 'Images and videos go to Grok Imagine only when you press Create, and the screen shows the text and price first.',
+  'privacy.cloud.paidOff': 'Paid AI is off: nothing goes to Claude, Grok or OpenAI, even with a key saved. JARVIS works with the free model on this computer.',
+  'privacy.cloud.mediaLocal': 'Images and videos are made on this computer; the description is not sent anywhere.',
 
   'privacy.keptOnPurpose': 'Kept on purpose',
   'privacy.keep.keys': 'API keys',
@@ -207,6 +209,8 @@ export const privacyHe: Record<keyof typeof privacyEn, string> = {
   'privacy.cloud.keys': 'יש כאן מפתח עבור: {names}',
   'privacy.cloud.noKeys': 'לא נשמר מפתח של בינה מלאכותית בענן, אז שום דבר לא נשלח אליה.',
   'privacy.cloud.media': 'תמונות וסרטונים נשלחים ל-Grok Imagine רק כשלוחצים "ליצור", והמסך מראה קודם את הטקסט ואת המחיר.',
+  'privacy.cloud.paidOff': 'AI בתשלום כבוי: שום דבר לא נשלח ל-Claude, Grok או OpenAI, גם כשיש מפתח שמור. JARVIS עובד עם המודל החינמי שבמחשב.',
+  'privacy.cloud.mediaLocal': 'תמונות וסרטונים נוצרים במחשב הזה, והתיאור לא נשלח לשום מקום.',
 
   'privacy.keptOnPurpose': 'נשמר בכוונה',
   'privacy.keep.keys': 'מפתחות API',

@@ -719,12 +719,17 @@ class TestSTT:
         assert isinstance(engine, FasterWhisperSTT) and "no cloud backup" in reason
         assert engine.download_root == paths.models / "whisper" and engine.model_size == "small"
         memory_secrets.set("OPENAI_API_KEY", "sk-test-not-real-0123456789", persist=False)
-        engine, reason = stt_mod.create_stt_engine(VoiceSettings(), paths, memory_secrets)
+        engine, reason = stt_mod.create_stt_engine(VoiceSettings(), paths, memory_secrets)      # paid AI off
+        assert isinstance(engine, FasterWhisperSTT) and "paid AI is off" in reason
+        engine, reason = stt_mod.create_stt_engine(VoiceSettings(stt_engine="openai"), paths, memory_secrets)
+        assert isinstance(engine, FasterWhisperSTT) and "OpenAI unavailable: paid AI is off" in reason
+        engine, reason = stt_mod.create_stt_engine(VoiceSettings(), paths, memory_secrets, paid=True)
         assert isinstance(engine, FallbackSTT) and "OpenAI as backup" in reason
         monkeypatch.setattr(stt_mod, "_have", fake_have({"faster_whisper"}))
-        engine, reason = stt_mod.create_stt_engine(VoiceSettings(), paths, memory_secrets)
+        engine, reason = stt_mod.create_stt_engine(VoiceSettings(), paths, memory_secrets, paid=True)
         assert isinstance(engine, OpenAISTT) and "faster-whisper is not installed" in reason
-        engine, reason = stt_mod.create_stt_engine(VoiceSettings(), paths, SecretStore(None, use_keyring=False, environ={}))
+        engine, reason = stt_mod.create_stt_engine(VoiceSettings(), paths, SecretStore(None, use_keyring=False, environ={}),
+                                                   paid=True)
         assert isinstance(engine, NullSTT) and "no OPENAI_API_KEY" in reason
 
     @needs_numpy

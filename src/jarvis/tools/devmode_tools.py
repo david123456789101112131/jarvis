@@ -256,7 +256,7 @@ def _host(provider: str) -> str:
 
 
 def _engine(ctx: ToolContext, params: DevProposeParams, *, files: int, chars: int, effort: str = "low") -> Any:
-    from jarvis.ai.router import CLOUD_NAMES, NO_PROVIDER
+    from jarvis.ai.router import CLOUD_NAMES
     from jarvis.devmode.prompt import Engine
 
     router = ctx.services.ai
@@ -269,8 +269,9 @@ def _engine(ctx: ToolContext, params: DevProposeParams, *, files: int, chars: in
             name = CLOUD_NAMES.get(told, told)
             raise ToolError(ctx.t(f"{name} משמש רק כשמבקשים אותו: לחיצה על 'לתכנן עם {name}' במסך הקוד",
                                   f"{name} is used only when you ask for it: press 'Plan with {name}' on the code screen"))
-        raise ToolError(ctx.t("אין מודל AI מוגדר: צריך מפתח של xAI (Grok) או מפתח אחר בהגדרות > מפתחות API.",
-                              NO_PROVIDER))
+        raise ToolError(ctx.t("אין מודל AI מוכן: צריך את המודל החינמי שרץ במחשב (jarvis chat install)"
+                              + (", או מפתח של xAI (Grok) בהגדרות > מפתחות API." if router.settings.allow_paid else "."),
+                              router.no_provider_text()))
     provider = chain[0]
     name = CLOUD_NAMES.get(provider.name, ctx.t("מודל מקומי", "local model"))
     max_tokens = 12_000 if effort == "low" else 24_000

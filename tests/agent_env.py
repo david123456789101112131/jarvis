@@ -83,10 +83,10 @@ class Env:
         return self.kit.broker.pending()[0]
 
     def use_ai(self, *steps: Any, default: Any = None, when_told: bool = False) -> ScriptedProvider:
-        """A scripted model as Claude. It answers freely, as if the user had said so; `when_told=True` keeps the
-        default rule that a cloud AI needs the user's word (`ai.cloud_only_when_told`)."""
+        """A scripted model as Claude, with paid AI on. It answers freely, as if the user had said so;
+        `when_told=True` keeps the default rule that a cloud AI needs the user's word (`ai.cloud_only_when_told`)."""
         provider = ScriptedProvider(list(steps), name="anthropic", default=default)
-        self.runtime.router = ProviderRouter(AISettings(cloud_only_when_told=when_told), [provider])
+        self.runtime.router = ProviderRouter(AISettings(allow_paid=True, cloud_only_when_told=when_told), [provider])
         return provider
 
     def mock_http(self, handler: Callable[[httpx.Request], httpx.Response]) -> list[httpx.Request]:

@@ -438,7 +438,7 @@ class TestInstant:
 class TestConversation:
     async def test_offline_conversation_explains_itself(self, c: C) -> None:
         res = await c.say("ספר לי בדיחה")
-        assert res.intent["name"] == I.CHAT and "מפתח API" in res.reply["text"]
+        assert res.intent["name"] == I.CHAT and "jarvis chat install" in res.reply["text"]
 
     async def test_conversation_with_the_model_keeps_the_context(self, c: C) -> None:
         provider = c.env.use_ai(default=chat_turn("כמובן. למה המחשב הלך לרופא? כי היה לו וירוס."))
@@ -514,9 +514,9 @@ ASK_GROK = "בשביל זה צריך את Grok. להשתמש בו?"
 
 
 def grok(c: C, default: Any) -> ScriptedProvider:
-    """Grok with a key, under the default rule: it answers only when the user says so."""
+    """Grok with a key and paid AI on, under the default rule: it answers only when the user says so."""
     provider = ScriptedProvider([], name="xai", default=default)
-    c.env.runtime.router = ProviderRouter(AISettings(), [provider])
+    c.env.runtime.router = ProviderRouter(AISettings(allow_paid=True), [provider])
     return provider
 
 
@@ -588,6 +588,56 @@ class TestCloudAIWhenTold:
         assert quiet.allowed_ai == ""
         await c.finished(quiet.id)
         assert len(provider.requests) == 1                  # no word, no Grok: the agent worked without it
+
+
+# ================================================================================== paid AI off (the default)
+PAID_OFF = "AI בתשלום כבוי, אז Grok לא בשימוש."
+
+
+def grok_and_free(c: C, free: Any | None) -> tuple[ScriptedProvider, ScriptedProvider]:
+    """Grok with a key and the free model (or none, with `free=None`), under the default settings: paid AI off."""
+    grok_ = ScriptedProvider([], name="xai", default=chat_turn("לא אמור לקרות"))
+    local = ScriptedProvider([], name="local", default=free)
+    local.is_available = free is not None
+    c.env.runtime.router = ProviderRouter(AISettings(), [grok_, local])
+    return grok_, local
+
+
+class TestPaidAIOff:
+    async def test_naming_grok_gets_the_free_model_and_says_so(self, c: C) -> None:
+        grok_, local = grok_and_free(c, chat_turn("למה המחשב הלך לרופא? כי היה לו וירוס."))
+        res = await c.say("תשתמש בגרוק ותגיד לי בדיחה", source="voice")
+        assert res.reply["text"].startswith("למה המחשב") and local.requests[-1].messages[-1].text == "תגיד לי בדיחה"
+        assert c.jarvis("info")[0]["text"] == f"{PAID_OFF} עונה המודל החינמי שבמחשב."
+        assert not grok_.requests and c.core._ai_ok is None
+        res = await c.say("ספר לי בדיחה")                   # no question: the free model needs no word
+        assert res.reply["text"].startswith("למה המחשב") and len(local.requests) == 2 and not grok_.requests
+
+    async def test_use_grok_on_its_own_says_paid_ai_is_off(self, c: C) -> None:
+        grok_, _ = grok_and_free(c, chat_turn("לא אמור לקרות"))
+        res = await c.say("מעכשיו תשתמש בגרוק", source="voice")
+        assert res.reply["text"] == (f"{PAID_OFF} JARVIS עובד עם המודל החינמי שבמחשב. אפשר להפעיל AI בתשלום "
+                                     "בהגדרות ← ספקי AI.")
+        assert res.speech["follow_up"] is False and not grok_.requests and c.core._ai_ok is None
+        assert (await c.say("בלי גרוק")).reply["text"] == "בסדר, בלי Grok."
+
+    async def test_without_the_free_model_it_never_asks_for_grok(self, c: C) -> None:
+        grok_, _ = grok_and_free(c, None)
+        res = await c.say("ספר לי בדיחה", source="voice")
+        assert res.reply["text"] != ASK_GROK and "jarvis chat install" in res.reply["text"]
+        res = await c.say("תכתוב לי סקריפט בפייתון שמדפיס שלום")
+        assert res.reply["text"] != ASK_GROK
+        assert (await c.say("כן")).reply["text"] != ASK_GROK and not grok_.requests
+
+    async def test_a_task_that_names_grok_runs_without_it(self, c: C) -> None:
+        def respond(request: CompletionRequest) -> AIResponse:
+            return reply("נמל, גלים, חוף.\n\nSTATUS: success")
+
+        grok_, local = grok_and_free(c, respond)
+        task = await c.core.agent_task("creative", "תשתמש בגרוק ותן לי שלושה שמות לבית קפה ליד הים")
+        assert task.allowed_ai == "" and task.goal == "תן לי שלושה שמות לבית קפה ליד הים"
+        done = await c.finished(task.id)
+        assert done.status == S.COMPLETED and local.requests and not grok_.requests
 
 
 # ================================================================================== speed measurements

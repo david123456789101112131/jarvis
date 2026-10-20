@@ -6,8 +6,9 @@
         ├─ complex intent → acknowledged at once, then planned and run by the Task Orchestrator
         └─ anything else → conversation with the AI model, which can also hand work to the agents
 
-Cloud AI (Grok, Claude, OpenAI) costs money per request, so with `ai.cloud_only_when_told` it is used only
-when the user says so: by naming it in the command ("תשתמש בגרוק ותכתוב לי שיר"; `ai_words.named_ai`), which
+Cloud AI (Grok, Claude, OpenAI) costs money per request. With `ai.allow_paid` off (the default) it is never used:
+naming one gets a short "paid AI is off" and the work goes on with the free model on this computer. With it on and
+`ai.cloud_only_when_told` it is used only when the user says so: by naming it in the command ("תשתמש בגרוק ותכתוב לי שיר"; `ai_words.named_ai`), which
 also keeps it on for the rest of that conversation, or by a yes to "להשתמש ב-Grok?", which JARVIS asks before
 work that needs it. The choice travels with the work (`allow_provider`), into tasks and their agents.
 
@@ -414,6 +415,9 @@ class JarvisCore:
         """The cloud AI this command may use: the one it names, else the one named earlier in this conversation
         (until it has been quiet for AI_OK_TTL_S)."""
         now = time.monotonic()
+        if word.provider and self._paid_off(word.provider):
+            self._ai_ok = None
+            return None
         if word.provider:
             self._ai_ok = None if word.negated else (word.provider, now + AI_OK_TTL_S)
             return None if word.negated else word.provider
@@ -434,6 +438,17 @@ class JarvisCore:
                 if word.rest:
                     return None                  # "בלי גרוק, תפתח את כרום": the rest, without it
                 return await self._reply(turn, t(lang, f"בסדר, בלי {name}.", f"OK, no {name}."), follow_up=False)
+            if self._paid_off(word.provider):
+                off = t(lang, f"AI בתשלום כבוי, אז {name} לא בשימוש.", f"Paid AI is off, so {name} is not used.")
+                if word.rest:                    # "תשתמש בגרוק ותכתוב לי שיר": the free model writes it
+                    await self.say(t(lang, f"{off} עונה המודל החינמי שבמחשב.", f"{off} The free model on this computer "
+                                     "answers."), kind="info", lang=lang)
+                    return None
+                return await self._reply(turn, t(lang, f"{off} JARVIS עובד עם המודל החינמי שבמחשב. אפשר להפעיל AI "
+                                                       "בתשלום בהגדרות ← ספקי AI.",
+                                                 f"{off} JARVIS works with the free model on this computer. Paid AI "
+                                                 "can be switched on in Settings > AI providers."),
+                                         kind="info", ok=False, follow_up=False)
             router = self.router
             if router is None or not router.has(word.provider):
                 self._ai_ok = None
@@ -459,6 +474,9 @@ class JarvisCore:
             return await self._reply(turn, t(lang, f"בסדר, {name} כאן. מה לבקש ממנו?",
                                              f"OK, {name} it is. What should I ask?"))
         return None
+
+    def _paid_off(self, provider: str) -> bool:
+        return self.router is not None and self.router.paid_off(provider)
 
     async def _ask_ai_first(self, turn: _Turn, role: str, agent: str | None = None) -> CommandResult | None:
         """Work that needs a cloud AI the user did not ask for: ask "use Grok?" and keep the command for a yes.

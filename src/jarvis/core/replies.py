@@ -145,9 +145,9 @@ def window_reply(action: str, done: bool, lang: str) -> str:
 
 def offline_chat(lang: str) -> str:
     return t(lang, "לא בטוח שהבנתי. אפשר לנסח את זה כפקודה, למשל \"פתח את כרום\" או \"תבנה לי אתר לחנות\". "
-                   "לשיחה חופשית צריך להגדיר בהגדרות מפתח API של xAI (Grok), Anthropic או OpenAI.",
+                   "לשיחה חופשית צריך את המודל החינמי שרץ במחשב: jarvis chat install.",
              "I'm not sure I understood. Try it as a command, like \"open Chrome\" or \"build me a website\". "
-             "For open conversation, add an xAI (Grok), Anthropic or OpenAI API key in Settings.")
+             "Open conversation needs the free model that runs on this computer: jarvis chat install.")
 
 
 # ------------------------------------------------------------------------------------------ modes

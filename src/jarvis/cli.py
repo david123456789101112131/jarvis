@@ -329,8 +329,9 @@ def _media(settings: Any, paths: Any, args: argparse.Namespace) -> int:
     if args.action == "status":
         files = LocalFiles(default_root)
         print(f"Model folder: {default_root}")
-        print(f"Engine in use: {settings.media.engine}" + ("" if settings.media.engine == "local" else
-                                                          " (Grok Imagine, paid; set media.engine to local)"))
+        engine = settings.media.engine if settings.ai.allow_paid else "local"
+        print(f"Engine in use: {engine}" + ("" if engine == "local" else
+                                            " (Grok Imagine, paid; set media.engine to local)"))
         for part, label in (("runtime", "runtime (PyTorch, diffusers)"), ("image", "images: Z-Image-Turbo"),
                             ("video", "videos: Wan 2.2 TI2V-5B"), ("translate", "Hebrew to English")):
             print(f"  {'✓' if files.has(part) else '·'} {label}")

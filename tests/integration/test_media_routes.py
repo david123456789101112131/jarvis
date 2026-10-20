@@ -60,12 +60,25 @@ class TestLocalByDefault:
         assert refused.status_code == 409 and error["code"] == "unavailable" and "jarvis media install" in error["message"]
 
 
+    async def test_grok_chosen_while_paid_ai_is_off_stays_on_this_computer(self, live: Live) -> None:  # noqa: F811
+        live.app.settings.media.engine = "xai"
+        status = await live.get("/api/media/status", params={"lang": "he"})
+        assert status["engine"] == "local" and status["host"] == ""
+        refused = await live.http.post("/api/media/images", json={"description": "שועל", "model": "grok-imagine-image",
+                                                                   "lang": "he"})
+        error = refused.json()["error"]
+        assert refused.status_code == 400 and error["code"] == "engine" and "Grok כבוי" in error["message"]
+        senses = (await live.get("/api/privacy"))["senses"]["cloud"]
+        assert senses["paid"] is False and senses["media"] == "local"
+
+
 class TestMediaRoutes:
-    """Grok Imagine (paid), when the settings choose it."""
+    """Grok Imagine (paid), when the settings choose it and paid AI is on."""
 
     @pytest.fixture(autouse=True)
     def _grok(self, live: Live) -> None:  # noqa: F811
         live.app.settings.media.engine = "xai"
+        live.app.settings.ai.allow_paid = True
 
     async def test_status_says_what_is_missing(self, live: Live) -> None:  # noqa: F811
         status = await live.get("/api/media/status", params={"lang": "he"})

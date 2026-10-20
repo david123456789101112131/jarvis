@@ -774,11 +774,13 @@ def _secret(secrets: SecretStore | None, name: str) -> str | None:
         return None
 
 
-def create_stt_engine(settings: VoiceSettings, paths: AppPaths, secrets: SecretStore | None) -> tuple[STTEngine, str]:
+def create_stt_engine(settings: VoiceSettings, paths: AppPaths, secrets: SecretStore | None, *,
+                      paid: bool = False) -> tuple[STTEngine, str]:
     """Pick the STT engine for `settings.stt_engine` (auto | faster_whisper | openai | none).
 
     Construction is cheap (nothing is loaded); `load()`/`warm_up()` does the heavy work and a
-    load failure of faster-whisper falls back to OpenAI when a key is configured.
+    load failure of faster-whisper falls back to OpenAI when a key is configured. OpenAI's transcription costs
+    money, so it is used only with `paid` (`ai.allow_paid`).
     """
     choice = settings.stt_engine
     if choice == "none":
@@ -786,7 +788,7 @@ def create_stt_engine(settings: VoiceSettings, paths: AppPaths, secrets: SecretS
         return engine, engine.reason
     has_fw = _have("faster_whisper", "numpy")
     has_openai_pkg = _have("openai")
-    has_key = bool(_secret(secrets, "OPENAI_API_KEY"))
+    has_key = paid and bool(_secret(secrets, "OPENAI_API_KEY"))
 
     def local() -> FasterWhisperSTT:
         return FasterWhisperSTT(
@@ -801,7 +803,8 @@ def create_stt_engine(settings: VoiceSettings, paths: AppPaths, secrets: SecretS
     def cloud() -> OpenAISTT:
         return OpenAISTT(lambda: _secret(secrets, "OPENAI_API_KEY"))
 
-    cloud_why = "the openai package is not installed" if not has_openai_pkg else "no OPENAI_API_KEY"
+    cloud_why = ("paid AI is off" if not paid else "the openai package is not installed" if not has_openai_pkg
+                 else "no OPENAI_API_KEY")
     if choice in ("auto", "faster_whisper"):
         if has_fw:
             if has_openai_pkg and has_key:

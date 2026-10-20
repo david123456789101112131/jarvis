@@ -111,8 +111,10 @@ class VoiceService:
         tts: TTSEngine | None = None,
         options: PipelineOptions | None = None,
         talk_key: Callable[[Callable[[], None]], TalkKeyWatch | None] | None = None,
+        paid: bool = False,
     ) -> None:
         self.settings = settings
+        self.paid = paid                       # paid AI is on (`ai.allow_paid`): OpenAI may transcribe as a backup
         self.paths = paths
         self.secrets = secrets
         self.handler = handler
@@ -206,7 +208,7 @@ class VoiceService:
         if injected["stt"] is not None:
             self.stt, self.reasons["stt"] = injected["stt"], injected["stt"].reason or injected["stt"].name
         else:
-            self.stt, self.reasons["stt"] = create_stt_engine(settings, self.paths, self.secrets)
+            self.stt, self.reasons["stt"] = create_stt_engine(settings, self.paths, self.secrets, paid=self.paid)
             self._owned.append(self.stt)
         if injected["tts"] is not None:
             self.tts, self.reasons["tts"] = injected["tts"], injected["tts"].reason or injected["tts"].name

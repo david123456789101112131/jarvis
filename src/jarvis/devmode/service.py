@@ -97,9 +97,7 @@ class DevService:
 
     def status(self) -> dict[str, Any]:
         engines = self.engines()
-        needs = [] if engines else [
-            {"he": "מפתח API של xAI (Grok) בהגדרות > מפתחות API, או מודל מקומי", "en": "An xAI (Grok) API key in "
-             "Settings > API keys, or a local model"}]
+        needs = [] if engines else self._needs()
         return {
             "available": True,
             "engines": engines,
@@ -111,6 +109,14 @@ class DevService:
                       "node": bool(shutil.which("node")), "git": bool(shutil.which("git"))},
             "limits": {"files": 24, "chars": 160_000},
         }
+
+    def _needs(self) -> list[dict[str, str]]:
+        free = {"he": "את המודל החינמי שרץ במחשב (jarvis chat install)",
+                "en": "the free model that runs on this computer (jarvis chat install)"}
+        if not self.app.settings.ai.allow_paid:
+            return [free]
+        return [{"he": free["he"] + ", או מפתח API של xAI (Grok) בהגדרות > מפתחות API",
+                 "en": free["en"] + ", or an xAI (Grok) API key in Settings > API keys"}]
 
     # ------------------------------------------------------------------ sessions
     def session(self, session_id: str) -> DevSession:
@@ -243,8 +249,9 @@ class DevService:
     def engine_for(self, provider: str | None, lang: str) -> dict[str, Any]:
         engines = self.engines()
         if not engines:
-            raise JarvisError(t(lang, "אין מודל AI לתכנון שינויים: צריך מפתח של xAI (Grok) בהגדרות > מפתחות API.",
-                                "No AI model can plan changes: add an xAI (Grok) key in Settings > API keys."),
+            need = self._needs()[0]
+            raise JarvisError(t(lang, f"אין מודל AI לתכנון שינויים: צריך {need['he']}.",
+                                f"No AI model can plan changes: it needs {need['en']}."),
                               details={"code": "no_engine"})
         if provider:
             match = next((e for e in engines if e["provider"] == provider), None)

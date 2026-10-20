@@ -227,6 +227,8 @@ export interface ProvidersInfo {
   active: string | null;
   /** The cloud AI JARVIS uses once the user says so ("use Grok"); null when one answers freely, or none could. */
   when_told?: ProviderName | null;
+  /** Paid AI (Grok, Claude, OpenAI) is switched on in the settings; off, none of them is ever called. */
+  paid?: boolean;
   anthropic: boolean;
   xai: boolean;
   openai: boolean;

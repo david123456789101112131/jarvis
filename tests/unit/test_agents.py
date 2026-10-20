@@ -132,7 +132,7 @@ class TestManager:
     async def test_each_agent_works_with_its_own_provider(self, env: Env) -> None:
         claude = ScriptedProvider([], name="anthropic", default=lambda r: reply("Claude: A, B, C.\n\nSTATUS: success"))
         grok = ScriptedProvider([], name="xai", default=lambda r: reply("Grok: A, B, C.\n\nSTATUS: success"))
-        settings = AISettings(cloud_only_when_told=False)
+        settings = AISettings(allow_paid=True, cloud_only_when_told=False)
         settings.agent_providers["planner"] = "auto"           # the Planner follows JARVIS's order (Claude first)
         env.runtime.router = ProviderRouter(settings, [claude, grok])
         result = await env.run("creative", "תן לי שלושה שמות לבית קפה")

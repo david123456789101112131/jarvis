@@ -9,10 +9,11 @@ While one of the five agents works (`jarvis.ai.context.agent_scope`), the provid
 in `ai.agent_providers` goes first and JARVIS's usual order follows as its fallback: when the
 agent's provider fails for any reason but a refusal, the call moves on down that order.
 
-Cloud AI costs money per request. With `ai.cloud_only_when_told` (the default) Anthropic, xAI and
-OpenAI are left out of every order unless the user allowed one for the work in progress
-(`jarvis.ai.context.allow_provider`): then that one goes first and only free (local) models follow
-it. `asks_first()` names the cloud AI that would do some work once the user says so.
+Cloud AI costs money per request. With `ai.allow_paid` off (the default) Anthropic, xAI and OpenAI are never
+used, whatever keys are saved: only the free model on this computer answers. With it on and
+`ai.cloud_only_when_told` (the default) they are left out of every order unless the user allowed one for the
+work in progress (`jarvis.ai.context.allow_provider`): then that one goes first and only free (local) models
+follow it. `asks_first()` names the cloud AI that would do some work once the user says so.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ _MODEL_FAMILIES = (("claude", "anthropic"), ("grok", "xai"), ("gpt", "openai"), 
                    ("o1", "openai"), ("o3", "openai"), ("o4", "openai"))
 NO_PROVIDER = ("No AI provider is configured. Add an Anthropic, xAI (Grok) or OpenAI API key in Settings, "
                "or enable a local model.")
+NO_FREE_MODEL = "No AI can answer: paid AI (Grok, Claude, ChatGPT) is off, and the free model on this computer {why}"
 
 
 class _KeyCache:
@@ -146,7 +148,12 @@ class ProviderRouter:
         return order
 
     def _usable(self, order: Sequence[str]) -> list[AIProvider]:
-        return [self.providers[n] for n in order if n in self.providers and self.providers[n].available()]
+        return [self.providers[n] for n in order
+                if n in self.providers and not self.paid_off(n) and self.providers[n].available()]
+
+    def paid_off(self, name: str) -> bool:
+        """Whether `name` is a paid AI while paid AI is switched off (`ai.allow_paid`)."""
+        return name in CLOUD and not self.settings.allow_paid
 
     def _role_preference(self, role: str) -> str | None:
         preferred = self.settings.role(role).provider
@@ -160,9 +167,10 @@ class ProviderRouter:
         return preferred if preferred in self.providers else None
 
     def has(self, name: str) -> bool:
-        """Whether provider `name` is set up (has its key, or is switched on)."""
+        """Whether provider `name` can be used: set up (has its key, or is switched on), and not a paid AI while
+        paid AI is off."""
         provider = self.providers.get(name)
-        return bool(provider and provider.available())
+        return bool(provider and not self.paid_off(name) and provider.available())
 
     def active_name(self) -> str | None:
         chain = self.chain_for("agent", None)
@@ -183,19 +191,17 @@ class ProviderRouter:
                 "when_told": told is not None}
 
     def status(self) -> dict[str, Any]:
-        def on(name: str) -> bool:
-            provider = self.providers.get(name)
-            return bool(provider and provider.available())
-
+        on = self.has
         anthropic = self.providers.get("anthropic")
         return {
             "active": self.active_name(),
             "when_told": self.asks_first("agent", None),     # the cloud AI JARVIS uses once the user says so
+            "paid": self.settings.allow_paid,                # False: Grok, Claude and OpenAI are never called
             "anthropic": on("anthropic"),
             "xai": on("xai"),
             "openai": on("openai"),
             "local": on("local"),
-            "fallbacks": bool(isinstance(anthropic, AnthropicProvider) and anthropic.available()
+            "fallbacks": bool(isinstance(anthropic, AnthropicProvider) and on("anthropic")
                               and anthropic.fallbacks_enabled),
             "agents": {a.value: self.agent_info(a.value)["provider"] for a in AgentId},
         }
@@ -242,7 +248,7 @@ class ProviderRouter:
                 name = CLOUD_NAMES[told]
                 raise ProviderUnavailable(f"{name} is used only when you ask for it: say \"use {name}\" in the "
                                           "request.", details={"code": "ai_needs_ok", "provider": told})
-            raise ProviderUnavailable(NO_PROVIDER)
+            raise ProviderUnavailable(self.no_provider_text(), details={"code": "no_ai"})
         agents_choice = self.agent_preference(agent)
         owner = self._model_owner(request.role, request.model) if request.model else None
         last: ProviderError | None = None
@@ -267,6 +273,20 @@ class ProviderRouter:
             self.last_provider = p.name
             return response
         raise last or ProviderUnavailable("No AI provider answered.")  # pragma: no cover
+
+    def no_provider_text(self) -> str:
+        """Why no AI can answer, and what fixes it."""
+        if self.settings.allow_paid or self.settings.provider == "none":
+            return NO_PROVIDER
+        local = self.providers.get("local")
+        server = getattr(local, "server", None)
+        if not isinstance(local, LocalModelProvider) or not local.settings.enabled:
+            why = "is switched off in Settings."
+        elif server is None or server.problem() is None:
+            why = "is not set up (run: jarvis chat install)." if server is None else "does not answer."
+        else:
+            why = f"is not ready: {server.problem()}"
+        return NO_FREE_MODEL.format(why=why)
 
     def _measure(self, provider: str, role: str, started: float, *, ok: bool = True) -> None:
         if self.metrics is not None:

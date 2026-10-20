@@ -363,10 +363,11 @@ export class Simulator {
   /** Which providers have a key, and the one each agent works with (the real router's order). */
   private providers(): ProvidersInfo {
     const ai = (this.settings.ai ?? {}) as Record<string, unknown>;
+    const paid = ai.allow_paid !== false;     // as the server: with paid AI off no cloud AI is used, keys or not
     const on: Record<ProviderName, boolean> = {
-      anthropic: this.secrets.ANTHROPIC_API_KEY?.configured ?? false,
-      xai: this.secrets.XAI_API_KEY?.configured ?? false,
-      openai: this.secrets.OPENAI_API_KEY?.configured ?? false,
+      anthropic: paid && (this.secrets.ANTHROPIC_API_KEY?.configured ?? false),
+      xai: paid && (this.secrets.XAI_API_KEY?.configured ?? false),
+      openai: paid && (this.secrets.OPENAI_API_KEY?.configured ?? false),
       local: Boolean((ai.local as { enabled?: boolean } | undefined)?.enabled),
     };
     const order: ProviderName[] = ['anthropic', 'xai', 'openai', 'local'];
@@ -381,7 +382,7 @@ export class Simulator {
     const chosen = first(ai.provider);
     const told = ai.cloud_only_when_told !== false && chosen !== null && chosen !== 'local' && !on.local;
     const active = ai.cloud_only_when_told !== false && chosen !== 'local' ? (on.local ? 'local' : null) : chosen;
-    return { active, when_told: told ? chosen : null, ...on, fallbacks: on.anthropic, agents };
+    return { active, when_told: told ? chosen : null, paid, ...on, fallbacks: on.anthropic, agents };
   }
 
   private agentAI(id: AgentId, info: ProvidersInfo): AgentAI {

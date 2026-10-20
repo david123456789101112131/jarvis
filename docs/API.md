@@ -259,12 +259,15 @@ approval dialog. Every applied change can be undone.
 
 `mode`: `fast` is quick thinking (lower effort: faster and cheaper), `strong` deep thinking, and `auto`
 decides by the size of what is sent and the words of the request; both use the same model. `engine` is the
-AI the user pressed (cloud AI only when told, see `ai.cloud_only_when_told`).
+AI the user pressed (the local model; a cloud AI only with `ai.allow_paid` on, and then only when told, see
+`ai.cloud_only_when_told`).
 
 ### Image and video creation (`/api/media/*`)
 
-Real requests go to Grok Imagine (xAI) through the tool executor (approval rules apply). With `demo: true`
-nothing is sent and the result is a placeholder marked as a demonstration (`real: false`).
+Real requests are made on this computer by the local engine (`media.engine = "local"`, the default), or go to
+Grok Imagine (xAI) through the tool executor (approval rules apply) when `media.engine = "xai"` and
+`ai.allow_paid` is on. With `demo: true` nothing is made and the result is a placeholder marked as a
+demonstration (`real: false`).
 
 | Method & path | Body | Returns |
 |---|---|---|
