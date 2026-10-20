@@ -93,7 +93,7 @@ async def _video(engine: LocalEngine, mode: str, out: Path, steps: int, seconds:
                  resolution: str) -> list[dict[str, Any]]:
     width, height = catalog.local_video_size("16:9", resolution)
     frames = catalog.local_frames(seconds)
-    path = out / f"{mode}-video.mp4"
+    path = out / f"{mode}-video-{resolution}-{seconds}s.mp4"     # runs at other sizes keep their own file
     began = time.perf_counter()
     result = await engine.request("video", {"prompt": VIDEO_PROMPT, "width": width, "height": height,
                                             "out": str(path), "frames": frames, "fps": catalog.LOCAL_FPS,
