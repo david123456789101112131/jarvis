@@ -23,7 +23,7 @@ IMAGE_PROMPT = ("A friendly helper robot at a desk with a glowing blue holograph
 VIDEO_PROMPT = "A cup of hot coffee on a wooden table, steam rising slowly, soft morning light from the window"
 SEED = 42
 MEASURED = ("vram_peak", "ram_peak", "ram_free_min", "vram_peak_frames", "vram_peak_decode", "tiled_decode",
-            "frames_s", "decode_s", "vram_cap")
+            "off_card_for_decode", "frames_s", "decode_s", "vram_cap")
 GB = 2**30
 
 
@@ -113,7 +113,9 @@ def summary(row: dict[str, Any]) -> str:
             f"{_gb(row.get('ram_free_min'))} GB"
             + (f"; frames {row.get('frames_s')} s, card {_gb(row.get('vram_peak_frames'))} GB; decoding "
                f"{row.get('decode_s')} s, card {_gb(row.get('vram_peak_decode'))} GB"
-               f"{' (tiled)' if row.get('tiled_decode') else ''}; card cap {_gb(row.get('vram_cap'))} GB"
+               f"{' (tiled)' if row.get('tiled_decode') else ''}"
+               f"{' with ' + ', '.join(row['off_card_for_decode']) + ' moved to RAM' if row.get('off_card_for_decode') else ''}"
+               f"; card cap {_gb(row.get('vram_cap'))} GB"
                if row.get("vram_peak_decode") else ""))
 
 

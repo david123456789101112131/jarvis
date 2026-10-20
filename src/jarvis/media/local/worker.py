@@ -362,6 +362,12 @@ def weights(folder: Path) -> dict[str, tuple[int, int]]:
     return parts
 
 
+def module_bytes(module: Any) -> int:
+    """The bytes a loaded module's weights and buffers take, in the dtypes they are kept in."""
+    tensors = [*module.parameters(), *module.buffers()]
+    return sum(int(t.numel()) * int(t.element_size()) for t in tensors)
+
+
 def part_bytes(family: str, part: str, numbers: tuple[int, int], eight: bool) -> int:
     total, kept = numbers
     if part == "vae":
@@ -478,6 +484,7 @@ class Diffusion:
         self.variant: str | None = None
         self.mode: str | None = None
         self.pipe: Any = None
+        self.phase = "idle"                       # what the request in progress is doing (named when the card runs out)
         self._floor: dict[str, int] = {}          # a mode that ran out of memory is not tried again for that family
         self._translator: tuple[Any, Any] | None = None
         self._embed_cache: dict[tuple[str, str, str | None], dict[str, Any]] = {}
@@ -733,19 +740,33 @@ class Diffusion:
         """Load (if need be) and run; out of graphics memory, reload in the next thriftier mode and try again.
         `run` gets the pipeline, and in seq8 the description already read (`_embeds`)."""
         folder = self._folder(family)
+        ran_out: tuple[str, str] | None = None         # (mode, what it was doing) when the card ran out
         while True:
             if self.watch is not None:
                 self.watch.reset()                     # before loading: the load is when RAM runs lowest
             parts = weights(folder)
-            mode = self._mode(family, parts)
+            try:
+                mode = self._mode(family, parts)
+            except WorkerError as exc:
+                if ran_out is None or exc.kind != "low_memory":
+                    raise
+                raise WorkerError(f"the graphics card ran out of memory {ran_out[1]} ({ran_out[0]}), and the "
+                                  f"thriftier ways to load the model need more RAM than is free ({exc}); a smaller "
+                                  "size or a shorter video fits", "oom", mode=ran_out[0], phase=ran_out[1],
+                                  **exc.details) from exc
             cap = self._cap() if self.cuda else 0
+            self.phase = "loading the model"
             try:
                 embeds = self._embeds(folder, family, mode, parts, texts, progress) if mode in SEQUENTIAL else None
                 pipe = self._load(folder, family, variant, mode, parts, progress)
                 if self.cuda:
                     self.torch.cuda.reset_peak_memory_stats()
+                self.phase = "making the picture"
                 result = run(pipe, embeds)
             except self.torch.cuda.OutOfMemoryError as exc:
+                ran_out = (mode, self.phase)
+                print(f"out of graphics memory in {mode} while {self.phase}: {str(exc).splitlines()[0][:300]}",
+                      file=sys.stderr, flush=True)
                 self.unload()
                 if mode not in MODES or mode == MODES[-1]:
                     raise WorkerError("there is not enough free memory on the graphics card for this, even "
@@ -854,11 +875,13 @@ class Diffusion:
                       "guidance_scale": guidance, "generator": self._generator(seed),
                       "callback_on_step_end": self._stepper(progress, steps, 0.0, 0.9), "output_type": "latent"}
             began = time.perf_counter()
+            self.phase = "making the frames"
             latents = (pipe(image=picture, **common) if picture is not None else pipe(**common)).frames
             frames_s = time.perf_counter() - began
             peaks = {"vram_peak_frames": int(self.torch.cuda.max_memory_allocated())} if self.cuda else {}
             progress("decode", 0.92)
-            video, tiled = self._decode_video(pipe, latents)
+            self.phase = "decoding the frames"
+            video, tiled, moved = self._decode_video(pipe, latents)
             if self.cuda:
                 peaks["vram_peak_decode"] = int(self.torch.cuda.max_memory_allocated())
                 peaks["vram_peak"] = max(peaks.values())
@@ -868,42 +891,87 @@ class Diffusion:
             return {"files": [{"path": str(out), "width": width, "height": height, "frames": frames, "fps": fps,
                                "seconds": round(frames / fps, 3)}],
                     "seed": seed, "steps": steps, "generate_s": round(made_s, 3), "frames_s": round(frames_s, 3),
-                    "decode_s": round(made_s - frames_s, 3), "tiled_decode": tiled, **peaks}
+                    "decode_s": round(made_s - frames_s, 3), "tiled_decode": tiled, "off_card_for_decode": moved,
+                    **peaks}
 
         return self._retrying("video", "picture" if picture is not None else "text", progress, run,
                               (prompt, negative, guidance > 1.0))
 
-    def _decode_video(self, pipe: Any, latents: Any) -> tuple[Any, bool]:
+    def _decode_video(self, pipe: Any, latents: Any) -> tuple[Any, bool, list[str]]:
         """Wan's decoder, as the pipeline runs it, measured on its own. Decoding the whole frame at once is the
-        hungriest moment of a video; when it does not fit, the frames are decoded in overlapping tiles (blended,
-        so no seams) instead of starting over. True = tiled."""
+        hungriest moment of a video, so the parts that are done with this video step off the card into RAM first,
+        while RAM has room for them, and come back after (`_off_card`). When the whole frame still does not fit, the
+        frames are decoded in overlapping tiles (blended, so no seams) instead of starting over. Returns the frames,
+        True when tiled, and the parts that stepped off the card."""
         from diffusers.utils.torch_utils import get_module_execution_device
 
         torch, vae = self.torch, pipe.vae
-        if self.cuda:
-            torch.cuda.reset_peak_memory_stats()
-        z = latents.to(device=get_module_execution_device(vae), dtype=vae.dtype)
-        shape = (1, vae.config.z_dim, 1, 1, 1)
-        mean = torch.tensor(vae.config.latents_mean).view(shape).to(z.device, z.dtype)
-        std = torch.tensor(vae.config.latents_std).view(shape).to(z.device, z.dtype)
-        z = z * std + mean
-        tiled = bool(getattr(vae, "use_tiling", False))
-        with torch.no_grad():
-            try:
-                frames = vae.decode(z, return_dict=False)[0]
-            except torch.cuda.OutOfMemoryError:
-                if tiled:
-                    raise
-                gc.collect()
-                torch.cuda.empty_cache()
-                vae.enable_tiling()                       # stays on for this model: the next video tiles at once
-                tiled = True
-                frames = vae.decode(z, return_dict=False)[0]
-        video = pipe.video_processor.postprocess_video(frames, output_type="np")[0]
-        del frames, z
+        moved = self._off_card(pipe)
+        try:
+            if self.cuda:
+                torch.cuda.reset_peak_memory_stats()
+            z = latents.to(device=get_module_execution_device(vae), dtype=vae.dtype)
+            shape = (1, vae.config.z_dim, 1, 1, 1)
+            mean = torch.tensor(vae.config.latents_mean).view(shape).to(z.device, z.dtype)
+            std = torch.tensor(vae.config.latents_std).view(shape).to(z.device, z.dtype)
+            z = z * std + mean
+            tiled = bool(getattr(vae, "use_tiling", False))
+            with torch.no_grad():
+                frames = None
+                try:
+                    frames = vae.decode(z, return_dict=False)[0]
+                except torch.cuda.OutOfMemoryError:
+                    if tiled:
+                        raise
+                # Tried again only out here: inside `except` the failed attempt's tensors are still held (by the
+                # error's traceback), and the tiles would find the card as full as the whole frame left it.
+                if frames is None:
+                    self._release(vae)
+                    vae.enable_tiling()                   # stays on for this model: the next video tiles at once
+                    tiled = True
+                    frames = vae.decode(z, return_dict=False)[0]
+            video = pipe.video_processor.postprocess_video(frames, output_type="np")[0]
+            del frames, z
+        finally:
+            self._on_card(pipe, moved)
         if hasattr(pipe, "maybe_free_model_hooks"):
             pipe.maybe_free_model_hooks()
-        return video, tiled
+        return video, tiled, moved
+
+    def _release(self, vae: Any) -> None:
+        """Free what a failed decode left: the decoder's own frame cache, then the card's cached blocks."""
+        if hasattr(vae, "clear_cache"):
+            vae.clear_cache()
+        gc.collect()
+        if self.cuda:
+            self.torch.cuda.empty_cache()
+
+    def _off_card(self, pipe: Any) -> list[str]:
+        """Before decoding: the transformer and the text encoder, where they sit on the card, move to RAM (the
+        biggest first) as long as RAM keeps RAM_SPARE free, so the decoder has the card to itself. Moving a few GB
+        takes a second or two each way."""
+        if not self.cuda or (getattr(self, "mode", None) or "") not in ON_CARD:
+            return []
+        sizes = []
+        for name in ("transformer", "text_encoder"):
+            module = getattr(pipe, name, None)
+            first = next(module.parameters(), None) if module is not None else None
+            if first is not None and first.device.type == "cuda":
+                sizes.append((module_bytes(module), name))
+        moved = []
+        for size, name in sorted(sizes, reverse=True):
+            if memory()["ram_free"] - size < RAM_SPARE:
+                continue
+            getattr(pipe, name).to("cpu")
+            moved.append(name)
+        if moved:
+            gc.collect()
+            self.torch.cuda.empty_cache()
+        return moved
+
+    def _on_card(self, pipe: Any, moved: list[str]) -> None:
+        for name in moved:
+            getattr(pipe, name).to(self.device)
 
     # ------------------------------------------------------------------ translation
     def translate(self, text: str) -> str:

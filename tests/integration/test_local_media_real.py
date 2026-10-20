@@ -153,15 +153,19 @@ class Vae(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.w = torch.nn.Parameter(torch.zeros(1))
-        self.use_tiling, self.seen = False, []
+        self.use_tiling, self.seen, self.cleared, self.during_error = False, [], 0, None
 
     def enable_tiling(self):
         self.use_tiling = True
+
+    def clear_cache(self):
+        self.cleared += 1
 
     def decode(self, z, return_dict=False):
         self.seen.append(float(z.mean()))
         if not self.use_tiling:                 # the whole frame does not fit on the card
             raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 6.00 GiB")
+        self.during_error = sys.exc_info()[0] is not None   # the failed attempt still held: the card still full
         return (torch.zeros(1, 3, 5, 8, 8),)
 
 class Pipe:
@@ -169,8 +173,9 @@ class Pipe:
 
 d = object.__new__(worker.Diffusion)
 d.torch, d.cuda = torch, False
-video, tiled = d._decode_video(Pipe(), torch.zeros(1, 2, 2, 1, 1))
-print(json.dumps({"tiled": tiled, "shape": list(video.shape), "seen": Pipe.vae.seen}))
+video, tiled, moved = d._decode_video(Pipe(), torch.zeros(1, 2, 2, 1, 1))
+print(json.dumps({"tiled": tiled, "shape": list(video.shape), "seen": Pipe.vae.seen, "moved": moved,
+                  "cleared": Pipe.vae.cleared, "during_error": Pipe.vae.during_error}))
 """
 
 
@@ -180,4 +185,47 @@ def test_a_video_too_big_to_decode_whole_is_decoded_in_tiles(tmp_path: Path) -> 
     out = json.loads(done.stdout.strip().splitlines()[-1])
     assert out["tiled"] is True and out["shape"] == [5, 8, 8, 3]
     assert out["seen"] == [0.5, 0.5]           # un-normalized as the pipeline does (z * std + mean), twice
+    assert out["during_error"] is False and out["cleared"] == 1     # tried again once the failed attempt was freed
+    assert out["moved"] == []                  # on the processor nothing steps off a card
 
+
+RETRY = """
+import json, sys, torch
+sys.path.insert(0, sys.argv[1])
+import worker
+
+d = object.__new__(worker.Diffusion)
+d.torch, d.cuda, d.watch, d._floor, d.phase, d.pipe = torch, False, None, {}, "idle", None
+tried = []
+
+def mode(family, parts):
+    if not tried:
+        tried.append("seq8")
+        return "seq8"
+    raise worker.WorkerError("not enough free memory to load the video model: it needs about 18.3 GB of RAM",
+                             "low_memory", need_ram=1, free_ram=2, need_vram=3, free_vram=4)
+
+d._mode, d._folder, d._embeds, d._load, d.unload = mode, lambda f: worker.Path("."), lambda *a: {}, lambda *a: object(), lambda: None
+worker.weights = lambda folder: {}
+
+def run(pipe, embeds):
+    d.phase = "decoding the frames"
+    raise torch.cuda.OutOfMemoryError("CUDA out of memory. Tried to allocate 6.00 GiB")
+
+events = []
+try:
+    d._retrying("video", "text", lambda *a, **k: events.append(k), run, ("a cat", None, True))
+except worker.WorkerError as exc:
+    print(json.dumps({"kind": exc.kind, "message": str(exc), "details": exc.details, "events": events,
+                      "floor": d._floor}))
+"""
+
+
+def test_running_out_while_decoding_says_so_not_load_numbers(tmp_path: Path) -> None:
+    done = subprocess.run([MEDIA_PYTHON, "-I", "-c", RETRY, str(Path(worker_module.__file__).parent)],
+                          capture_output=True, text=True, timeout=300, check=True)
+    out = json.loads(done.stdout.strip().splitlines()[-1])
+    assert out["kind"] == "oom" and out["floor"] == {"video": 3} and {"retry": "model"} in out["events"]
+    assert out["message"].startswith("the graphics card ran out of memory decoding the frames (seq8)")
+    assert out["details"]["phase"] == "decoding the frames" and out["details"]["mode"] == "seq8"
+    assert "out of graphics memory in seq8 while decoding the frames" in done.stderr
