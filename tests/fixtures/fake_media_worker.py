@@ -57,7 +57,8 @@ class Fake:
 
     def _work(self, req: dict[str, Any], family: str, progress: Any) -> None:
         self._note(req)
-        prompt = str(req.get("prompt") or "")
+        # The video screen sends its parts as labelled lines ("Scene: slow"); the special word is the scene.
+        prompt = str(req.get("prompt") or "").removeprefix("Scene:").strip()
         if prompt == "crash":
             os._exit(3)
         if prompt == "oom":
