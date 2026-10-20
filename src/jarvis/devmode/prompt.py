@@ -139,6 +139,8 @@ Rules:
 - Text shown as [REDACTED...] is a secret JARVIS hid: never put it in `find` or `replace`.
 - Where the request is unclear, take the most reasonable reading, state it in `assumptions`, do the parts that
   do not depend on it, and ask in `questions` what you need.
+- Files marked as the project's tests show how the code is meant to behave (units, formats, edge cases): make
+  the code agree with them, and change a test only when the request asks for it or the test is plainly wrong.
 - When the change can be tested and the project has tests (or a test framework among its dependencies), add or
   update tests in `edits` and say in `tests` how the project runs them. Never claim tests pass: JARVIS runs them
   after the user applies the change.
@@ -147,9 +149,10 @@ Rules:
 
 def build_messages(request: str, facts: dict[str, Any], file_list: list[str], files: list[tuple[str, str, bool]],
                    *, error_text: str = "", previous: dict[str, str] | None = None,
-                   lang: str = "he") -> tuple[str, str]:
-    """(system, user message). `files` holds (path, text, cut) for each file sent in full; `previous` is the
-    change this request follows ({kind: "applied" | "proposed", diff, request})."""
+                   tests: dict[str, str] | None = None, lang: str = "he") -> tuple[str, str]:
+    """(system, user message). `files` holds (path, text, cut) for each file sent in full; `tests` names the ones
+    that are the project's tests for another sent file ({test: source}); `previous` is the change this request
+    follows ({kind: "applied" | "proposed", diff, request})."""
     language = "Hebrew" if lang == "he" else "English"
     system = SYSTEM.replace("{language}", language)
     parts = [f"REQUEST:\n{request.strip()}"]
@@ -172,6 +175,8 @@ def build_messages(request: str, facts: dict[str, Any], file_list: list[str], fi
     for path, text, cut in files:
         lines = text.count("\n") + 1
         note = " — CUT: only the start of the file is shown; do not edit past it" if cut else ""
+        if tests and path in tests:
+            note += f" — the project's tests for {tests[path]}"
         blocks.append(f"=== {path} ({lines} lines){note} ===\n{text}")
     parts.append("FILES (full text):\n" + "\n\n".join(blocks) if blocks else "FILES: none were chosen.")
     return system, "\n\n".join(parts)

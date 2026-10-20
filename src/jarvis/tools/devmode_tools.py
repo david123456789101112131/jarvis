@@ -111,7 +111,8 @@ class DevProposeTool(Tool):
     async def plan(self, params: DevProposeParams, ctx: ToolContext) -> ActionPlan:
         from jarvis.devmode import prompt
         from jarvis.devmode.edits import safe_relative
-        from jarvis.devmode.inspect import MAX_TEXT_BYTES, is_secret_name
+        from jarvis.devmode.inspect import MAX_TEXT_BYTES, is_secret_name, scan_cached
+        from jarvis.devmode.relevance import related_tests
 
         root = _root(ctx, params.path)
         engine = _engine(ctx, params, files=len(params.files), chars=0)
@@ -142,10 +143,25 @@ class DevProposeTool(Tool):
             chosen.append((rel, target, chars))
         effort, why = prompt.choose_effort(params.mode, params.request, len(chosen), total, bool(params.error_text.strip()))
         engine = _engine(ctx, params, files=len(chosen), chars=total, effort=effort)
+        # The project's own tests for those files come along (read only as context): they show what the code is
+        # meant to do, so a fix follows them instead of guessing.
+        tests: dict[str, str] = {}
+        if chosen:
+            scanned = await asyncio.to_thread(scan_cached, root)
+            related = await asyncio.to_thread(related_tests, root, scanned.files, [rel for rel, _p, _c in chosen])
+            for rel, source in related:
+                target = root / rel
+                chars = min(next((f.size for f in scanned.files if f.path == rel), 0), prompt.MAX_FILE_CHARS)
+                if chars and total + chars <= prompt.MAX_SEND_CHARS and not is_secret_name(target.name):
+                    total += chars
+                    chosen.append((rel, target, chars))
+                    tests[rel] = source
         prompt_chars = total + len(params.request) + min(len(params.error_text), 8_000) + 6_000
         estimate = prompt.estimate_cost(engine, prompt_chars)
-        ctx.extra.update(engine=engine, chosen=chosen, effort_why=why, skipped=skipped)
-        names = [f"{rel} ({chars // 1000 or 1}K)" for rel, _p, chars in chosen]
+        ctx.extra.update(engine=engine, chosen=chosen, tests=tests, effort_why=why, skipped=skipped)
+        names = [f"{rel} ({chars // 1000 or 1}K" + (ctx.t(f", הבדיקות של {Path(tests[rel]).name})",
+                                                          f", the tests of {Path(tests[rel]).name})")
+                                                    if rel in tests else ")") for rel, _p, chars in chosen]
         what = ctx.t(f"הבקשה ו-{len(chosen)} קבצים מהפרויקט", f"the request and {len(chosen)} project files") \
             if chosen else ctx.t("הבקשה ותיאור הפרויקט (בלי קבצים)", "the request and the project facts (no files)")
         paths = [PathUse(path=str(root), access="read"), *(PathUse(path=str(p), access="read") for _r, p, _c in chosen)]
@@ -211,7 +227,7 @@ class DevProposeTool(Tool):
                 masked += n
         listing = sorted(f.path for f in scanned.files if not f.secret)
         system, user = build_messages(request, facts, listing, sent, error_text=error_text, previous=previous,
-                                      lang=ctx.lang)
+                                      tests=ctx.extra.get("tests") or {}, lang=ctx.lang)
         await ctx.progress(0.2, ctx.t(f"ממתין לתשובה מ-{engine.name}…", f"Waiting for {engine.name}…"))
         req = router.request("agent", [AIMessage.user(user)], system=system, json_schema=Proposal.model_json_schema(),
                              schema_name="Proposal", effort=engine.effort, max_tokens=engine.max_tokens)

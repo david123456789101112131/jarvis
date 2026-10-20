@@ -211,10 +211,10 @@ def _with_tests(ranked: list[Ranked], candidates: list[FileInfo], lang: str) -> 
     extra: list[Ranked] = []
     for r in list(ranked):
         p = Path(r.path)
-        stem, ext = p.stem.lower(), p.suffix.lower()
+        stem = p.stem.lower()
         if stem.startswith("test_") or ".test" in stem or ".spec" in stem:
             continue
-        for name in (f"test_{stem}{ext}", f"{stem}_test{ext}", f"{stem}.test{ext}", f"{stem}.spec{ext}"):
+        for name in _test_names(r.path):
             test = by_name.get(name)
             if test is not None and test.path not in chosen:
                 chosen.add(test.path)
@@ -224,4 +224,51 @@ def _with_tests(ranked: list[Ranked], candidates: list[FileInfo], lang: str) -> 
     return ranked + extra[:3]
 
 
-__all__ = ["GLOSSARY", "Ranked", "rank_files", "terms", "traced_files"]
+def _test_names(path: str) -> tuple[str, ...]:
+    p = Path(path)
+    stem, ext = p.stem.lower(), p.suffix.lower()
+    return (f"test_{stem}{ext}", f"{stem}_test{ext}", f"{stem}.test{ext}", f"{stem}.spec{ext}")
+
+
+def _imports(stem: str) -> re.Pattern[str]:
+    """`import cart`, `from shop.cart import x`, `from . import cart`, `from './cart'`, `require('../cart.js')`."""
+    s = re.escape(stem)
+    python = rf"^\s*(?:from\s+[\w.]*\b{s}\b|from\s+[\w.]+\s+import\s+[\w, ()]*\b{s}\b|import\s+[\w., ]*\b{s}\b)"
+    script = rf"""(?:\bfrom|\brequire\(|\bimport\(?)\s*['"][^'"]*\b{s}(?:\.[cm]?[jt]sx?)?['"]"""
+    return re.compile(f"{python}|{script}", re.M | re.I)
+
+
+def related_tests(root: Path, files: list[FileInfo], chosen: list[str], *, limit: int = 3,
+                  max_read: int = 200) -> list[tuple[str, str]]:
+    """The project's tests for the chosen source files, as (test file, the file it tests): a test named after
+    the file first, then tests that import it. They show the AI what the code is meant to do."""
+    picked = set(chosen)
+    sources = [c for c in chosen if not _is_test_path(c) and Path(c).stem]
+    tests = [f for f in files if f.text and not f.secret and _is_test_path(f.path) and f.path not in picked]
+    if not sources or not tests:
+        return []
+    found: list[tuple[str, str]] = []
+
+    def take(test: str, source: str) -> bool:
+        if test not in picked:
+            picked.add(test)
+            found.append((test, source))
+        return len(found) >= limit
+
+    by_name = {f.path.rsplit("/", 1)[-1].lower(): f for f in tests}
+    for source in sources:
+        for name in _test_names(source):
+            if name in by_name and take(by_name[name].path, source):
+                return found
+    patterns = [(source, _imports(Path(source).stem)) for source in sources]
+    for f in sorted(tests, key=lambda f: f.path)[:max_read]:
+        if f.path in picked or f.size > 200_000:
+            continue
+        text = read_text(root / f.path, 200_000) or ""
+        imported = next((src for src, pattern in patterns if pattern.search(text)), None)
+        if imported is not None and take(f.path, imported):
+            break
+    return found
+
+
+__all__ = ["GLOSSARY", "Ranked", "rank_files", "related_tests", "terms", "traced_files"]

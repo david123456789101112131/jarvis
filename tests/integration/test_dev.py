@@ -150,7 +150,8 @@ class TestCodeScreen:
         assert job["sends"] and "api.x.ai" in job["sends"][0] and job["real"] is True
         asked = await approve(live)
         assert asked.risk == "high" and asked.details["engine"].startswith("Grok (grok-4.7)")
-        assert asked.details["files"] == ["shop/cart.py (1K)", "shop/config.py (1K)"]
+        assert asked.details["files"] == ["shop/cart.py (1K)", "shop/config.py (1K)",
+                                          "tests/test_cart.py (1K, הבדיקות של cart.py)"]   # its tests come along
         assert asked.details["not_sent"] == [".env"] and "$" in asked.details["price"]
         planned = await done(live, job)
         assert planned["status"] == "done", planned
@@ -159,6 +160,7 @@ class TestCodeScreen:
         sent = grok.requests[0].messages[0].text
         assert "def total(self)" in sent and CONFIG_SECRET not in sent and "xai-ZZZZ" not in sent
         assert 'API_KEY = "[REDACTED]"' in sent and grok.requests[0].effort == "low"
+        assert "=== tests/test_cart.py (6 lines) — the project's tests for shop/cart.py ===" in sent
 
         change_id = planned["result"]["change_id"]
         change = await live.get(f"/api/dev/changes/{change_id}")

@@ -572,6 +572,26 @@ class TestDevelopment:
         ran = provider.requests[2].messages[-1].tool_results[0]
         assert not ran.is_error and "shalom" in ran.content
 
+    @pytest.mark.parametrize("after_no", ["report", "tries again"])
+    async def test_code_written_but_not_approved_to_run_is_kept(self, env: Env, after_no: str) -> None:
+        target = env.kit.paths.workspace / "code" / "fib" / "fib.py"
+        source = "import os\nprint(os.getcwd())\n"     # touches the system, so running it asks first
+        last = (reply(f"כתבתי את {target}. לא הרצתי אותו כי ההרצה לא אושרה.\n\nSTATUS: success")
+                if after_no == "report" else tool("run_command", {"command": f"python {target}"}))
+        provider = env.use_ai(tool("write_file", {"path": str(target), "content": source}),
+                              tool("run_python", {"file": str(target)}), last)
+        job = asyncio.ensure_future(env.run("development", "תכתוב סקריפט", skill="write_code"))
+        req = await env.pending()
+        assert req.tool == "run_python"
+        env.kit.broker.respond(req.id, False)
+        result = await job
+        assert result.status == S.PARTIAL and result.data["code"] == "confirmation_denied"
+        assert result.files_created == [str(target)] and target.read_text(encoding="utf-8") == source
+        assert str(target) in result.summary and "לא" in result.summary
+        if after_no == "tries again":      # nothing more ran; the summary says what was made and what was not approved
+            assert result.data["stop_reason"] == "declined" and "לא אישר: הרצת הקובץ fib.py" in result.summary
+        assert len(provider.requests) == 3 and not env.kit.broker.pending()
+
     async def test_create_project_keeps_the_template_when_the_model_fails(self, env: Env) -> None:
         env.use_ai(ProviderError("overloaded"))
         result = await env.run("development", skill="create_project", params={"kind": "game", "name": "Snake"})

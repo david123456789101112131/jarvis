@@ -236,9 +236,10 @@ before that.
 ### Code & development (`/api/dev/*`)
 
 A project is opened from a folder the user picked, which gives the Development agent read access to that
-folder for the session. A change is first proposed (nothing written), shown as a diff per file, can be edited
-by hand or have files left out, and is written only on apply, after "allow changes" (`write`) and the
-approval dialog. Every applied change can be undone.
+folder for the session. The project's own tests for the chosen files (named after them or importing them, up
+to 3) go along with them, marked as tests, and the approval lists them. A change is first proposed (nothing
+written), shown as a diff per file, can be edited by hand or have files left out, and is written only on
+apply, after "allow changes" (`write`) and the approval dialog. Every applied change can be undone.
 
 | Method & path | Body | Returns |
 |---|---|---|

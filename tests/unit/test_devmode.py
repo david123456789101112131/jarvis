@@ -27,7 +27,7 @@ from jarvis.devmode.prompt import (
     cost_text,
     estimate_cost,
 )
-from jarvis.devmode.relevance import rank_files, terms, traced_files
+from jarvis.devmode.relevance import rank_files, related_tests, terms, traced_files
 from jarvis.devmode.service import parse_failures
 from jarvis.security.redaction import Redactor
 
@@ -144,6 +144,22 @@ class TestRelevance:
         ranked = rank_files(root, files, "", error_text=error, lang="he")
         assert ranked[0].path == "shop/cart.py" and ranked[0].lines == [7] and "מופיע בשגיאה" in ranked[0].reasons
         assert "tests/test_cart.py" in [r.path for r in ranked]        # its tests come along
+
+    def test_the_tests_of_the_chosen_files_come_along(self, tmp_path: Path) -> None:
+        root = python_project(tmp_path / "shop")
+        write(root, "tests/test_pricing.py", "from shop import cart\n\n\ndef test_discount():\n    ...\n")
+        write(root, "tests/test_main.py", "import main\n")
+        write(root, "tests/test_cartography.py", "import cartography\n")
+        write(root, "web/cart.test.ts", "import { total } from '../src/cart'\n")
+        files = dev_inspect.scan(root).files
+        found = related_tests(root, files, ["shop/cart.py"])
+        assert found[0] == ("tests/test_cart.py", "shop/cart.py")          # named after the file first
+        assert ("tests/test_pricing.py", "shop/cart.py") in found          # then a test that imports it
+        assert {t for t, _ in found}.isdisjoint({"tests/test_main.py", "tests/test_cartography.py"})
+        assert related_tests(root, files, ["shop/cart.py", "tests/test_cart.py"], limit=5) == [
+            ("tests/test_pricing.py", "shop/cart.py"), ("web/cart.test.ts", "shop/cart.py")]   # no test twice
+        assert related_tests(root, files, ["tests/test_cart.py"]) == []    # tests of tests: none
+        assert related_tests(root, files, ["README.md"]) == []
 
     def test_nothing_matches_falls_back_to_the_entry_point(self, tmp_path: Path) -> None:
         root = python_project(tmp_path / "shop")
@@ -275,6 +291,11 @@ class TestPrompt:
         assert user.startswith("REQUEST:\nmake the total") and "ERROR OR TEST OUTPUT" in user
         assert "=== shop/cart.py (2 lines) — CUT" in user and "FILE LIST (2 files)" in user
         assert str(tmp_path) not in user and "A small shop" not in user   # no local paths, no README
+        _, with_tests = build_messages("fix the discount", report, [], [("shop/cart.py", "x\n", False),
+                                                                        ("tests/test_cart.py", "y\n", False)],
+                                       tests={"tests/test_cart.py": "shop/cart.py"})
+        assert "=== tests/test_cart.py (2 lines) — the project's tests for shop/cart.py ===" in with_tests
+        assert "=== shop/cart.py (2 lines) ===" in with_tests and "show how the code is meant to behave" in system
         _, revise = build_messages("make it 30", report, [], [], previous={"kind": "proposed", "diff": "+x = 10",
                                                                            "request": "raise the timeout"})
         assert "YOUR PREVIOUS PROPOSAL, NOT APPLIED" in revise and "raise the timeout" in revise

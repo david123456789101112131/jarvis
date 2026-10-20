@@ -777,6 +777,8 @@ class BaseAgent:
         lang = task.language
         if loop.stop_reason == "end":
             status = report.status or (ResultStatus.PARTIAL if run.denied else ResultStatus.SUCCESS)
+            if run.declined and status == ResultStatus.SUCCESS:     # the user said no to part of it
+                status = ResultStatus.PARTIAL
         else:
             reason = {
                 "max_steps": t(lang, "הגעתי למגבלת הצעדים", "reached the step limit"),
@@ -790,6 +792,8 @@ class BaseAgent:
                 ResultStatus.PARTIAL if produced or report.body else ResultStatus.FAILED)
         summary = report.summary or (t(lang, "לא התקבל דוח מהסוכן.", "The agent returned no report.")
                                      if not run.actions else "; ".join(run.actions[-3:]))
+        if not report.summary and run.actions and loop.stop_reason == "declined" and run.denied:
+            summary = f"{summary.rstrip('.')}. {run.denied[-1]}"     # what was done, then what was not approved
         result = run.result(
             status=status, summary=summary, details=report.body or None, next_step=report.next_step,
             progress=1.0 if status == ResultStatus.SUCCESS else max(run.progress_value, 0.5 if run.actions else 0.0),

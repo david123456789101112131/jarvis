@@ -192,6 +192,9 @@ Plans are persisted after every state change, which is what makes resume possibl
   tools; child processes killed on cancel.
 - Fallbacks: a research helper subtask feeds failing development work; alternate agent for
   generic file/command work; optional subtasks can fail without failing the task.
+- A step whose action the user declined ends there: no retry, check or other agent, and the
+  steps built on it are skipped. Files it made before the decline (code written, not run)
+  are kept and listed, and the step counts as partly done.
 - Self-verification: files exist and are non-empty, commands exit 0, tests pass, HTML
   references resolve, acceptance criteria checked (LLM judge when available).
 - Checkpointing after every subtask; interrupted tasks are resumable without redoing

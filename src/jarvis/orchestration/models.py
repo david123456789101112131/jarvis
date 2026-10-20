@@ -56,6 +56,11 @@ class SubTask(BaseModel):
     def finished(self) -> bool:
         return self.status in FINISHED
 
+    @property
+    def declined(self) -> bool:
+        """The user said no to one of the step's actions (it may still have kept what it made before)."""
+        return (self.result or {}).get("code") == "confirmation_denied"
+
     def view(self) -> dict[str, Any]:
         """SubTaskView (docs/API.md)."""
         return {
@@ -102,21 +107,28 @@ class TaskPlan(BaseModel):
             if s.status != TaskStatus.PENDING:
                 continue
             deps = [self.get(d) for d in s.depends_on]
-            if all(d.status == TaskStatus.COMPLETED or (d.optional and d.finished) for d in deps):
+            if all((d.status == TaskStatus.COMPLETED and not d.declined) or (d.optional and d.finished) for d in deps):
                 out.append(s)
         return sorted(out, key=lambda s: int(s.priority))
 
     def blocked(self) -> list[SubTask]:
-        """Pending subtasks that can never run because a required dependency failed."""
+        """Pending subtasks that can never run because a required dependency failed, or the user said no
+        to one of its actions."""
         out = []
         for s in self.subtasks:
             if s.status != TaskStatus.PENDING:
                 continue
             for d in (self.get(x) for x in s.depends_on):
-                if d.status in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SKIPPED) and not d.optional:
+                if self.stops(d):
                     out.append(s)
                     break
         return out
+
+    @staticmethod
+    def stops(d: SubTask) -> bool:
+        """A required step the steps after it cannot build on."""
+        return not d.optional and (d.declined or d.status in (TaskStatus.FAILED, TaskStatus.CANCELLED,
+                                                              TaskStatus.SKIPPED))
 
     def progress(self) -> float:
         if not self.subtasks:

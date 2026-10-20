@@ -86,6 +86,16 @@ class Probe:
                                    tool="delete_path"))
         return run.result(status=ResultStatus.PARTIAL, summary="cleaned up, but old.txt is still there")
 
+    @skill(description="test: write a file, then the user says no to running it")
+    async def wrote_then_declined(self, task: AgentTask, run: RunContext) -> AgentResult:
+        counts = self.runtime.extras.setdefault("declined", {})
+        counts[task.id] = counts.get(task.id, 0) + 1
+        res = await run.tool("write_file", path="workspace/fib.py", content="print(1)")
+        assert res.ok, res.error
+        run.record(ToolResult.fail("The user did not approve: Run fib.py with Python (timed out)",
+                                   denied="confirmation", tool="run_python"))
+        return run.result(status=ResultStatus.PARTIAL, summary="wrote fib.py; did not run it")
+
     @skill(description="test: crash (raise) on the first `crashes` attempts of this step")
     async def crashy(self, task: AgentTask, run: RunContext, crashes: int = 1) -> AgentResult:
         counts = self.runtime.extras.setdefault("crashy", {})
@@ -471,6 +481,26 @@ class TestRecovery:
         assert a.status == S.FAILED and a.attempts == 1 and o.extras["declined"] == {a.id: 1}   # not again
         assert "did not approve: delete old.txt" in (a.error or "")
         assert b.status == S.SKIPPED
+
+    async def test_what_a_step_made_before_the_user_said_no_is_kept(self, o: Orch) -> None:
+        o.cfg.max_retries = 3
+        task = await o.run(plan=plan_of(step("a", "development", "wrote_then_declined")))
+        a = o.sub(task, "a")
+        assert task.status == S.COMPLETED and a.status == S.COMPLETED and a.attempts == 1
+        assert o.extras["declined"] == {a.id: 1}                   # not again, and not checked into a retry
+        assert [Path(f).name for f in a.files_created] == ["fib.py"]
+        assert task.outcome is not None and [Path(f).name for f in task.outcome.files_created] == ["fib.py"]
+        assert any("did not approve: Run fib.py" in i for i in task.outcome.issues)
+        assert any(m.endswith("(partly)") for m in (e.message for e in task.timeline if e.kind == "done"))
+
+    async def test_steps_built_on_a_declined_action_still_do_not_run(self, o: Orch) -> None:
+        plan = plan_of(step("a", "development", "wrote_then_declined"), step("b", "system", after=("a",)),
+                       step("c", "creative"))
+        task = await o.run(plan=plan)
+        a, b, c = o.sub(task, "a"), o.sub(task, "b"), o.sub(task, "c")
+        assert a.status == S.COMPLETED and a.files_created
+        assert b.status == S.SKIPPED and "was not approved" in (b.error or "")
+        assert c.status == S.COMPLETED and task.status == S.FAILED
 
     async def test_an_optional_step_may_fail(self, o: Orch) -> None:
         plan = plan_of(step("a", "research", "flaky", params={"failures": 99}, optional=True),

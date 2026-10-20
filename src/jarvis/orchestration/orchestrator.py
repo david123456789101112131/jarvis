@@ -672,8 +672,14 @@ class TaskOrchestrator:
         for conf_id in [c for c, sid in run.confirmations.items() if sid == s.id]:
             run.confirmations.pop(conf_id, None)
         # The user said no to one of the step's actions: it ends there (no check, no retry, no other agent),
-        # and the steps that needed it do not run.
+        # and the steps that needed it do not run. Files it made before that are kept as a partial result
+        # (code written but not run), not thrown away as a failure.
         declined = result.data.get("code") == "confirmation_denied"
+        if declined and result.status in (ResultStatus.SUCCESS, ResultStatus.PARTIAL) and (
+                result.files_created or result.files_modified):
+            result.status = ResultStatus.PARTIAL
+            await self._complete(run, s, result)
+            return
         if result.status in (ResultStatus.SUCCESS, ResultStatus.PARTIAL) and not declined:
             problems: list[str] = []
             if self.cfg.verify_results and run.stop is None:
@@ -864,11 +870,12 @@ class TaskOrchestrator:
         while changed:
             changed = False
             for s in plan.blocked():
-                dep = next(plan.get(d) for d in s.depends_on
-                           if plan.get(d).status in (TaskStatus.FAILED, TaskStatus.CANCELLED, TaskStatus.SKIPPED)
-                           and not plan.get(d).optional)
-                await self._finish_step(task, s, TaskStatus.SKIPPED, t(lang, f"דילגתי: השלב '{dep.title}' לא הושלם",
-                                                                       f"Skipped: '{dep.title}' did not complete"))
+                dep = next(plan.get(d) for d in s.depends_on if plan.stops(plan.get(d)))
+                reason = (t(lang, f"דילגתי: פעולה בשלב '{dep.title}' לא אושרה",
+                            f"Skipped: an action in '{dep.title}' was not approved")
+                          if dep.status == TaskStatus.COMPLETED else
+                          t(lang, f"דילגתי: השלב '{dep.title}' לא הושלם", f"Skipped: '{dep.title}' did not complete"))
+                await self._finish_step(task, s, TaskStatus.SKIPPED, reason)
                 changed = True
 
     # -- recovery helpers --------------------------------------------------------------------------
