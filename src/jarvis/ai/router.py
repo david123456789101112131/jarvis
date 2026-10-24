@@ -228,13 +228,14 @@ class ProviderRouter:
         effort: Effort | None = None,
         max_tokens: int | None = None,
         timeout_s: float | None = None,
+        on_text: Callable[[str], None] | None = None,
     ) -> CompletionRequest:
         cfg = self.settings.role(role)
         return CompletionRequest(
             messages=list(messages), system=system, tools=list(tools), json_schema=json_schema,
             schema_name=schema_name, web_search_uses=web_search_uses, web_fetch=web_fetch,
             effort=effort or cfg.effort, max_tokens=max_tokens or cfg.max_tokens, timeout_s=timeout_s,
-            role=role, model=cfg.model or None,
+            role=role, model=cfg.model or None, on_text=on_text,
         )
 
     async def complete(self, request: CompletionRequest, *, provider: str | None = None) -> AIResponse:
@@ -321,14 +322,16 @@ class ProviderRouter:
         effort: Effort | None = None,
         max_tokens: int | None = None,
         attempts: int = 2,
+        on_text: Callable[[str], None] | None = None,
     ) -> T:
-        """Ask for a reply that validates as `output`; one corrective retry on invalid JSON."""
+        """Ask for a reply that validates as `output`; one corrective retry on invalid JSON. `on_text` sees the JSON
+        while it is written (the first attempt only)."""
         messages = [AIMessage.user(prompt)] if isinstance(prompt, str) else list(prompt)
         schema = output.model_json_schema()
         error: str | None = None
-        for _ in range(max(1, attempts)):
+        for attempt in range(max(1, attempts)):
             req = self.request(role, messages, system=system, json_schema=schema, schema_name=output.__name__,
-                               effort=effort, max_tokens=max_tokens)
+                               effort=effort, max_tokens=max_tokens, on_text=on_text if attempt == 0 else None)
             response = await self.complete(req)
             try:
                 return output.model_validate(response.parse_json())

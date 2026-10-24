@@ -10,6 +10,7 @@ import json
 import logging
 import re
 from collections.abc import Callable
+from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
 from jarvis.ai.base import AIProvider
@@ -160,7 +161,10 @@ class OpenAICompatibleProvider(AIProvider):
         client = self._get_client()
         kwargs = self.build_request(request)
         try:
-            completion = await client.chat.completions.create(**kwargs)
+            if request.on_text is not None and not request.tools:
+                completion = await self._streamed(client, kwargs, request.on_text)
+            else:
+                completion = await client.chat.completions.create(**kwargs)
         except ProviderError:
             raise
         except Exception as exc:
@@ -174,6 +178,33 @@ class OpenAICompatibleProvider(AIProvider):
             raise ProviderRefusal(f"{self.name} declined this request.", details={"provider": self.name})
         self.last_error = None
         return self._account(response)
+
+    async def _streamed(self, client: Any, kwargs: dict[str, Any], on_text: Callable[[str], None]) -> Any:
+        """The same request, streamed: `on_text` sees the text so far after every piece. Returns an object shaped
+        like a completion, for `_to_response`."""
+        stream = await client.chat.completions.create(**kwargs, stream=True, stream_options={"include_usage": True})
+        parts: list[str] = []
+        finish: str | None = None
+        refusal: str | None = None
+        usage: Any = None
+        model = kwargs.get("model", self.model)
+        async for chunk in stream:
+            usage = getattr(chunk, "usage", None) or usage
+            model = getattr(chunk, "model", None) or model
+            for choice in getattr(chunk, "choices", None) or []:
+                delta = getattr(choice, "delta", None)
+                piece = getattr(delta, "content", None)
+                refusal = getattr(delta, "refusal", None) or refusal
+                finish = getattr(choice, "finish_reason", None) or finish
+                if piece:
+                    parts.append(piece)
+                    try:
+                        on_text("".join(parts))
+                    except Exception:
+                        log.debug("on_text failed", exc_info=True)
+        message = SimpleNamespace(content="".join(parts), tool_calls=None, refusal=refusal)
+        return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish)], usage=usage,
+                               model=model)
 
     def _map_error(self, exc: Exception) -> ProviderError:
         try:

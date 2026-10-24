@@ -8,6 +8,7 @@ provider uses the neutral fields (`text`, `tool_calls`) instead.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -112,6 +113,9 @@ class CompletionRequest(BaseModel):
     timeout_s: float | None = None
     role: str = "agent"
     model: str | None = None   # per-role override of the provider's default model
+    # Called with the reply text so far while it is being written (a provider that can stream; others ignore it),
+    # so a spoken reply can start before the model has finished.
+    on_text: Callable[[str], None] | None = Field(default=None, exclude=True, repr=False)
 
 
 class AIResponse(BaseModel):

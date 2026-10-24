@@ -78,6 +78,7 @@ from jarvis.voice.base import (
     CommandHandler,
     NullVoiceEvents,
     SpeechReply,
+    SpeechStream,
     Transcript,
     VoiceEventSink,
     VoiceState,
@@ -294,7 +295,8 @@ class VoicePipeline:
         self.last_transcript: Transcript | None = None
         self.last_error: str | None = None
         self.disabled_reason: str | None = None
-        self.stats = {"wakes": 0, "talk_keys": 0, "barge_ins": 0, "turns": 0, "errors": 0, "frames": 0}
+        self.stats = {"wakes": 0, "talk_keys": 0, "barge_ins": 0, "turns": 0, "early_replies": 0, "errors": 0,
+                      "frames": 0}
         self._listen: _Listen | None = None
         self._listen_seq = 0
         self._turn_seq = 0
@@ -808,10 +810,19 @@ class VoicePipeline:
         self.language = language
         self.stats["turns"] += 1
         self._events.emit("on_transcript", final)
+        # The reply can start sounding while the AI is still writing it: the handler puts it in `stream`.
+        measured = None if turn.transcript is not None else heard_at
+        stream = SpeechStream(max_chars=o.max_speech_chars) if o.speak_responses else None
+        final.stream = stream
+        early = self._spawn(self._say_early(stream, language, lambda: self._is_current(turn), measured)) \
+            if stream is not None else None
         try:
             reply = coerce_reply(await self._call_handler(final))
         except Exception as exc:
             log.warning("Voice command handler failed: %s", _short(exc), exc_info=True)
+            if stream is not None and early is not None:
+                stream.close()
+                await early
             if not self._is_current(turn):
                 return
             self.stats["errors"] += 1
@@ -821,6 +832,10 @@ class VoicePipeline:
             if self._is_current(turn):
                 self._flash_error(self.last_error)
             return
+        finally:
+            if stream is not None:
+                stream.close()
+        spoke_early = bool(await early) if early is not None else False
         if not self._is_current(turn):
             return
         self._events.emit("on_pipeline", "done", "done", _label("done", language))
@@ -830,8 +845,13 @@ class VoicePipeline:
         reply_language = reply.language if reply.language in ("he", "en") else (
             detect_language(reply.text, default=language) if reply.text else language
         )
-        await self._say(reply.text, reply.ack_key, reply_language, guard=lambda: self._is_current(turn), trigger="reply",
-                        heard_at=None if turn.transcript is not None else heard_at)
+        if spoke_early and stream is not None:          # say only what is left, with no acknowledgement first
+            self.stats["early_replies"] += 1
+            await self._say(stream.rest_of(reply.text or ""), None, reply_language, guard=lambda: self._is_current(turn),
+                            trigger="reply", display=reply.text)
+        else:
+            await self._say(reply.text, reply.ack_key, reply_language, guard=lambda: self._is_current(turn),
+                            trigger="reply", heard_at=measured)
         if not self._is_current(turn):
             return
         if reply.follow_up:
@@ -881,10 +901,57 @@ class VoicePipeline:
         while not self._stopping and (self.busy or (self.state is VoiceState.ERROR and self._source_problem is None)):
             await asyncio.sleep(0.05)
 
+    async def _say_early(self, stream: SpeechStream, language: str, guard: Callable[[], bool],
+                         heard_at: float | None) -> bool:
+        """Speak the reply's sentences as the AI writes them, while the handler is still at work: each piece is
+        synthesized as soon as it is complete and played after the one before. True when something was spoken."""
+        piece = await stream.next()
+        if piece is None or not guard():
+            return False
+        o = self.options
+        ready: asyncio.Queue[tuple[str, str, asyncio.Task] | None] = asyncio.Queue()
+
+        async def synthesize_pieces(first: str) -> None:
+            text: str | None = first
+            while text is not None:
+                body = prepare_speech_text(text, max_chars=o.max_speech_chars)
+                if body:
+                    lang = detect_language(body, default=language)
+                    ready.put_nowait((body, lang, self._spawn(self._synthesize(body, lang))))
+                text = await stream.next()
+            ready.put_nowait(None)
+
+        spoken: list[str] = []
+        async with self._speech_lock:
+            producer = self._spawn(synthesize_pieces(piece))
+            try:
+                while (item := await ready.get()) is not None:
+                    body, lang, job = item
+                    clip = await job
+                    if not guard():
+                        break
+                    if clip is None:
+                        continue
+                    spoken.append(body)
+                    if len(spoken) == 1:
+                        self._speaking(body, lang, "reply", False, heard_at)
+                    else:                             # the text on screen grows with the speech
+                        self._events.emit("on_speech", " ".join(spoken), lang)
+                    if not await self._play(clip):
+                        break
+            finally:
+                producer.cancel()
+                while not ready.empty():
+                    left = ready.get_nowait()
+                    if left is not None:
+                        left[2].cancel()
+        return bool(spoken)
+
     async def _say(self, text: str | None, ack_key: str | None, language: str, *, guard: Callable[[], bool], trigger: str,
-                   heard_at: float | None = None) -> bool:
+                   heard_at: float | None = None, display: str | None = None) -> bool:
         """Speak an acknowledgement and/or text. Returns False when interrupted or superseded. `heard_at`: when
-        the user stopped speaking, to measure how long the reply took to start sounding."""
+        the user stopped speaking, to measure how long the reply took to start sounding. `display`: the text shown
+        while speaking, when it is more than what is said (the rest of a reply that started early)."""
         o = self.options
         if not o.speak_responses:
             return True
@@ -894,7 +961,8 @@ class VoicePipeline:
         body = prepare_speech_text(text, max_chars=o.max_speech_chars) if text else ""
         if not ack_text and not body:
             return True
-        spoken = " ".join(p for p in (ack_text, body) if p)
+        spoken = prepare_speech_text(display, max_chars=o.max_speech_chars) if display else \
+            " ".join(p for p in (ack_text, body) if p)
         chunks = split_sentences(body) if body else []
         async with self._speech_lock:
             if not guard():

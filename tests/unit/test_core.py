@@ -24,7 +24,7 @@ from jarvis.ai.types import AIResponse, CompletionRequest
 from jarvis.common.enums import AgentId, AgentStatus, Mode, Priority, TaskStatus
 from jarvis.common.errors import ProviderError
 from jarvis.config.settings import AISettings
-from jarvis.core.core import JarvisCore
+from jarvis.core.core import ChatTurn, JarvisCore
 from jarvis.core.intents import I
 from jarvis.memory.models import TaskRecord
 from jarvis.orchestration import SubTask, TaskOrchestrator, TaskPlan
@@ -450,6 +450,36 @@ class TestConversation:
         assert [m.role for m in last.messages] == ["user", "assistant", "user"]
         assert last.messages[0].text == "ספר לי בדיחה" and last.messages[-1].text == "למה זה מצחיק?"
         assert "Hebrew" in last.system and "run_task" in last.system
+
+    async def test_a_spoken_reply_is_passed_on_while_it_is_written(self, c: C) -> None:
+        answer = json.dumps({"run_task": False, "reply": "כי הוא שכח לסגור את החלונות. זאת בדיחה!", "task": ""},
+                            ensure_ascii=False)
+
+        def writing(request: CompletionRequest) -> AIResponse:
+            assert request.on_text is not None and request.json_schema is not None
+            for end in range(10, len(answer) + 1, 7):
+                request.on_text(answer[:end])
+            request.on_text(answer)
+            return reply(answer)
+
+        c.env.use_ai(writing)
+        heard: list[tuple[str, bool]] = []
+        res = await asyncio.wait_for(c.core.voice_command("למה המחשב התקרר?", "he",
+                                                          early=lambda text, done: heard.append((text, done))), 30)
+        assert res.reply["text"] == "כי הוא שכח לסגור את החלונות. זאת בדיחה!"
+        assert heard[-1] == (res.reply["text"], True) and len(heard) > 2
+        assert all(res.reply["text"].startswith(text) for text, _ in heard)
+        # The model decides whether to act before it words the reply.
+        assert list(ChatTurn.model_json_schema()["properties"])[:2] == ["run_task", "reply"]
+
+    async def test_typed_and_with_the_kill_switch_nothing_is_passed_on_early(self, c: C) -> None:
+        provider = c.env.use_ai(default=chat_turn("בסדר."))
+        await c.say("ספר לי בדיחה")
+        assert provider.requests[-1].on_text is None                    # typed: no voice channel
+        await c.core.kill_switch.engage("test")
+        await asyncio.wait_for(c.core.voice_command("ספר לי עוד אחת", "he", early=lambda t, d: None), 30)
+        assert provider.requests[-1].on_text is None
+        await c.core.kill_switch.release()
 
     async def test_the_model_hands_work_to_the_agents(self, c: C) -> None:
         c.env.use_ai(chat_turn("אני על זה.", run_task=True, task="השווה מחירים של מחשבים ניידים"),

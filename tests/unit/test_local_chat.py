@@ -26,7 +26,15 @@ from jarvis.ai.types import AIMessage, CompletionRequest, ToolSpec
 from jarvis.common import llama
 from jarvis.common.errors import ProviderUnavailable
 from jarvis.common.gpu import GpuTurns
-from jarvis.common.llama import BLOCKED_TEXT, EXE_NAME, Probe, Runtime, blocked_by_windows, ollama_runtimes
+from jarvis.common.llama import (
+    BLOCKED_TEXT,
+    EXE_NAME,
+    Probe,
+    ProbeCache,
+    Runtime,
+    blocked_by_windows,
+    ollama_runtimes,
+)
 from jarvis.config.settings import AISettings, LocalModelSettings, Settings
 from jarvis.security.process import ProcessRegistry
 
@@ -131,6 +139,15 @@ class TestCommand:
         assert json.loads(args[args.index("--chat-template-kwargs") + 1]) == {"enable_thinking": False}
         assert args[args.index("--temp") + 1] == "1.0" and args[args.index("--top-k") + 1] == "64"
 
+    def test_a_newer_build_turns_thinking_off_its_own_way(self, tmp_path: Path) -> None:
+        server = server_for(model_folder(tmp_path / "chat"), tmp_path)
+        server._port, server._api_key = 5555, "k"
+        server.flags = {"--fit", "--reasoning", "--chat-template-kwargs"}    # the template switch is deprecated there
+        args = server.command()
+        assert args[args.index("--reasoning") + 1] == "off" and "--chat-template-kwargs" not in args
+        server.settings.thinking = True
+        assert server.command()[server.command().index("--reasoning") + 1] == "on"
+
     def test_an_older_build_gets_only_what_it_knows(self, tmp_path: Path) -> None:
         server = server_for(model_folder(tmp_path / "chat"), tmp_path, gpu_layers=-1)
         server._port, server._api_key = 5555, "k"
@@ -203,6 +220,35 @@ class TestRuntime:
         assert server.command()[0] == str(cuda.exe)
         assert await server.pick_runtime() == cuda and len(seen) == 2  # probed once
 
+    async def test_what_was_found_is_remembered_between_starts(self, tmp_path: Path,
+                                                               monkeypatch: pytest.MonkeyPatch) -> None:
+        calls: list[Runtime] = []
+
+        def fake_probe(runtime: Runtime) -> Probe:
+            calls.append(runtime)
+            return Probe(runtime, {"--fit"}, ["CUDA0: GPU"])
+
+        monkeypatch.setattr(llama, "probe", fake_probe)
+        root = model_folder(tmp_path / "chat")
+
+        def fresh() -> ChatServer:                               # a new start of JARVIS
+            server = server_for(root, tmp_path)
+            server.fallbacks = lambda: []
+            return server
+
+        found = await fresh().pick_runtime()
+        assert await fresh().pick_runtime() == found and len(calls) == 1      # read back, not probed again
+        exe = root / "llama.cpp" / "b1" / EXE_NAME
+        os.utime(exe, (exe.stat().st_atime, exe.stat().st_mtime + 10))       # an updated program is probed again
+        await fresh().pick_runtime()
+        assert len(calls) == 2
+        cache = ProbeCache(tmp_path / "probes.json")
+        cache.put(Probe(Runtime(exe), error="it did not start"))             # perhaps passing: not remembered
+        assert cache.get(Runtime(exe)) is None
+        cache.put(Probe(Runtime(exe), blocked=True, error="blocked"))         # Windows' refusal is
+        assert (remembered := cache.get(Runtime(exe))) is not None and remembered.blocked
+        assert ProbeCache(None).get(Runtime(exe)) is None
+
     async def test_nothing_that_runs_says_why(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         server = server_for(model_folder(tmp_path / "chat"), tmp_path)
         server.fallbacks = lambda: []
@@ -265,6 +311,24 @@ class TestServing:
             await server.stop()
             await local.aclose()
         assert not server.running and server.processes.list() == []
+
+    async def test_a_reply_can_be_read_while_it_is_written(self, tmp_path: Path, fake_env: Path) -> None:
+        server = server_for(model_folder(tmp_path / "chat"), tmp_path)
+        local = LocalModelProvider(server.settings, server=server)
+        schema = {"type": "object", "properties": {"steps": {"type": "array", "items": {"type": "string"}}},
+                  "required": ["steps"]}
+        seen: list[str] = []
+        try:
+            response = await local.complete(request("ספר לי משהו", on_text=seen.append))
+            assert response.text == "שלום! ספר לי משהו" and response.stop_reason == "end"
+            assert response.usage.output_tokens == 5 and response.provider == "local"
+            assert len(seen) >= 3 and seen[-1] == response.text and all(response.text.startswith(t) for t in seen)
+            seen.clear()
+            planned = await local.complete(request("תכנן", json_schema=schema, on_text=seen.append))
+            assert planned.parse_json() == {"steps": ["a", "b"]} and seen[-1] == planned.text and len(seen) > 1
+        finally:
+            await server.stop()
+            await local.aclose()
 
     async def test_tools_and_json_replies(self, tmp_path: Path, fake_env: Path,
                                           monkeypatch: pytest.MonkeyPatch) -> None:

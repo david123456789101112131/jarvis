@@ -2,7 +2,7 @@
 
 Every test runs with `JARVIS_HOME` pointing at a fresh temporary folder and `JARVIS_KEYRING=0`, so
 nothing (the JARVIS processes the tests start included) touches the real user profile, keyring or
-workspace.
+workspace; an Ollama installed on the machine is not looked for.
 """
 
 from __future__ import annotations
@@ -30,6 +30,10 @@ def _isolated_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
             monkeypatch.delenv(key, raising=False)
     for key in ("ANTHROPIC_API_KEY", "XAI_API_KEY", "OPENAI_API_KEY", "BRAVE_API_KEY", "TAVILY_API_KEY"):
         monkeypatch.delenv(key, raising=False)
+    # Ollama installed on the test machine must not count as a model runtime (tests pass their own folders).
+    from jarvis.common import llama
+
+    monkeypatch.setattr(llama, "ollama_roots", lambda: [])
     return home
 
 

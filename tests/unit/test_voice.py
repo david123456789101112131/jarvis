@@ -1409,6 +1409,41 @@ class TestPipeline:
         assert h.sink.interrupted and h.played()[-1] == "עצרתי."
         assert h.pipeline.state is VoiceState.IDLE  # no follow-up after the superseded reply
 
+    async def test_the_reply_starts_while_it_is_still_being_written(self, tmp_path: Path) -> None:
+        holder: dict[str, Harness] = {}
+
+        async def writing(transcript: Transcript) -> SpeechReply:
+            h, stream = holder["h"], transcript.stream
+            assert stream is not None
+            stream.update("The first sentence is here. And")             # the AI is still writing
+            await wait_for(lambda: "The first sentence is here." in h.played(), what="the first sentence to sound")
+            assert h.pipeline.state is VoiceState.SPEAKING
+            stream.update("The first sentence is here. And the second one.", True)
+            await asyncio.sleep(0.05)
+            return SpeechReply(text="The first sentence is here. And the second one. Then a third.", ack_key="on_it",
+                               follow_up=False)
+
+        async with Harness(tmp_path, texts=["tell me something"], handler=writing) as h:
+            holder["h"] = h
+            h.say(1.0)
+            await wait_for(lambda: h.pipeline.stats["turns"] and h.quiet, what="turn to finish")
+            await h.pipeline.flush_events()
+        played = h.played()
+        assert played[played.index("The first sentence is here."):] == [
+            "The first sentence is here.", "And the second one.", "Then a third."]       # each once, no "On it."
+        assert "On it." not in played and h.pipeline.stats["early_replies"] == 1
+        speech = [text for text, _lang in h.events.of("speech")]
+        assert speech[0] == "The first sentence is here." and speech[-1].endswith("Then a third.")
+        timings = {name for name, _ms, _ok in h.events.of("timing")}
+        assert "voice.reply" in timings                                   # measured at the first sentence
+
+    async def test_a_reply_that_was_not_written_early_is_spoken_as_before(self, tmp_path: Path) -> None:
+        async with Harness(tmp_path, texts=["open chrome"],
+                           reply=SpeechReply(text="Opening Chrome.", ack_key="on_it", follow_up=False)) as h:
+            h.say(1.0)
+            await wait_for(lambda: h.pipeline.stats["turns"] and h.quiet, what="turn to finish")
+        assert h.played()[-2:] == ["On it.", "Opening Chrome."] and h.pipeline.stats["early_replies"] == 0
+
     async def test_handler_error_flashes_error(self, tmp_path: Path) -> None:
         async def broken(transcript: Transcript) -> str:
             raise RuntimeError("core exploded")

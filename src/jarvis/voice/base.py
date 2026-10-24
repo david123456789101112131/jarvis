@@ -9,6 +9,8 @@ The app gives the voice service two things:
 
 from __future__ import annotations
 
+import asyncio
+import re
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -32,6 +34,80 @@ class Transcript:
     final: bool = True
     confidence: float | None = None
     duration_s: float | None = None
+    # Where the handler can put the reply while it is still being written (the pipeline speaks it at once).
+    stream: SpeechStream | None = field(default=None, compare=False, repr=False)
+
+
+_SENTENCE_END = re.compile(r"[.!?…:](?=\s)|\n")
+
+
+class SpeechStream:
+    """A reply that is still being written: `update()` is given the text so far (from the core, as the AI writes
+    it), and the voice pipeline takes each piece that ends a sentence with `next()` and speaks it, while the rest
+    is still coming. When the handler returns its full reply, `said` is what was spoken already.
+
+    A piece is at least `min_chars` long (a tiny first sentence waits for the next one), so the first sound comes
+    with the first complete sentence. Nothing more is handed out after `max_chars` (a long reply is cut there).
+    """
+
+    def __init__(self, *, min_chars: int = 12, max_chars: int = 900) -> None:
+        self.min_chars = min_chars
+        self.max_chars = max_chars
+        self.text = ""
+        self.taken = 0                 # characters of `text` handed out
+        self.complete = False          # the writer finished the reply
+        self.closed = False            # no more pieces (the handler returned, or the text changed under us)
+        self._changed = asyncio.Event()
+
+    @property
+    def said(self) -> str:
+        return self.text[:self.taken]
+
+    def update(self, text: str, done: bool = False) -> None:
+        if self.closed:
+            return
+        if not text.startswith(self.said):        # rewritten (another attempt): the full reply decides the rest
+            self.close()
+            return
+        self.text = text
+        self.complete = self.complete or done
+        self._changed.set()
+
+    def close(self) -> None:
+        self.closed = True
+        self._changed.set()
+
+    def _cut(self) -> int | None:
+        rest = self.text[self.taken:]
+        if not rest.strip() or self.taken >= self.max_chars:
+            return None
+        for end in _SENTENCE_END.finditer(rest):
+            if len(rest[:end.end()].strip()) >= self.min_chars:
+                return self.taken + end.end()
+        return len(self.text) if self.complete else None
+
+    async def next(self) -> str | None:
+        """The next piece to speak; None once nothing more will come before the full reply."""
+        while True:
+            cut = None if self.closed else self._cut()
+            if cut is not None:
+                piece, self.taken = self.text[self.taken:cut], cut
+                return piece
+            if self.closed or self.complete:
+                return None
+            self._changed.clear()
+            await self._changed.wait()
+
+    def rest_of(self, reply: str) -> str:
+        """What is left to say of the full `reply` once the pieces already handed out were spoken."""
+        said, full = self.said.strip(), (reply or "").strip()
+        if not said:
+            return full
+        if full.startswith(said):
+            return full[len(said):].strip()
+        if said.startswith(full.rstrip("…").rstrip()):  # the reply was cut shorter than what was said
+            return ""
+        return full                                      # a different reply (an error): say it whole
 
 
 @dataclass

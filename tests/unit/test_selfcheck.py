@@ -76,6 +76,7 @@ async def test_computer_control_line(setup, monkeypatch, tmp_path) -> None:
     ready = line(await run_checks(settings, paths))
     assert ready["status"] == "ok" and "Holo-3.1-9B-Q8_0.gguf" in ready["detail"] and "runs with" in ready["detail"]
     monkeypatch.setattr(llama, "probe", lambda r: llama.Probe(r, blocked=True, error="blocked"))
+    (paths.logs / "llama-runtimes.json").unlink()                # what the first check found is remembered
     blocked = line(await run_checks(settings, paths))
     assert blocked["status"] == "warn" and "Smart App Control" in blocked["detail"], blocked
     settings.computer.enabled = False
@@ -129,6 +130,7 @@ async def test_the_free_chat_model_answers_once_installed(setup, tmp_path, monke
     assert "the local model runs with llama.cpp" in ai["detail"]
     # Windows' Smart App Control refuses the unsigned program, and there is no signed copy: said so, with the fix.
     monkeypatch.setattr(llama, "probe", lambda r: llama.Probe(r, blocked=True, error="blocked"))
+    (paths.logs / "llama-runtimes.json").unlink()                # what the first check found is remembered
     ai = next(c for c in (await run_checks(settings, paths))["checks"] if c["name"] == "ai")
     assert ai["status"] == "warn" and "Smart App Control" in ai["detail"] and "Ollama" in ai["detail"], ai
 

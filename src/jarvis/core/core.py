@@ -48,6 +48,7 @@ from jarvis.common.ids import new_id
 from jarvis.common.text import detect_language, normalize
 from jarvis.core import replies as R
 from jarvis.core.ai_words import AIWord, named_ai
+from jarvis.core.early import EarlyReply, Say
 from jarvis.core.intents import ACTION_INTENTS, I, Intent, IntentDetector
 from jarvis.memory.models import ChatRecord
 
@@ -99,13 +100,14 @@ _PIPELINE_LABELS = {
 
 
 class ChatTurn(BaseModel):
-    """The model's answer to something the rules did not recognise."""
+    """The model's answer to something the rules did not recognise. `run_task` comes first: the model decides
+    whether to act before it words the reply, and the reply can be spoken while the rest is still being written."""
 
-    reply: str = Field(description="What JARVIS says now, in the user's language. When run_task is true: one short "
-                                   "sentence acknowledging the work.")
     run_task: bool = Field(description="True when the user asks JARVIS to do something on the computer or to "
                                        "produce work (files, code, websites, research with current information, "
                                        "designs, plans) that the agents should carry out")
+    reply: str = Field(description="What JARVIS says now, in the user's language. When run_task is true: one short "
+                                   "sentence acknowledging the work.")
     task: str = Field(description="When run_task is true: the request restated as one complete, self-contained "
                                   "instruction in the user's language; otherwise an empty string")
     agent: Literal["", "research", "system", "development", "creative", "planner"] = Field(
@@ -131,7 +133,8 @@ _DELEGATE_RULE = """
 When the user wants something done on the computer or wants work produced (files, code, a website, a design, a
 plan, research that needs current information), set run_task and restate the request in "task"; the agents will do
 it and report back. When one agent can do all of it, name that agent in "agent" so it starts at once. Answer
-questions, advice and conversation yourself with run_task false."""
+questions, advice and conversation yourself with run_task false. In Hebrew, "תפתח"/"פתח" with an app, a file or a
+site means open it (not develop it)."""
 _CHAT_MODE_RULE = """
 You are in chat mode: you only talk. If the user asks you to act on the computer, say that in normal mode you
 would hand it to the agents."""
@@ -197,6 +200,7 @@ class _Turn:
     skill: str | None = None
     started: float = field(default_factory=time.perf_counter)
     route: str = "other"              # how it was handled, for the speed measurements ("instant", "chat_ai"...)
+    early: Say | None = None          # a voice command's channel for speaking the reply while it is written
 
 
 @dataclass
@@ -322,9 +326,11 @@ class JarvisCore:
             task.cancel()
 
     # ================================================================== input
-    async def handle_input(self, text: str, *, source: Source | str = "text", language: str | None = None) -> CommandResult:
+    async def handle_input(self, text: str, *, source: Source | str = "text", language: str | None = None,
+                           early: Say | None = None) -> CommandResult:
         """Handle one command or message. Returns quickly: long work continues in the background and its
-        result arrives as a chat message (and speech, for voice commands)."""
+        result arrives as a chat message (and speech, for voice commands). `early`: where a reply the AI is still
+        writing can already be spoken (the voice channel)."""
         started = time.perf_counter()
         raw = " ".join((text or "").split())
         word = named_ai(raw)                     # "תשתמש בגרוק ותכתוב לי שיר": the AI, then the command itself
@@ -342,7 +348,7 @@ class JarvisCore:
                 cmd_id = (await self.memory.add_command(raw, source=str(source), intent=intent.name)).id
         message = await self.say(raw, role="user", kind="answer", lang=lang, source=str(source), intent=intent.name)
         turn = _Turn(text=intent.text or command, raw=raw, intent=intent, lang=lang, source=str(source),
-                     cmd_id=cmd_id, message=message, started=started)
+                     cmd_id=cmd_id, message=message, started=started, early=early)
         await self._pipeline("understanding", "done", lang, intent.name)
         self._measure("command.understood", started)
         try:
@@ -364,8 +370,8 @@ class JarvisCore:
             await self._pipeline("done", "done", lang)
         return result
 
-    async def voice_command(self, text: str, language: str | None = None) -> CommandResult:
-        return await self.handle_input(text, source="voice", language=language)
+    async def voice_command(self, text: str, language: str | None = None, *, early: Say | None = None) -> CommandResult:
+        return await self.handle_input(text, source="voice", language=language, early=early)
 
     # ================================================================== routing
     async def _route(self, turn: _Turn, word: AIWord | None = None) -> CommandResult:
@@ -790,12 +796,16 @@ class JarvisCore:
         await self._pipeline("routing", "active", lang, t(lang, "חושב…", "Thinking…"))
         system = await self._chat_system(turn)
         messages = self._chat_messages(turn)
+        # A spoken reply starts with its first sentence, while the model is still writing the rest. Not with the kill
+        # switch engaged: a task's acknowledgement would then be replaced by the refusal.
+        early = EarlyReply(turn.early, structured=self._mode != Mode.CHAT) \
+            if turn.early is not None and not self.kill_switch.global_engaged else None
         try:
             if self._mode == Mode.CHAT:
-                response = await router.complete(router.request("chat", messages, system=system))
+                response = await router.complete(router.request("chat", messages, system=system, on_text=early))
                 decision = ChatTurn(reply=response.text.strip(), run_task=False, task="")
             else:
-                decision = await router.structured("chat", messages, ChatTurn, system=system)
+                decision = await router.structured("chat", messages, ChatTurn, system=system, on_text=early)
         except ProviderError as exc:
             await self._pipeline("routing", "error", lang, exc.message[:80])
             if exc.details.get("code") == "local_blocked":

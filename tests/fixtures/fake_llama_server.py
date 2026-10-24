@@ -2,8 +2,11 @@
 OpenAI-compatible /v1/chat/completions that checks the API key. It answers from what it is asked:
 
   a request with tools        -> one tool call to the first tool, with {"city": "ירושלים"}
-  a json_schema reply format  -> {"steps": ["a", "b"]}, or a 400 about the grammar when FAKE_LLAMA_NO_SCHEMA is set
+  a json_schema reply format  -> {"steps": ["a", "b"]} (a chat turn's schema: a two-sentence reply), or a 400 about
+                                 the grammar when FAKE_LLAMA_NO_SCHEMA is set
   anything else               -> "שלום! <the last user message>"
+
+With "stream": true the same answer comes as server-sent events, four characters at a time.
 
 `--help` prints the options listed in FAKE_LLAMA_FLAGS (space separated). `--list-devices` lists a graphics card
 when GGML_BACKEND_PATH names a backend (as Ollama's copy needs) or FAKE_LLAMA_GPU is set, else none. Each start
@@ -80,14 +83,43 @@ def main() -> int:
                     self._send(400, {"error": {"message": "failed to parse grammar from the JSON schema",
                                                "type": "invalid_request_error"}})
                     return
-                message["content"] = json.dumps({"steps": ["a", "b"]})
+                props = ((fmt.get("json_schema") or {}).get("schema") or {}).get("properties") or {}
+                if "reply" in props:                       # JARVIS's chat turn: answer it in two sentences
+                    last = [m for m in body["messages"] if m["role"] == "user"][-1]["content"]
+                    message["content"] = json.dumps({"run_task": False, "reply": f"שלום! {last}. זה המשפט השני.",
+                                                     "task": "", "agent": ""}, ensure_ascii=False)
+                else:
+                    message["content"] = json.dumps({"steps": ["a", "b"]})
             else:
                 last = [m for m in body["messages"] if m["role"] == "user"][-1]["content"]
                 message["content"] = "שלום! " + str(last)
+            usage = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+            if body.get("stream") and not message.get("tool_calls"):
+                self._stream(body, str(message["content"] or ""), finish, usage)
+                return
             self._send(200, {"id": "x", "object": "chat.completion", "created": 0, "model": body.get("model", ""),
                              "choices": [{"index": 0, "message": message, "finish_reason": finish}],
-                             "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-                             "seen_format": fmt.get("type")})
+                             "usage": usage, "seen_format": fmt.get("type")})
+
+        def _stream(self, body: dict, content: str, finish: str, usage: dict) -> None:
+            """Server-sent events, a few characters at a time, as llama-server streams."""
+            self.send_response(200)
+            self.send_header("Content-Type", "text/event-stream")
+            self.end_headers()
+            base = {"id": "x", "object": "chat.completion.chunk", "created": 0, "model": body.get("model", "")}
+            pieces = [content[i:i + 4] for i in range(0, len(content), 4)]
+            events = [{**base, "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""},
+                                            "finish_reason": None}]}]
+            events += [{**base, "choices": [{"index": 0, "delta": {"content": piece}, "finish_reason": None}]}
+                       for piece in pieces]
+            events.append({**base, "choices": [{"index": 0, "delta": {}, "finish_reason": finish}]})
+            if (body.get("stream_options") or {}).get("include_usage"):
+                events.append({**base, "choices": [], "usage": usage})
+            for item in events:
+                self.wfile.write(b"data: " + json.dumps(item, ensure_ascii=False).encode() + b"\n\n")
+                self.wfile.flush()
+            self.wfile.write(b"data: [DONE]\n\n")
+            self.wfile.flush()
 
     ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
     return 0

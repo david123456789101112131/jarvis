@@ -71,6 +71,7 @@ log = logging.getLogger(__name__)
 
 STATS_INTERVAL_S = 2.0
 PROCESS_PRIME_S = 30.0      # how often the busiest-process reading is refreshed in the background
+PRELOAD_DELAY_S = 3.0      # the chat model loads this long after start-up, once the voice models are on their way
 RUNTIME_FILE = "runtime.json"
 # Files the UI only shows in Explorer, never opens: opening them would run code.
 REVEAL_ONLY_EXT = RUNS_CODE_EXT
@@ -240,6 +241,26 @@ class JarvisApp:
             self.gpu.register("chat", busy=local.busy, release=local.release_gpu)   # type: ignore[attr-defined]
         return server
 
+    async def _preload_chat(self) -> None:
+        """Load the chat model while JARVIS starts (after the voice models), so the first question does not wait
+        for it, and ask it one word: that also readies the client library (half a second to import) and the
+        model's first run. Only when the free model is what answers."""
+        from jarvis.ai.types import AIMessage, CompletionRequest
+
+        await asyncio.sleep(PRELOAD_DELAY_S)
+        local = self.router.providers.get("local")
+        chain = self.router.chain_for("chat", None)
+        if self.chat_server is None or local is None or not chain or chain[0] is not local:
+            return
+        started = time.monotonic()
+        try:
+            await local.complete(CompletionRequest(messages=[AIMessage.user("שלום")], max_tokens=1, role="chat"))
+        except Exception as exc:
+            log.info("The chat model was not loaded in advance: %s", exc)
+            return
+        log.info("The chat model is ready (%.1f s)", time.monotonic() - started)
+        self.metrics.record("chat.preload", (time.monotonic() - started) * 1000)
+
     async def _chat_idle_loop(self) -> None:
         """Stop the chat model after `ai.local.idle_minutes` unused: it frees about 9 GB of the graphics card."""
         local = self.router.providers.get("local")
@@ -297,6 +318,8 @@ class JarvisApp:
         self.spawn(self._monitor_loop(), "system-monitor")
         if self.chat_server is not None:
             self.spawn(self._chat_idle_loop(), "chat-idle")
+            if self.settings.ai.local.preload:
+                self.spawn(self._preload_chat(), "chat-preload")
         self.metrics.record("app.start", (time.monotonic() - self.started_at) * 1000)
         await self.activity.log(t(self.lang, f"JARVIS {__version__} פעיל", f"JARVIS {__version__} is online")
                                 + (f" ({self.url})" if self.server else ""), source="JARVIS", level="success",
@@ -391,7 +414,9 @@ class JarvisApp:
     async def _voice_command(self, transcript: Transcript) -> SpeechReply | None:
         from jarvis.voice.base import SpeechReply
 
-        result = await self.core.voice_command(transcript.text, transcript.language)
+        stream = transcript.stream                          # the reply is spoken while the AI is still writing it
+        result = await self.core.voice_command(transcript.text, transcript.language,
+                                               early=stream.update if stream is not None else None)
         speech = result.speech
         if not speech:
             return None

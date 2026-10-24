@@ -2,9 +2,9 @@
 
 Free, and nothing leaves the computer. `jarvis chat install` puts the weights (Google's Gemma 4 12B, quantization-
 aware trained, 4-bit: about 7 GB, Apache 2.0) in the model folder; the llama.cpp runtime is computer control's copy
-when that is installed, or one installed beside the model. The server starts at the first request and stops after
-`idle_minutes` unused, or when computer control or image and video creation need the graphics card ("chat" in
-`GpuTurns`); the next request starts it again (a few seconds). Where Windows blocks the downloaded llama.cpp (Smart
+when that is installed, or one installed beside the model. The server starts while JARVIS starts (`preload`) or at the first
+request, and stays loaded (or stops after `idle_minutes` unused, when set) until computer control or image and video
+creation need the graphics card ("chat" in `GpuTurns`); the next request starts it again (several seconds). Where Windows blocks the downloaded llama.cpp (Smart
 App Control), the signed llama-server inside Ollama runs the same model file (`jarvis.common.llama.Runtime`).
 """
 
@@ -116,13 +116,17 @@ class ChatServer(LlamaServer):
             args += ["-ngl", "999"]
         if "--kv-unified" in self.flags:        # one request may use the whole context, not its share of it
             args.append("--kv-unified")
-        if "--chat-template-kwargs" in self.flags:
+        if "--reasoning" in self.flags:        # newer builds (Ollama's): the template switch is deprecated there
+            args += ["--reasoning", "on" if s.thinking else "off"]
+        elif "--chat-template-kwargs" in self.flags:
             args += ["--chat-template-kwargs", json.dumps({"enable_thinking": bool(s.thinking)})]
         if "--no-webui" in self.flags:
             args.append("--no-webui")
         return args
 
     async def stop_if_idle(self) -> bool:
+        if self.settings.idle_minutes <= 0:          # stays loaded while JARVIS runs
+            return False
         return await self.stop_after(self.settings.idle_minutes * 60)
 
 

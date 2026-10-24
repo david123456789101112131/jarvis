@@ -113,7 +113,10 @@ class LocalModelSettings(_Section):
     gpu_layers: int = -1                  # model layers on the graphics card (-1 = as many as fit)
     context: int = 32768                  # tokens, shared by the requests answered at once
     parallel: int = 2                     # requests answered at once (the agents can ask together)
-    idle_minutes: float = 30.0            # the server stops after this long unused (frees the graphics card)
+    # 0 = stays loaded while JARVIS runs, so every answer starts within about a second (another JARVIS model that
+    # needs the graphics card still takes it); otherwise the server stops after this long unused.
+    idle_minutes: float = 0.0
+    preload: bool = True                  # load the model while JARVIS starts, not at the first question
     thinking: bool = False                # the model reasons privately before answering: better, much slower
 
 

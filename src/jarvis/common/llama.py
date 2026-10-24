@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
 import logging
 import os
 import re
@@ -160,6 +161,57 @@ def probe(runtime: Runtime) -> Probe:
     return found
 
 
+PROBE_TTL_S = 7 * 24 * 3600         # a remembered probe is trusted this long, while the program file is unchanged
+
+
+class ProbeCache:
+    """Probes remembered between runs, in a small JSON file: probing again costs seconds at every start (Windows
+    checks an unsigned program each time, and listing the devices loads the GPU backend). A program that changed
+    (another size or date) is probed again; so is everything after `PROBE_TTL_S`. A failure that is not Windows'
+    refusal is not remembered (it may be passing)."""
+
+    def __init__(self, path: Path | None) -> None:
+        self.path = path
+
+    @staticmethod
+    def key(runtime: Runtime) -> str:
+        try:
+            st = runtime.exe.stat()
+            stamp = f"{st.st_size}:{int(st.st_mtime)}"
+        except OSError:
+            stamp = "missing"
+        return json.dumps([str(runtime.exe), stamp, [str(d) for d in runtime.path_dirs], [list(e) for e in runtime.env]])
+
+    def _load(self) -> dict[str, Any]:
+        if self.path is None:
+            return {}
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def get(self, runtime: Runtime) -> Probe | None:
+        entry = self._load().get(self.key(runtime))
+        if not isinstance(entry, dict) or time.time() - float(entry.get("at", 0)) > PROBE_TTL_S:
+            return None
+        return Probe(runtime, set(entry.get("flags") or ()), list(entry.get("devices") or ()),
+                     blocked=bool(entry.get("blocked")), error=str(entry.get("error") or ""))
+
+    def put(self, found: Probe) -> None:
+        if self.path is None or (found.error and not found.blocked):
+            return
+        data = {k: v for k, v in self._load().items()
+                if isinstance(v, dict) and time.time() - float(v.get("at", 0)) <= PROBE_TTL_S}
+        data[self.key(found.runtime)] = {"at": time.time(), "flags": sorted(found.flags), "devices": found.devices,
+                                         "blocked": found.blocked, "error": found.error}
+        with contextlib.suppress(OSError):
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = self.path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+            os.replace(tmp, self.path)
+
+
 def help_flags(exe: Path) -> set[str]:
     """The options this llama-server build knows (from its --help). Empty when it cannot run."""
     return probe(Runtime(exe)).flags
@@ -237,6 +289,7 @@ class LlamaServer:
         self.flags: set[str] = set()              # what the chosen program's --help lists (read before the first start)
         self.runtime: Runtime | None = None       # the program that runs (or ran last), picked by `pick_runtime`
         self.fallbacks: Callable[[], list[Runtime]] = ollama_runtimes
+        self.probe_cache = ProbeCache(logs_dir / "llama-runtimes.json")
         self._probes: dict[Runtime, Probe] = {}
         self._proc: asyncio.subprocess.Process | None = None
 
@@ -270,9 +323,11 @@ class LlamaServer:
             return self.runtime
         probes: list[Probe] = []
         for runtime in candidates:
-            found = self._probes.get(runtime)
+            found = self._probes.get(runtime) or await asyncio.to_thread(self.probe_cache.get, runtime)
             if found is None:
-                found = self._probes[runtime] = await asyncio.to_thread(probe, runtime)
+                found = await asyncio.to_thread(probe, runtime)
+                await asyncio.to_thread(self.probe_cache.put, found)
+            self._probes[runtime] = found
             probes.append(found)
             if found.ok and found.gpu:
                 break
@@ -389,7 +444,8 @@ class LlamaServer:
         return f"{self.label} stopped while starting (see its log, {self.log_name}{exit_note})."
 
     def _forget(self, runtime: Runtime) -> None:
-        self._probes[runtime] = Probe(runtime, blocked=True, error="blocked by Windows (Smart App Control)")
+        refused = self._probes[runtime] = Probe(runtime, blocked=True, error="blocked by Windows (Smart App Control)")
+        self.probe_cache.put(refused)
         if self.runtime == runtime:
             self.runtime = None
 
@@ -414,5 +470,5 @@ class LlamaServer:
         return False
 
 
-__all__ = ["BLOCKED_TEXT", "EXE_NAME", "LlamaServer", "Probe", "Runtime", "alive", "blocked_by_windows", "find_gguf",
+__all__ = ["BLOCKED_TEXT", "EXE_NAME", "LlamaServer", "Probe", "ProbeCache", "Runtime", "alive", "blocked_by_windows", "find_gguf",
            "find_llama_server", "free_port", "help_flags", "ollama_roots", "ollama_runtimes", "probe"]
