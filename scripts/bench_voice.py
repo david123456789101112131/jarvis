@@ -5,7 +5,7 @@
     python scripts/bench_voice.py --json
 
 JARVIS runs in a fresh temporary home (its own memory and settings, deleted afterwards) with the models the
-real settings name (the chat model, speech recognition and the voice) and paid AI off. No microphone is opened
+real settings name and the real model cache (the chat model, speech recognition and the voice) and paid AI off. No microphone is opened
 and nothing is played: each question is first spoken by JARVIS's own voice into memory, and that recording is
 what JARVIS hears. Only the voice (edge-tts, when online) leaves the computer.
 
@@ -44,18 +44,14 @@ QUESTIONS = [
 def real_settings() -> dict[str, Any]:
     """The parts of the user's settings that say where the models are and how the voice works."""
     from jarvis.config.loader import load_settings
+    from jarvis.config.paths import resolve_paths
 
     s = load_settings()
+    cache = resolve_paths(s.paths).cache                 # the speech recognition and wake models already downloaded
     return {"ai": {"local": s.ai.local.model_dump(mode="json"), "allow_paid": False},
-            "computer": {"models_dir": s.computer.models_dir or str(_default_models() / "computer")},
+            "computer": {"models_dir": s.computer.models_dir or str(cache / "models" / "computer")},
+            "paths": {"cache_dir": str(cache)},
             "voice": s.voice.model_dump(mode="json")}
-
-
-def _default_models() -> Path:
-    from jarvis.config.paths import resolve_paths
-    from jarvis.config.settings import Settings
-
-    return resolve_paths(Settings().paths).models
 
 
 async def run(rounds: int, real: dict[str, Any], *, compare: bool = False) -> dict[str, Any]:
