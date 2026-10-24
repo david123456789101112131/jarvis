@@ -4,7 +4,8 @@ Free, and nothing leaves the computer. `jarvis chat install` puts the weights (G
 aware trained, 4-bit: about 7 GB, Apache 2.0) in the model folder; the llama.cpp runtime is computer control's copy
 when that is installed, or one installed beside the model. The server starts at the first request and stops after
 `idle_minutes` unused, or when computer control or image and video creation need the graphics card ("chat" in
-`GpuTurns`); the next request starts it again (a few seconds).
+`GpuTurns`); the next request starts it again (a few seconds). Where Windows blocks the downloaded llama.cpp (Smart
+App Control), the signed llama-server inside Ollama runs the same model file (`jarvis.common.llama.Runtime`).
 """
 
 from __future__ import annotations
@@ -14,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from jarvis.common.llama import LlamaServer, find_gguf, find_llama_server
+from jarvis.common.llama import LlamaServer, find_gguf, find_llama_server, ollama_runtimes
 from jarvis.config.settings import LocalModelSettings, Settings
 from jarvis.security.process import ProcessRegistry
 
@@ -66,7 +67,7 @@ class ChatFiles:
     def problem(self) -> str | None:
         if self.model is None:
             return "the chat model is not installed (run: jarvis chat install)."
-        if self.exe is None:
+        if self.exe is None and not ollama_runtimes():
             return "llama-server is not installed (run: jarvis chat install)."
         return None
 
@@ -103,9 +104,10 @@ class ChatServer(LlamaServer):
     def command(self) -> list[str]:
         """The llama-server command line, for the port and key of this start. Options a build may not have are
         passed only when its --help lists them (`flags`)."""
-        assert self.files.exe and self.files.model
+        exe = self.runtime.exe if self.runtime is not None else self.files.exe
+        assert exe and self.files.model
         s = self.settings
-        args = [str(self.files.exe), "-m", str(self.files.model), "--host", "127.0.0.1", "--port", str(self._port),
+        args = [str(exe), "-m", str(self.files.model), "--host", "127.0.0.1", "--port", str(self._port),
                 "--api-key", self._api_key, "-c", str(s.context), "-fa", "on", "--jinja",
                 "--parallel", str(max(1, s.parallel)), *SAMPLING]
         if s.gpu_layers >= 0:

@@ -399,8 +399,9 @@ class LocalModelProvider(OpenAICompatibleProvider):
             try:
                 await self.server.ensure_running()
             except RuntimeError as exc:
+                blocked = "Smart App Control" in str(exc)
                 raise ProviderUnavailable(f"The local model could not start: {exc}",
-                                          details={"code": "local_down"}) from exc
+                                          details={"code": "local_blocked" if blocked else "local_down"}) from exc
             self._base_url = f"{self.server.base_url}/v1"
             try:
                 return await super().complete(request)

@@ -798,9 +798,14 @@ class JarvisCore:
                 decision = await router.structured("chat", messages, ChatTurn, system=system)
         except ProviderError as exc:
             await self._pipeline("routing", "error", lang, exc.message[:80])
-            return await self._reply(turn, t(lang, f"לא הצלחתי לקבל תשובה ממודל ה-AI: {exc.message}",
-                                             f"I couldn't get an answer from the AI model: {exc.message}"),
-                                     kind="error", ok=False)
+            if exc.details.get("code") == "local_blocked":
+                text = t(lang, "Windows (בקרת יישומים חכמה) חוסם את התוכנה שמריצה את המודל החינמי במחשב, ולא מצאתי "
+                               "עותק חתום שלה. התקנה של Ollama מ-ollama.com פותרת את זה: אני משתמש בעותק החתום "
+                               "שבתוכה, בלי לשנות הגדרות של Windows.", exc.message)
+            else:
+                text = t(lang, f"לא הצלחתי לקבל תשובה ממודל ה-AI: {exc.message}",
+                         f"I couldn't get an answer from the AI model: {exc.message}")
+            return await self._reply(turn, text, kind="error", ok=False)
         await self._pipeline("routing", "done", lang, t(lang, "סוכנים" if decision.run_task else "שיחה",
                                                         "agents" if decision.run_task else "conversation"))
         if decision.run_task and decision.task.strip() and self._mode != Mode.CHAT:

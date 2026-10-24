@@ -5,8 +5,10 @@ OpenAI-compatible /v1/chat/completions that checks the API key. It answers from 
   a json_schema reply format  -> {"steps": ["a", "b"]}, or a 400 about the grammar when FAKE_LLAMA_NO_SCHEMA is set
   anything else               -> "שלום! <the last user message>"
 
-`--help` prints the options listed in FAKE_LLAMA_FLAGS (space separated). Each start appends its command line
-(without the key) to FAKE_LLAMA_LOG, one JSON list per line.
+`--help` prints the options listed in FAKE_LLAMA_FLAGS (space separated). `--list-devices` lists a graphics card
+when GGML_BACKEND_PATH names a backend (as Ollama's copy needs) or FAKE_LLAMA_GPU is set, else none. Each start
+appends its command line (without the key) to FAKE_LLAMA_LOG, one JSON list per line, then the backend it was given
+as {"backend": ...}.
 """
 
 from __future__ import annotations
@@ -23,12 +25,19 @@ def main() -> int:
         print("usage: llama-server [options]\n" + "\n".join(f"{f}  something" for f in
                                                            os.environ.get("FAKE_LLAMA_FLAGS", "").split()))
         return 0
+    backend = os.environ.get("GGML_BACKEND_PATH", "")
+    if "--list-devices" in args:
+        gpu = backend or os.environ.get("FAKE_LLAMA_GPU")
+        print("Available devices:\n" + ("  CUDA0: Fake GPU (16000 MiB, 15000 MiB free)" if gpu else ""))
+        return 0
     port = int(args[args.index("--port") + 1])
     key = args[args.index("--api-key") + 1]
     if os.environ.get("FAKE_LLAMA_LOG"):
         shown = [("<key>" if a == key else a) for a in args]
         with open(os.environ["FAKE_LLAMA_LOG"], "a", encoding="utf-8") as fh:
             fh.write(json.dumps(shown) + "\n")
+            if backend:
+                fh.write(json.dumps({"backend": backend}) + "\n")
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *a: object) -> None:

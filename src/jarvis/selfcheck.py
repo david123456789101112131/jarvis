@@ -258,15 +258,24 @@ async def _ai(report: CheckReport, settings: Settings, paths: AppPaths, secrets:
     from jarvis.security.process import ProcessRegistry
 
     router = ProviderRouter.from_settings(settings.ai, secrets)
-    attach(router, settings, paths.models, ProcessRegistry(), paths.logs)        # its files only: nothing starts
+    server = attach(router, settings, paths.models, ProcessRegistry(), paths.logs)   # its files only: nothing starts
+    runs_with, blocked = "", ""
     try:
         st = router.status()
+        if server is not None and server.problem() is None and settings.ai.local.enabled:
+            try:            # runs the program's --help and --list-devices: is it allowed to run here, on which card?
+                runs_with = (await server.pick_runtime()).describe()
+            except RuntimeError as exc:
+                blocked = str(exc)
     finally:
         await router.aclose()
-    if st["active"] or st.get("when_told"):
+    if blocked:
+        report.add("ai", "warn", f"the free model on this computer cannot start: {blocked}", **st)
+    elif st["active"] or st.get("when_told"):
         agents = sorted(set(st["agents"].values()) - {None})
         answers = st["active"] or f"{st['when_told']}, only when you ask for it"
         detail = (f"answers with: {answers}; agents work with: {', '.join(agents)}"
+                  + (f"; the local model runs with {runs_with}" if runs_with else "")
                   + ("; Anthropic server-side fallbacks on" if st.get("fallbacks") else ""))
         report.add("ai", "ok", detail, **st)
     else:
@@ -383,7 +392,15 @@ async def _computer(report: CheckReport, settings: Settings, paths: AppPaths) ->
             "Install it: jarvis computer install (about 30 GB), or jarvis computer install --adopt <folder> for "
             "a folder that is already downloaded."])
         return
-    report.add("computer", "ok", f"model ready: {files.model.name} in {root}")
+    from jarvis.computer.server import ModelServer
+    from jarvis.security.process import ProcessRegistry
+
+    try:            # is the program allowed to run here (Smart App Control), and which one runs
+        runs_with = (await ModelServer(s, root, ProcessRegistry(), paths.logs).pick_runtime()).describe()
+    except RuntimeError as exc:
+        report.add("computer", "warn", f"the model cannot start: {exc}")
+        return
+    report.add("computer", "ok", f"model ready: {files.model.name} in {root}, runs with {runs_with}")
 
 
 async def _media(report: CheckReport, settings: Settings, paths: AppPaths) -> None:

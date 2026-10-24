@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from jarvis.common.llama import EXE_NAME, LlamaServer, find_gguf, find_llama_server
+from jarvis.common.llama import EXE_NAME, LlamaServer, find_gguf, find_llama_server, ollama_runtimes
 from jarvis.config.settings import ComputerSettings
 from jarvis.security.process import ProcessRegistry
 
@@ -35,7 +35,7 @@ class ModelFiles:
         self.mmproj = find_gguf(root, "mmproj")
 
     def problem(self) -> str | None:
-        if self.exe is None:
+        if self.exe is None and not ollama_runtimes():
             return "llama-server is not installed (run: jarvis computer install)."
         if self.model is None:
             return "the computer-control model weights are missing (run: jarvis computer install)."
@@ -69,16 +69,20 @@ class ModelServer(LlamaServer):
 
     def command(self) -> list[str]:
         """The llama-server command line, for the port and key of this start."""
-        assert self.files.exe and self.files.model and self.files.mmproj
-        return [
-            str(self.files.exe), "-m", str(self.files.model), "--mmproj", str(self.files.mmproj),
+        exe = self.runtime.exe if self.runtime is not None else self.files.exe
+        assert exe and self.files.model and self.files.mmproj
+        args = [
+            str(exe), "-m", str(self.files.model), "--mmproj", str(self.files.mmproj),
             "--host", "127.0.0.1", "--port", str(self._port),
             "-ngl", str(self.settings.gpu_layers), "-c", str(self.settings.context),
             "-fa", "on", "--jinja", "--parallel", "1", "--api-key", self._api_key,
-            # Qwen-VL based models place clicks badly on pictures of fewer than 1024 tokens (llama-server
-            # warns about it at load); smaller screenshots (a small or square screen) are scaled up to that.
-            "--image-min-tokens", str(IMAGE_MIN_TOKENS),
         ]
+        # Qwen-VL based models place clicks badly on pictures of fewer than 1024 tokens (llama-server warns about it
+        # at load); smaller screenshots (a small or square screen) are scaled up to that. Passed where the build has
+        # it (a build that was not asked, in a test, gets it too).
+        if not self.flags or "--image-min-tokens" in self.flags:
+            args += ["--image-min-tokens", str(IMAGE_MIN_TOKENS)]
+        return args
 
     async def stop_if_idle(self) -> bool:
         return await self.stop_after(self.settings.idle_minutes * 60)

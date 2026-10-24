@@ -53,6 +53,7 @@ async def test_every_area_is_reported_and_keys_are_named_never_shown(setup, monk
 
 async def test_computer_control_line(setup, monkeypatch, tmp_path) -> None:
     import jarvis.computer.backend as backend
+    from jarvis.common import llama
     from jarvis.computer.server import EXE_NAME
 
     settings, paths = setup
@@ -71,8 +72,12 @@ async def test_computer_control_line(setup, monkeypatch, tmp_path) -> None:
     (tmp_path / "gguf").mkdir()
     for name in ("Holo-3.1-9B-Q8_0.gguf", "mmproj-Holo-3.1-9B-F16.gguf"):
         (tmp_path / "gguf" / name).write_bytes(b"")
+    monkeypatch.setattr(llama, "probe", lambda r: llama.Probe(r, {"--mmproj"}, ["CUDA0: GPU"]))
     ready = line(await run_checks(settings, paths))
-    assert ready["status"] == "ok" and "Holo-3.1-9B-Q8_0.gguf" in ready["detail"]
+    assert ready["status"] == "ok" and "Holo-3.1-9B-Q8_0.gguf" in ready["detail"] and "runs with" in ready["detail"]
+    monkeypatch.setattr(llama, "probe", lambda r: llama.Probe(r, blocked=True, error="blocked"))
+    blocked = line(await run_checks(settings, paths))
+    assert blocked["status"] == "warn" and "Smart App Control" in blocked["detail"], blocked
     settings.computer.enabled = False
     assert line(await run_checks(settings, paths))["status"] == "ok"
 
@@ -107,7 +112,8 @@ async def test_without_an_ai_key_it_says_what_still_works(setup) -> None:
     assert report["ok"] is (not any(c["status"] == "fail" for c in report["checks"]))
 
 
-async def test_the_free_chat_model_answers_once_installed(setup, tmp_path) -> None:
+async def test_the_free_chat_model_answers_once_installed(setup, tmp_path, monkeypatch) -> None:
+    from jarvis.common import llama
     from jarvis.computer.server import EXE_NAME
 
     settings, paths = setup
@@ -116,8 +122,15 @@ async def test_the_free_chat_model_answers_once_installed(setup, tmp_path) -> No
     (tmp_path / "JARVIS-models" / "llama.cpp" / EXE_NAME).write_bytes(b"")
     (tmp_path / "JARVIS-models" / "chat" / "gguf").mkdir(parents=True)      # ... and the model beside it
     (tmp_path / "JARVIS-models" / "chat" / "gguf" / "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf").write_bytes(b"")
+    monkeypatch.setattr(llama, "ollama_runtimes", lambda roots=None: [])
+    monkeypatch.setattr(llama, "probe", lambda r: llama.Probe(r, {"--fit"}, ["CUDA0: GPU"]))
     ai = next(c for c in (await run_checks(settings, paths))["checks"] if c["name"] == "ai")
     assert ai["status"] == "ok" and "answers with: local" in ai["detail"], ai
+    assert "the local model runs with llama.cpp" in ai["detail"]
+    # Windows' Smart App Control refuses the unsigned program, and there is no signed copy: said so, with the fix.
+    monkeypatch.setattr(llama, "probe", lambda r: llama.Probe(r, blocked=True, error="blocked"))
+    ai = next(c for c in (await run_checks(settings, paths))["checks"] if c["name"] == "ai")
+    assert ai["status"] == "warn" and "Smart App Control" in ai["detail"] and "Ollama" in ai["detail"], ai
 
 
 async def test_a_crashing_check_is_a_failed_line_not_a_crash() -> None:

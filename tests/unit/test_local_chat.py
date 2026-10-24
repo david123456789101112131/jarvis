@@ -23,15 +23,16 @@ from jarvis.ai.local_server import ChatFiles, ChatServer, attach, chat_root
 from jarvis.ai.openai_provider import LocalModelProvider
 from jarvis.ai.router import ProviderRouter
 from jarvis.ai.types import AIMessage, CompletionRequest, ToolSpec
+from jarvis.common import llama
 from jarvis.common.errors import ProviderUnavailable
 from jarvis.common.gpu import GpuTurns
-from jarvis.common.llama import EXE_NAME
+from jarvis.common.llama import BLOCKED_TEXT, EXE_NAME, Probe, Runtime, blocked_by_windows, ollama_runtimes
 from jarvis.config.settings import AISettings, LocalModelSettings, Settings
 from jarvis.security.process import ProcessRegistry
 
 FAKE = Path(__file__).resolve().parents[1] / "fixtures" / "fake_llama_server.py"
 GGUF = "gemma-4-12B-it-qat-UD-Q4_K_XL.gguf"
-FLAGS = "--fit --kv-unified --chat-template-kwargs --no-webui --parallel"
+FLAGS = "--fit --kv-unified --chat-template-kwargs --no-webui --parallel --list-devices"
 
 needs_posix = pytest.mark.skipif(sys.platform == "win32", reason="the stand-in server is a shell script")
 
@@ -44,6 +45,28 @@ def model_folder(root: Path, *, exe: bool = True) -> Path:
         script = root / "llama.cpp" / "b1" / EXE_NAME
         script.write_text(f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n', encoding="utf-8")
         script.chmod(0o755)
+    return root
+
+
+def fake_exe(path: Path, body: str | None = None) -> Path:
+    """An executable llama-server: the stand-in server, or a script with `body` (one that cannot run)."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f'#!/bin/sh\n{body}\n' if body is not None else f'#!/bin/sh\nexec "{sys.executable}" "{FAKE}" "$@"\n',
+                    encoding="utf-8")
+    path.chmod(0o755)
+    return path
+
+
+def ollama_folder(root: Path, *backends: str) -> Path:
+    """Ollama's install folder: lib/ollama/llama-server and a folder per GPU backend (cuda_v13/ggml-cuda.dll, ...)."""
+    lib = root / "lib" / "ollama"
+    fake_exe(lib / EXE_NAME)
+    for backend in backends:
+        (lib / backend).mkdir(parents=True)
+        dll = "ggml-vulkan.dll" if backend == "vulkan" else "ggml-hip.dll" if backend.startswith("rocm") \
+            else "ggml-cuda.dll"
+        (lib / backend / dll).write_bytes(b"\x00")
+        (lib / backend / "cudart64_13.dll").write_bytes(b"\x00")
     return root
 
 
@@ -116,6 +139,110 @@ class TestCommand:
         assert not {"--kv-unified", "--no-webui", "--chat-template-kwargs"} & set(args)
         server.settings.gpu_layers = 20
         assert server.command()[server.command().index("-ngl") + 1] == "20"
+
+
+# =========================================================================== which program runs it
+class TestRuntime:
+    """Windows' Smart App Control refuses unsigned programs; the downloaded llama.cpp is one. Ollama ships a signed
+    llama-server, which runs the same model file."""
+
+    def test_windows_refusing_a_program_is_recognised(self) -> None:
+        assert blocked_by_windows(0xC0E90002) and blocked_by_windows(-1058471934)       # unsigned and signed views
+        assert blocked_by_windows(0xC0000428) and not blocked_by_windows(1) and not blocked_by_windows(0)
+        refused = OSError("An Application Control policy has blocked this file")
+        refused.winerror = 4551                                                         # type: ignore[attr-defined]
+        assert blocked_by_windows(error=refused) and not blocked_by_windows(error=OSError("missing"))
+
+    def test_ollamas_copy_is_found_with_each_graphics_backend(self, tmp_path: Path) -> None:
+        root = ollama_folder(tmp_path / "Ollama", "cuda_v12", "cuda_v13", "vulkan", "rocm_v7_1")
+        found = ollama_runtimes([tmp_path / "nothing", root])
+        lib = root / "lib" / "ollama"
+        assert [r.exe for r in found] == [lib / EXE_NAME] * 5 and {r.kind for r in found} == {"ollama"}
+        assert [r.path_dirs for r in found] == [(lib / "cuda_v13",), (lib / "cuda_v12",), (lib / "rocm_v7_1",),
+                                                (lib / "vulkan",), ()]            # newest CUDA first, processor last
+        assert dict(found[0].env) == {"GGML_BACKEND_PATH": str(lib / "cuda_v13" / "ggml-cuda.dll")}
+        env = found[0].environ()
+        assert env["PATH"].split(os.pathsep)[0] == str(lib / "cuda_v13") and env["GGML_BACKEND_PATH"]
+        assert "signed" in found[0].describe() and "cuda_v13" in found[0].describe()
+        assert ollama_runtimes([tmp_path / "nothing"]) == []
+
+    @needs_posix
+    def test_probing_reads_the_options_and_the_devices(self, tmp_path: Path, fake_env: Path,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+        exe = fake_exe(tmp_path / "b1" / EXE_NAME)
+        cpu = llama.probe(Runtime(exe))
+        assert cpu.ok and not cpu.gpu and "--fit" in cpu.flags and cpu.devices == []
+        monkeypatch.setenv("FAKE_LLAMA_GPU", "1")
+        gpu = llama.probe(Runtime(exe))
+        assert gpu.ok and gpu.gpu and gpu.devices == ["CUDA0: Fake GPU (16000 MiB, 15000 MiB free)"]
+        broken = llama.probe(Runtime(fake_exe(tmp_path / "b2" / EXE_NAME, "exit 3")))
+        assert not broken.ok and "exit code 0x3" in broken.error
+        missing = llama.probe(Runtime(tmp_path / "gone" / EXE_NAME))
+        assert not missing.ok and not missing.blocked
+
+    async def test_a_blocked_build_gives_way_to_the_signed_copy(self, tmp_path: Path,
+                                                                monkeypatch: pytest.MonkeyPatch) -> None:
+        server = server_for(model_folder(tmp_path / "chat"), tmp_path)
+        own = Runtime(server.exe)                                                      # type: ignore[arg-type]
+        cuda = Runtime(tmp_path / "ollama" / EXE_NAME, "ollama", (tmp_path / "cuda_v13",),
+                       (("GGML_BACKEND_PATH", str(tmp_path / "cuda_v13" / "ggml-cuda.dll")),))
+        cpu = Runtime(tmp_path / "ollama" / EXE_NAME, "ollama")
+        server.fallbacks = lambda: [cuda, cpu]
+        seen: list[Runtime] = []
+
+        def fake_probe(runtime: Runtime) -> Probe:
+            seen.append(runtime)
+            if runtime == own:
+                return Probe(runtime, blocked=True, error="blocked by Windows (Smart App Control)")
+            return Probe(runtime, {"--fit", "--jinja"}, ["CUDA0: GPU"] if runtime == cuda else [])
+
+        monkeypatch.setattr(llama, "probe", fake_probe)
+        assert await server.pick_runtime() == cuda and server.flags == {"--fit", "--jinja"}
+        assert seen == [own, cuda]                                    # the first that runs on the card wins
+        server._port, server._api_key = 5555, "k"
+        assert server.command()[0] == str(cuda.exe)
+        assert await server.pick_runtime() == cuda and len(seen) == 2  # probed once
+
+    async def test_nothing_that_runs_says_why(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        server = server_for(model_folder(tmp_path / "chat"), tmp_path)
+        server.fallbacks = lambda: []
+        monkeypatch.setattr(llama, "probe", lambda r: Probe(r, blocked=True, error="blocked"))
+        with pytest.raises(RuntimeError) as blocked:
+            await server.pick_runtime()
+        assert str(blocked.value) == BLOCKED_TEXT and "Ollama" in BLOCKED_TEXT
+        other = server_for(model_folder(tmp_path / "chat2"), tmp_path)
+        other.fallbacks = lambda: []
+        monkeypatch.setattr(llama, "probe", lambda r: Probe(r, error="it did not start (exit code 0x1)"))
+        with pytest.raises(RuntimeError, match=r"cannot run .*exit code 0x1"):
+            await other.pick_runtime()
+
+    async def test_a_file_refused_while_loading_moves_on_to_the_next_program(self, tmp_path: Path) -> None:
+        server = server_for(model_folder(tmp_path / "chat"), tmp_path)
+        own = Runtime(server.exe)                                                      # type: ignore[arg-type]
+        server.runtime = own
+        server._probes[own] = Probe(own, {"--fit"})
+
+        class Ended:
+            async def wait(self) -> int:
+                return 0xC0E90002                                     # a DLL it loads was refused
+
+        server._proc = Ended()                                         # type: ignore[assignment]
+        text = await server._died_text()
+        assert "Windows blocked" in text and "Smart App Control" in text
+        assert server.runtime is None and server._probes[own].blocked   # the next start picks another program
+
+    async def test_the_chat_says_what_blocks_it_in_hebrew(self, tmp_path: Path) -> None:
+        server = server_for(model_folder(tmp_path / "chat"), tmp_path)
+        local = LocalModelProvider(server.settings, server=server)
+
+        async def refused() -> None:
+            raise RuntimeError(BLOCKED_TEXT)
+
+        server.ensure_running = refused                               # type: ignore[method-assign]
+        with pytest.raises(ProviderUnavailable) as failed:
+            await local.complete(request())
+        assert failed.value.details["code"] == "local_blocked"
+        await local.aclose()
 
 
 # =========================================================================== the provider and the server
@@ -201,6 +328,23 @@ class TestServing:
             kill_tree(server._pid)                                  # closed from outside, or out of memory
             assert (await local.complete(request("עדיין שם?"))).text == "שלום! עדיין שם?"
             assert len(fake_env.read_text(encoding="utf-8").splitlines()) == 2
+        finally:
+            await server.stop()
+            await local.aclose()
+
+    async def test_ollamas_copy_serves_when_the_own_build_cannot_run(self, tmp_path: Path, fake_env: Path) -> None:
+        root = model_folder(tmp_path / "chat", exe=False)
+        fake_exe(root / "llama.cpp" / "b1" / EXE_NAME, "exit 1")          # refused by Windows, as on the PC
+        ollama = ollama_folder(tmp_path / "Ollama", "cuda_v13")
+        server = server_for(root, tmp_path)
+        server.fallbacks = lambda: ollama_runtimes([ollama])
+        local = LocalModelProvider(server.settings, server=server)
+        try:
+            assert (await local.complete(request("שלום"))).text == "שלום! שלום"
+            assert server.runtime is not None and server.runtime.exe == ollama / "lib" / "ollama" / EXE_NAME
+            lines = [json.loads(line) for line in fake_env.read_text(encoding="utf-8").splitlines()]
+            assert "--kv-unified" in lines[0] and "-ngl" not in lines[0]          # its own options, read from it
+            assert lines[1] == {"backend": str(ollama / "lib" / "ollama" / "cuda_v13" / "ggml-cuda.dll")}
         finally:
             await server.stop()
             await local.aclose()

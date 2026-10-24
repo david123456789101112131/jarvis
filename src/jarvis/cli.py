@@ -296,6 +296,18 @@ def _chat(settings: Any, paths: Any, args: argparse.Namespace) -> int:
             return EXIT_OK
         problem = ChatFiles(default_root, computer).problem()
         print("Status: ready (free, on this computer)." if problem is None else f"Not installed yet: {problem}")
+        if problem is None:
+            import asyncio
+
+            from jarvis.ai.local_server import ChatServer, runtime_roots
+            from jarvis.security.process import ProcessRegistry
+
+            server = ChatServer(local, default_root, ProcessRegistry(), paths.logs,
+                                runtimes=runtime_roots(settings, paths.models))
+            try:
+                print(f"Runs with: {asyncio.run(server.pick_runtime()).describe()}")
+            except RuntimeError as exc:
+                print(f"It cannot start: {exc}")
         if not local.enabled:
             print("It is turned off in the settings (ai.local.enabled).")
         return EXIT_OK
