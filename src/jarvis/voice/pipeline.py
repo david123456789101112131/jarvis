@@ -596,8 +596,9 @@ class VoicePipeline:
         if speaking and not (self.options.barge_in and self.wake.supports_barge_in):
             return
         boost = self.options.barge_in_threshold_boost if speaking else 0.0
+        busy = speaking or self.state is VoiceState.PROCESSING or self._turn_active()
         try:
-            detection = await self.wake.feed(frame, threshold_boost=boost)
+            detection = await self.wake.feed(frame, threshold_boost=boost, busy=busy)
         except Exception as exc:
             self._wake_failed(exc)
             return

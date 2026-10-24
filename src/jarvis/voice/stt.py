@@ -207,6 +207,7 @@ class STTEngine(ABC):
 
     name = "none"
     supports_partials = False
+    online = False              # sends the audio out to be written down (OpenAI)
 
     def __init__(self) -> None:
         self.reason = ""
@@ -611,6 +612,7 @@ class FasterWhisperSTT(STTEngine):
 
 class OpenAISTT(STTEngine):
     name = "openai"
+    online = True
 
     def __init__(
         self,
@@ -709,6 +711,10 @@ class FallbackSTT(STTEngine):
     @property
     def supports_partials(self) -> bool:  # type: ignore[override]
         return self._active.supports_partials
+
+    @property
+    def online(self) -> bool:  # type: ignore[override]
+        return self._active.online
 
     @property
     def ready(self) -> bool:

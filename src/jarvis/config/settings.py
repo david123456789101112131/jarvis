@@ -259,6 +259,8 @@ class VoiceSettings(_Section):
     wake_word_engine: Literal["auto", "openwakeword", "porcupine", "transcript", "none"] = "auto"
     wake_word_model: str = "hey_jarvis"
     wake_threshold: float = 0.5
+    # The name alone ("ג'רביס", "Jarvis") wakes JARVIS too, heard by speech recognition on this computer.
+    wake_by_name: bool = True
     input_device: str = ""
     output_device: str = ""
     stt_engine: Literal["auto", "faster_whisper", "openai", "none"] = "auto"

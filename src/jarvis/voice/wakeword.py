@@ -6,6 +6,8 @@
   into `<cache>/models/openwakeword` (or taken from the openwakeword package when present).
 * `PorcupineEngine` — Picovoice Porcupine built-in keyword "jarvis" (needs `pvporcupine`
   and the PICOVOICE_ACCESS_KEY secret).
+* `NameWakeEngine` — a wake model plus the name alone ("ג'רביס", "Jarvis"): the model hears every frame,
+  while each stretch of speech is checked by speech recognition on this computer in the background.
 * `TranscriptWakeEngine` — fallback without a wake model: VAD-segments short utterances,
   transcribes them and looks for the wake word at the start. When the same utterance already
   holds the command ("ג'ארוויס פתח את כרום"), the command is returned with the detection, so
@@ -24,6 +26,7 @@ import importlib.util
 import logging
 import os
 import re
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,6 +36,7 @@ from jarvis.common.errors import VoiceError
 from jarvis.common.text import WAKE_WORD_FORMS, normalize
 from jarvis.voice.audio import FRAME_SECONDS, np_module, to_int16
 from jarvis.voice.base import Transcript
+from jarvis.voice.stt import is_noise_transcript
 from jarvis.voice.vad import EndpointConfig, Endpointer, EndpointEvent
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -164,7 +168,8 @@ class WakeWordEngine(ABC):
     def detected(self, score: float, *, threshold_boost: float = 0.0) -> bool:
         return score >= min(0.99, self.threshold + threshold_boost)
 
-    async def feed(self, frame: Any, *, threshold_boost: float = 0.0) -> WakeDetection | None:
+    async def feed(self, frame: Any, *, threshold_boost: float = 0.0, busy: bool = False) -> WakeDetection | None:
+        """`busy`: JARVIS is answering or speaking (engines that transcribe speech skip it then)."""
         if not self._ready:
             return None
         if self.threaded:
@@ -230,7 +235,7 @@ class NullWakeEngine(WakeWordEngine):
     def process(self, frame: Any) -> float:
         return 0.0
 
-    async def feed(self, frame: Any, *, threshold_boost: float = 0.0) -> WakeDetection | None:
+    async def feed(self, frame: Any, *, threshold_boost: float = 0.0, busy: bool = False) -> WakeDetection | None:
         return None
 
 
@@ -517,7 +522,7 @@ class TranscriptWakeEngine(WakeWordEngine):
     def reset(self) -> None:
         self._endpointer.reset(no_speech_timeout_s=None)
 
-    async def feed(self, frame: Any, *, threshold_boost: float = 0.0) -> WakeDetection | None:
+    async def feed(self, frame: Any, *, threshold_boost: float = 0.0, busy: bool = False) -> WakeDetection | None:
         if not self._ready:
             return None
         event = self._endpointer.process(frame)
@@ -550,6 +555,166 @@ class TranscriptWakeEngine(WakeWordEngine):
 
 
 # ---------------------------------------------------------------------------------------------
+# The wake model, and the name alone
+# ---------------------------------------------------------------------------------------------
+class NameWakeEngine(WakeWordEngine):
+    """The wake model's phrase ("Hey Jarvis") as before, and the name alone too ("ג'רביס", "Jarvis, מה השעה?").
+
+    The model hears every frame. Each stretch of speech is also checked by speech recognition, in the background
+    so listening never waits for it: its first `peek_s` seconds, and once it ends the whole of it, unless its
+    start was already heard not to be the name. The name must open the stretch (after at most a filler such as
+    "אה"); what follows it in the same breath is the command. Nothing is checked while JARVIS is busy (answering or
+    speaking: it would hear itself), and never with speech recognition that sends the audio out.
+    """
+
+    name = "name"
+    keyword = "jarvis"
+    threaded = False
+
+    def __init__(
+        self,
+        model: WakeWordEngine,
+        stt: STTEngine,
+        *,
+        language: str = "auto",
+        end_silence_ms: int = 500,
+        peek_s: float = 2.0,
+        max_segment_s: float = 12.0,
+        min_speech_ms: int = 250,
+        min_confidence: float = 0.35,
+        max_age_s: float = 4.0,
+    ) -> None:
+        super().__init__(threshold=0.5, refractory_s=0.0)
+        self.model = model
+        self.stt = stt
+        self.language = language
+        self.supports_barge_in = model.supports_barge_in
+        self.peek_frames = max(1, round(peek_s / FRAME_SECONDS))
+        self.min_speech_ms = int(min_speech_ms)
+        self.min_confidence = float(min_confidence)
+        self.max_age_s = float(max_age_s)
+        self.checks = 0                 # transcriptions started (for diagnostics and tests)
+        self._endpointer = Endpointer(
+            EndpointConfig(end_silence_ms=end_silence_ms, max_utterance_s=max_segment_s, no_speech_timeout_s=None)
+        )
+        self._endpointer.reset(no_speech_timeout_s=None)
+        self._epoch = 0                 # bumped by `_drop()`: checks started before it are stale
+        self._segment = 0               # the stretch of speech being heard now
+        self._peeked = False
+        self._unnamed = False           # its start was heard, and it is not the name
+        self._found: tuple[float, WakeDetection] | None = None
+        self._tasks: set[asyncio.Task[None]] = set()
+        self._idle = True               # nothing to drop since the last `_drop()`
+
+    @property
+    def ready(self) -> bool:
+        return self.model.ready
+
+    def load(self) -> None:
+        if not self.model.ready:
+            self.model.load()
+
+    def process(self, frame: Any) -> float:
+        return self.model.process(frame)
+
+    def reset(self) -> None:
+        self.model.reset()
+
+    def schedule_reset(self) -> None:
+        self.model.schedule_reset()
+        self._drop()
+
+    def close(self) -> None:
+        self._drop()
+        self.model.close()
+        super().close()
+
+    def describe(self) -> str:
+        return self.reason or f"{self.model.describe()}, and the name alone (speech recognition on this computer)"
+
+    @property
+    def checking(self) -> bool:
+        """The name can be heard now: speech recognition is loaded and stays on this computer."""
+        return bool(self.stt.ready) and not getattr(self.stt, "online", False)
+
+    async def feed(self, frame: Any, *, threshold_boost: float = 0.0, busy: bool = False) -> WakeDetection | None:
+        if not self.ready:
+            return None
+        detection = await self.model.feed(frame, threshold_boost=threshold_boost, busy=busy)
+        self.last_score = self.model.last_score
+        if detection is not None:
+            self._drop()
+            return detection
+        if busy or not self.checking:
+            self._drop()
+            return None
+        self._idle = False
+        if self._found is not None:
+            ended, found = self._found
+            self._found = None
+            if time.monotonic() - ended <= self.max_age_s:
+                self._drop()
+                self.last_score = 1.0
+                return found
+        ep = self._endpointer
+        event = ep.process(frame)
+        if ep.in_speech and not self._peeked and ep.utterance_frames >= self.peek_frames:
+            self._peeked = True
+            self._check(ep.current_audio(), peek=True)
+        if event in (EndpointEvent.SPEECH_END, EndpointEvent.MAX_LENGTH):
+            utterance = ep.finish()
+            ep.reset(no_speech_timeout_s=None)
+            unnamed = self._unnamed
+            self._segment += 1
+            self._peeked = self._unnamed = False
+            if not unnamed and utterance.speech_s * 1000.0 >= self.min_speech_ms:
+                self._check(utterance.audio, peek=False)
+        return None
+
+    def _check(self, audio: Any, *, peek: bool) -> None:
+        self.checks += 1
+        task = asyncio.ensure_future(self._transcribe(audio, peek, self._epoch, self._segment, time.monotonic()))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _transcribe(self, audio: Any, peek: bool, epoch: int, segment: int, ended: float) -> None:
+        try:
+            heard = await self.stt.transcribe(audio, self.language, hint=False, partial=peek)
+        except Exception as exc:
+            log.debug("Name check: speech recognition failed: %s", exc)
+            return
+        if epoch != self._epoch:
+            return
+        found, command = match_wake_phrase(heard.text)
+        if peek:
+            # Two words or more and none of them the name: the rest of this stretch is not checked. Fewer may be the
+            # name cut off in the middle, so the whole stretch is still heard when it ends.
+            if not found and segment == self._segment and len(heard.text.split()) >= 2:
+                self._unnamed = True
+            return
+        if not found or is_noise_transcript(heard.text, heard.confidence):
+            return
+        if heard.confidence is not None and heard.confidence < self.min_confidence:
+            return
+        log.info("Name heard: %r", heard.text[:60])
+        self._found = (ended, WakeDetection(engine=self.name, score=1.0, keyword=self.keyword, command=command or None,
+                                            transcript=heard, language=heard.language))
+
+    def _drop(self) -> None:
+        """Forget the speech heard so far and any check still running (stale once JARVIS woke or got busy)."""
+        if self._idle:
+            return
+        self._idle = True
+        self._epoch += 1
+        self._segment += 1
+        self._peeked = self._unnamed = False
+        self._found = None
+        self._endpointer.reset(no_speech_timeout_s=None)
+        for task in list(self._tasks):
+            task.cancel()
+
+
+# ---------------------------------------------------------------------------------------------
 # Factory
 # ---------------------------------------------------------------------------------------------
 def _short(exc: BaseException) -> str:
@@ -562,6 +727,11 @@ def _have(*modules: str) -> bool:
         return all(importlib.util.find_spec(m) is not None for m in modules)
     except (ImportError, ValueError):
         return False
+
+
+def _local_stt(stt: STTEngine | None) -> bool:
+    """Speech recognition that can hear the name: one that works on this computer (never one that sends audio out)."""
+    return stt is not None and stt.name != "none" and not getattr(stt, "online", False)
 
 
 def _build_wake(
@@ -637,6 +807,8 @@ def create_wake_engine(
                 notes.append(f"{kind}: {_short(exc)}")
                 engine.close()
                 continue
+        if kind != "transcript" and settings.wake_by_name and stt is not None and _local_stt(stt):
+            engine = NameWakeEngine(engine, stt, language=settings.stt_language)
         reason = engine.describe()
         if notes:
             reason += " — fallback because " + "; ".join(notes)
