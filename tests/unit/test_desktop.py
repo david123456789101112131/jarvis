@@ -28,9 +28,16 @@ class FakeEvent:
         self.handlers.append(fn)
         return self
 
-    def fire(self) -> bool:
+    def fire(self, *args: Any) -> bool:
         """Like pywebview: True when some handler returned False (= cancel)."""
-        return any(fn() is False for fn in self.handlers)
+        return any(fn(*args) is False for fn in self.handlers)
+
+
+class FakeForm:
+    """The WinForms form behind a window (`window.native`): only its VisibleChanged event."""
+
+    def __init__(self) -> None:
+        self.VisibleChanged = FakeEvent()
 
 
 class FakeWindow:
@@ -38,21 +45,27 @@ class FakeWindow:
         self.title, self.kw = title, kw
         self.visible = not kw.get("hidden", False)
         self.destroyed = False
+        self.native = FakeForm()
         self.events = SimpleNamespace(closing=FakeEvent(), shown=FakeEvent(), restored=FakeEvent(),
-                                      minimized=FakeEvent(), loaded=FakeEvent())
+                                      minimized=FakeEvent(), loaded=FakeEvent(), before_show=FakeEvent())
+
+    def _set_visible(self, value: bool) -> None:
+        if value != self.visible:
+            self.visible = value
+            self.native.VisibleChanged.fire(self.native, None)
 
     def show(self) -> None:
-        self.visible = True
+        self._set_visible(True)
 
     def hide(self) -> None:
-        self.visible = False
+        self._set_visible(False)
 
     def restore(self) -> None:
-        self.visible = True
+        self._set_visible(True)
 
     def destroy(self) -> None:
         self.destroyed = True
-        self.visible = False
+        self._set_visible(False)
 
     def create_file_dialog(self, dialog_type: int, **kw: Any) -> Any:
         self.dialogs = [*getattr(self, "dialogs", []), (dialog_type, kw)]
@@ -72,6 +85,8 @@ class FakeWebview:
 
     def start(self, **kw: Any) -> None:
         self.start_kw = kw
+        for window in self.windows:          # pywebview makes each window, then shows it
+            window.events.before_show.fire(window)
         self.started.set()
 
 
@@ -364,3 +379,22 @@ def test_the_hang_notes_say_how_full_memory_is() -> None:
 
     assert hang_notes().startswith("memory: ")
 
+
+
+def test_the_orb_stays_away_while_the_main_window_is_up_whoever_shows_it(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(desktop_mod, "keep_off_taskbar", lambda window: False)
+    shell, web, _core, app = make_shell(tmp_path)                            # started from the shortcut
+    main, orb, focus = web.windows
+    orb.events.loaded.fire()
+    main.events.shown.fire()
+    orb.show()                       # pywebview shows a transparent window again at its page's next navigation
+    eventually(lambda: not orb.visible)
+    time.sleep(0.1)
+    assert not orb.visible and main.visible and app.ui_visible
+    assert app.window_handler("hide") is True                                 # the orb once the window goes
+    eventually(lambda: orb.visible and not main.visible)
+    orb.hide()                                                                 # and it comes back if hidden
+    eventually(lambda: orb.visible)
+    assert app.window_handler("quit") is True
+    assert shell is not None and not focus.visible

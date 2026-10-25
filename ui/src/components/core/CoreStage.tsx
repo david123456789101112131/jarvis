@@ -11,9 +11,10 @@ import { QuickToolsRing } from './QuickTools';
 
 interface CoreStageProps {
   variant: 'panel' | 'mini';
-  toolsOpen: boolean;
-  onToggleTools: () => void;
-  onCloseTools: () => void;
+  /** The quick-tools ring around the orb; without `tools` the stage has none and a click on the orb calls `onOrbClick`. */
+  tools?: { open: boolean; onToggle: () => void; onClose: () => void };
+  onOrbClick?: (e: React.MouseEvent<HTMLButtonElement>) => void;
+  orbLabel?: string;
   /** Pixels kept free at the bottom of the stage (e.g. for the control dock). */
   reserveBottom?: number;
 }
@@ -43,8 +44,9 @@ export function stageGeometry(w: number, h: number, opts: { mini: boolean; orbSi
   return { d, orbPx, cx, cy, belowTop: cy + d * 0.4, shift, toolsRadius };
 }
 
-/** Orb + voice overlays (transcript, steps, action, speech, error) + quick-tools ring. */
-export function CoreStage({ variant, toolsOpen, onToggleTools, onCloseTools, reserveBottom = 0 }: CoreStageProps) {
+/** Orb + voice overlays (transcript, steps, action, speech, error) + quick-tools ring (when given `tools`). */
+export function CoreStage({ variant, tools, onOrbClick, orbLabel, reserveBottom = 0 }: CoreStageProps) {
+  const toolsOpen = tools?.open ?? false;
   const store = useStore();
   const dispatch = useDispatch();
   const { t, dir } = useI18n();
@@ -118,9 +120,10 @@ export function CoreStage({ variant, toolsOpen, onToggleTools, onCloseTools, res
               type="button"
               className="stage__orb"
               style={{ width: g.orbPx, height: g.orbPx, left: g.cx - g.orbPx / 2, top: g.cy - g.orbPx / 2 }}
-              onClick={onToggleTools}
-              aria-label={toolsOpen ? t('core.closeTools') : t('core.quickTools')}
-              aria-expanded={toolsOpen}
+              onClick={tools ? tools.onToggle : onOrbClick}
+              aria-label={tools ? (toolsOpen ? t('core.closeTools') : t('core.quickTools')) : orbLabel}
+              title={tools ? undefined : orbLabel}
+              aria-expanded={tools ? toolsOpen : undefined}
               data-testid="orb-button"
             >
               <Orb state={orbState} theme={ui.theme_color} size={g.orbPx} opacity={ui.orb_opacity} followMouse={ui.follow_mouse} level={getLevel} testId="orb" className="stage__orb-canvas" quality={mini ? 'low' : 'high'} paused={!mini && handedOff} />
@@ -135,9 +138,11 @@ export function CoreStage({ variant, toolsOpen, onToggleTools, onCloseTools, res
                 {belowNode}
               </div>
             ) : null}
-            <div className="stage__tools" style={{ top: g.cy, left: g.cx }}>
-              <QuickToolsRing open={toolsOpen} radius={g.toolsRadius} onClose={onCloseTools} />
-            </div>
+            {tools ? (
+              <div className="stage__tools" style={{ top: g.cy, left: g.cx }}>
+                <QuickToolsRing open={toolsOpen} radius={g.toolsRadius} onClose={tools.onClose} />
+              </div>
+            ) : null}
           </div>
           {showSteps ? (
             <div className="stage__steps" style={{ top: g.cy }}>

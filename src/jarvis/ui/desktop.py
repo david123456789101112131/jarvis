@@ -10,13 +10,13 @@ mini orb steps aside meanwhile. It never takes the keyboard from the app the use
 
 The orb and the voice view are parts of JARVIS, not windows of their own: neither has a taskbar button or an
 Alt+Tab entry (Windows "tool windows"), so the taskbar shows one JARVIS. pywebview shows a transparent window each
-time its page loads, hidden or not, so after every load both are put back as JARVIS wants them.
+time its page navigates, hidden or not, so whenever either is shown or hidden, both are put back as JARVIS wants them.
 
 When the main window stops answering (what Windows calls "not responding"), `HangWatch` writes where every thread
 of JARVIS is to logs/hang.log, so a hang can be traced afterwards.
 
 Closing the main window keeps JARVIS running as the mini orb when "mini orb" is on in the
-settings (it keeps listening for the wake word); otherwise it quits. Double-clicking the orb
+settings (it keeps listening for the wake word); otherwise it quits. A click on the orb
 brings the main window back. When WebView2 is missing, the UI opens as an Edge app window
 (or in the default browser) and JARVIS runs until it is told to quit.
 
@@ -316,10 +316,13 @@ class DesktopShell:
             shadow=False, focus=False, background_color=BACKGROUND)
         self.focus.events.closing += lambda: self._quitting
         for overlay in (self.orb, self.focus):
+            overlay.events.before_show += self._follow_overlay
             overlay.events.loaded += lambda: self._later(self._settle_overlays)
         self.main.events.closing += self._on_main_closing
-        # Not `shown`: pywebview fires it for a window made hidden too (it shows it for a moment, unseen, as it makes
-        # it), which on a background start would take the main window for up and put the orb away.
+        # `shown` does not mean the main window is up: pywebview fires it for a window made hidden too (it shows it
+        # for a moment, unseen, as it makes it), which on a background start put the orb away.
+        if not self.background:
+            self.main.events.shown += lambda: self._later(self._settle_overlays)
         self.main.events.restored += lambda: self._visible(True)
         self.main.events.minimized += self._on_minimized
         self.main.events.loaded += self._watch_for_hangs
@@ -327,6 +330,14 @@ class DesktopShell:
         self.app.window_handler = self.handle
         self.app.dialog_handler = self.dialog
         self.app.ui_visible = not self.background
+
+    def _follow_overlay(self, window: Any) -> None:
+        """As pywebview makes the orb or the voice view (GUI thread): whoever shows or hides it later (pywebview
+        shows a transparent window at every page navigation), it is put back as JARVIS wants it."""
+        try:
+            window.native.VisibleChanged += lambda _sender, _args: self._later(self._settle_overlays)
+        except Exception as exc:
+            log.debug("Not following %s being shown: %s", getattr(window, "title", window), exc)
 
     def _watch_for_hangs(self) -> None:
         if sys.platform != "win32" or self.hang_watch is not None or self._quitting:
@@ -458,9 +469,11 @@ class DesktopShell:
                         self.orb.show()
 
     def _settle_overlays(self) -> None:
-        """A page of the orb or the voice view loaded, and pywebview showed its window: off the taskbar, and each
+        """A page of the orb or the voice view loaded, or one of them was shown or hidden: off the taskbar, and each
         shown only if JARVIS wants it now."""
         with self._lock:
+            if self._quitting:
+                return
             orb_wanted = (not self.app.ui_visible and bool(self.app.settings.ui.mini_orb) and not self._computer_mode
                           and not self._focus_up)
             for window, wanted in ((self.orb, orb_wanted), (self.focus, self._focus_up)):
@@ -484,9 +497,9 @@ class DesktopShell:
             with contextlib.suppress(Exception):
                 self.main.show()
                 self.main.restore()
+            self._visible(True)
             with contextlib.suppress(Exception):
                 self.orb.hide()
-            self._visible(True)
 
     def to_mini(self) -> None:
         with self._lock:

@@ -47,7 +47,7 @@ export function CorePanel({ className }: { className?: string }) {
           <span>{(voice.wake_word || 'jarvis').toUpperCase()}</span>
           <span>{voice.muted ? 'MIC · MUTED' : voice.enabled ? 'MIC · ARMED' : 'MIC · OFF'}</span>
         </div>
-        <CoreStage variant="panel" toolsOpen={toolsOpen} onToggleTools={() => setToolsOpen((open) => !open)} onCloseTools={() => setToolsOpen(false)} reserveBottom={DOCK_HEIGHT} />
+        <CoreStage variant="panel" tools={{ open: toolsOpen, onToggle: () => setToolsOpen((open) => !open), onClose: () => setToolsOpen(false) }} reserveBottom={DOCK_HEIGHT} />
         <div className="core-dock" role="toolbar" aria-label={t('core.title')}>
           <button
             type="button"

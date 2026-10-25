@@ -489,7 +489,6 @@ const baseEn = {
   'common.all': 'All',
 
   'orbView.openApp': 'Open the command center',
-  'orbView.tools': 'Quick tools',
   'app.sessionEnded': 'This page belongs to an earlier JARVIS session',
   'app.sessionEndedHint': 'Open JARVIS from its window, or run “jarvis open”.',
   'nav.short.command': 'Core',
@@ -1100,7 +1099,6 @@ const baseHe: Record<keyof typeof baseEn, string> = {
   'common.all': 'הכול',
 
   'orbView.openApp': 'פתיחת מרכז הפיקוד',
-  'orbView.tools': 'כלים מהירים',
   'app.sessionEnded': 'הדף הזה שייך להפעלה קודמת של JARVIS',
   'app.sessionEndedHint': 'יש לפתוח את JARVIS מהחלון שלו, או בפקודה jarvis open.',
   'nav.short.command': 'ליבה',

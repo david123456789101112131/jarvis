@@ -329,7 +329,8 @@ class TestLogs:
         done = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, timeout=60)
         assert done.returncode != 0
         text = (tmp_path / "crash.log").read_text(encoding="utf-8")
-        assert text.startswith("--- JARVIS started ") and "Fatal Python error" in text and "<string>" in text
+        assert text.startswith("--- JARVIS started ") and "<string>" in text
+        assert ("Windows fatal exception: access violation" if sys.platform == "win32" else "Fatal Python error") in text
 
     def test_logging_redacts(self, tmp_path: Path) -> None:
         from jarvis.security.redaction import default_redactor

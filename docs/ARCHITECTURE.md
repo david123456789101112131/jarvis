@@ -245,7 +245,8 @@ status, current task, progress, last action, errors, permissions, activity, cont
 **Tasks** (history with full timeline replay, resume/cancel), **Memory**, **Security**
 (grants, pending confirmations, audit, kill switches) and **Settings** (providers and keys
 status, voice, orb customization). A compact always-on-top orb window mirrors the reference
-design's minimal states and offers the quick-tools ring.
+design's minimal states. It is only the orb (no buttons, no quick-tools ring, the user asked
+for nothing around it); a click opens the command center, a drag moves it.
 
 The rail holds six areas: the Command Center, **Code & development**, **Image creation**, **Video
 creation**, **Apps & tools**, and **History & settings** (tasks, the work history with the speed report,
