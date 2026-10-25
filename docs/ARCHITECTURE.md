@@ -211,6 +211,19 @@ Design rules: the wake-word engine runs continuously in its own thread; acknowle
 are pre-synthesized and cached at startup; complex work is acknowledged by voice before it
 starts; barge-in (saying the wake word) interrupts speech.
 
+The name alone wakes JARVIS too (`voice.wake_by_name`, on by default): `NameWakeEngine` wraps the wake model
+("Hey Jarvis") and, in the background, checks each stretch of speech with the local speech recognition: its
+first 2 s, then the whole of it unless its start was heard not to be the name. "ג'רביס" alone gets "כן?" and a
+listening turn; "ג'רביס, מה השעה?" is handled at once with its command. Nothing is checked while JARVIS answers
+or speaks, results older than 4 s or overtaken by another wake are dropped, and it is never used with speech
+recognition that sends audio out. Once the wake word and speech recognition finish loading, a `voice.info`
+event replaces "loading" in the UI.
+
+Spoken replies start before the answer is complete: the chat request streams, `EarlyReply` reads the
+"reply" field out of the partial JSON, and `SpeechStream` hands each finished sentence to the voice, which
+synthesizes the next while the previous one plays. The chat model is loaded and warmed a few seconds after
+start-up and stays loaded (`ai.local.idle_minutes` 0). `scripts/bench_voice.py` measures it.
+
 ## 10. UI
 
 One window, dark neon-blue HUD. Screens: **Command Center** (JARVIS core orb with voice

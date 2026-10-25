@@ -414,6 +414,7 @@ function VoiceSection({ settings, onSaved }: { settings: SettingsObject; onSaved
     () => [
       { kind: 'toggle', path: 'voice.enabled', label: 'settings.voiceEnabled' },
       { kind: 'toggle', path: 'voice.always_listening', label: 'settings.alwaysListening', hint: 'settings.alwaysListeningHint' },
+      { kind: 'toggle', path: 'voice.wake_by_name', label: 'settings.wakeByName', hint: 'settings.wakeByNameHint' },
       { kind: 'toggle', path: 'voice.ctrl_to_talk', label: 'settings.ctrlToTalk', hint: 'settings.ctrlToTalkHint' },
       { kind: 'toggle', path: 'voice.speak_responses', label: 'settings.speakResponses' },
       { kind: 'text', path: 'voice.wake_word_model', label: 'settings.wakeWord', hint: 'settings.wakeWordHint', ltr: true },

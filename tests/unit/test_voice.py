@@ -68,6 +68,7 @@ from jarvis.voice.tts import (
 )
 from jarvis.voice.vad import EndpointConfig, Endpointer, EndpointEvent, VoiceActivityDetector
 from jarvis.voice.wakeword import (
+    NameWakeEngine,
     NullWakeEngine,
     TranscriptWakeEngine,
     WakeWordEngine,
@@ -192,6 +193,33 @@ class FakeSTT(STTEngine):
         return Transcript(text=text, language=language, confidence=0.9, duration_s=len(audio) / SAMPLE_RATE)
 
 
+class HeardSTT(FakeSTT):
+    """FakeSTT that also answers the quick check of how a stretch of speech starts (`partial=True`) with `head`."""
+
+    def __init__(self, texts: Any = (), *, head: str = "", online: bool = False) -> None:
+        super().__init__(texts)
+        self.head = head
+        self.online = online
+
+    async def transcribe(self, audio: Any, language: str = "auto", *, hint: bool = True, partial: bool = False) -> Transcript:
+        if partial:
+            self.calls.append({"samples": len(audio), "language": language, "hint": hint, "partial": True})
+            return Transcript(text=self.head, language="he", final=False, confidence=0.9)
+        return await super().transcribe(audio, language, hint=hint, partial=partial)
+
+
+async def hear(engine: WakeWordEngine, *parts: Any, busy: bool = False) -> list[Any]:
+    """Feed the audio frame by frame, as the pipeline does, letting the background checks run in between."""
+    hits = []
+    for frame in frames_of(*parts):
+        hit = await engine.feed(frame, busy=busy)
+        if hit is not None:
+            hits.append(hit)
+        for _ in range(3):
+            await asyncio.sleep(0)
+    return hits
+
+
 class FailingSTT(STTEngine):
     name = "broken_stt"
 
@@ -255,6 +283,9 @@ class Recorder:
 
     async def on_state(self, state: VoiceState, info: dict[str, Any]) -> None:
         self.events.append(("state", state.value, info.get("trigger"), info.get("muted"), info.get("error")))
+
+    async def on_info(self, info: dict[str, Any]) -> None:
+        self.events.append(("info", info["engines"]["wake"], info["wake_word"]))
 
     async def on_level(self, level: float) -> None:
         self.events.append(("level", level))
@@ -613,6 +644,67 @@ class TestWakeEngines:
         engine.load()
         hits = [await engine.feed(f) for f in frames_of(silence(0.3), speechlike(1.0), silence(0.8))]
         assert not any(hits)
+
+    async def test_the_name_alone_wakes_it(self) -> None:
+        stt = HeardSTT(["ג'רביס"])
+        engine = NameWakeEngine(MarkerWake(), stt, language="he")
+        assert engine.ready and engine.keyword == "jarvis"
+        hits = await hear(engine, silence(0.4), speechlike(0.8), silence(1.0))
+        assert len(hits) == 1 and hits[0].engine == "name" and hits[0].command is None
+        assert [c["partial"] for c in stt.calls] == [False] and stt.calls[0]["hint"] is False
+
+    async def test_the_name_and_a_command_in_one_breath(self) -> None:
+        stt = HeardSTT(["ג'רביס, מה השעה?"], head="ג'רביס מה")
+        engine = NameWakeEngine(MarkerWake(), stt, language="he")
+        hits = await hear(engine, silence(0.3), speechlike(2.6), silence(1.0))
+        assert [h.command for h in hits] == ["מה השעה?"] and hits[0].language == "he"
+        assert [c["partial"] for c in stt.calls] == [True, False]       # its start, then the whole of it
+
+    async def test_other_speech_is_not_the_name(self) -> None:
+        stt = HeardSTT(["מה השעה"], head="אז אמרתי לו")
+        engine = NameWakeEngine(MarkerWake(), stt, language="he")
+        assert await hear(engine, silence(0.3), speechlike(3.0), silence(1.0)) == []
+        assert [c["partial"] for c in stt.calls] == [True]              # its start was enough: not the name
+        assert await hear(engine, speechlike(0.9), silence(1.0)) == []   # a short one is heard whole, and is not it
+        assert len(stt.calls) == 2
+
+    async def test_nothing_is_checked_while_busy_or_with_online_recognition(self) -> None:
+        stt = HeardSTT(["ג'רביס"])
+        engine = NameWakeEngine(MarkerWake(), stt, language="he")
+        assert await hear(engine, speechlike(0.8), silence(1.0), busy=True) == [] and stt.calls == []
+        online = HeardSTT(["ג'רביס"], online=True)
+        engine = NameWakeEngine(MarkerWake(), online, language="he")
+        assert await hear(engine, speechlike(0.8), silence(1.0)) == [] and online.calls == []
+        hits = await hear(engine, silence(0.2)) + [await engine.feed(marker_frame())]
+        assert [h.engine for h in hits if h] == ["fake"]                 # the wake model's phrase still works
+
+    async def test_a_check_that_comes_back_late_is_dropped(self) -> None:
+        stt = HeardSTT(["ג'רביס", "ג'רביס"])
+        engine = NameWakeEngine(MarkerWake(), stt, language="he")
+        assert await hear(engine, speechlike(0.8), silence(0.56)) == []  # the stretch just ended; its check ran
+        engine.schedule_reset()                                          # JARVIS woke another way meanwhile
+        assert await hear(engine, silence(0.5)) == []
+        assert await hear(engine, speechlike(0.8), silence(0.56)) == []
+        assert len(await hear(engine, silence(0.2))) == 1                # not dropped: it wakes JARVIS
+        assert len(stt.calls) == 2
+
+    def test_factory_adds_the_name_to_the_wake_model(self, paths: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(wake_mod, "_have", fake_have({"pvporcupine"}))
+
+        def loaded(self: Any) -> None:
+            self._ready = True
+            self.reason = "openWakeWord 'hey jarvis'"
+
+        monkeypatch.setattr(wake_mod.OpenWakeWordEngine, "load", loaded)
+        engine, reason = create_wake_engine(VoiceSettings(), paths, None, FakeSTT(), load=True)
+        assert isinstance(engine, NameWakeEngine) and engine.model.name == "openwakeword" and engine.ready
+        assert "and the name alone (speech recognition on this computer)" in reason
+        off, _ = create_wake_engine(VoiceSettings(wake_by_name=False), paths, None, FakeSTT(), load=True)
+        assert off.name == "openwakeword"
+        online, _ = create_wake_engine(VoiceSettings(), paths, None, HeardSTT(online=True), load=True)
+        assert online.name == "openwakeword"                             # audio would leave the computer: no
+        for e in (engine, off, online):
+            e.close()
 
     def test_transcript_wake_needs_stt(self) -> None:
         with pytest.raises(WakeWordError):
@@ -1479,6 +1571,18 @@ class TestPipeline:
         assert h.events.transitions() == ["idle", "wake", "processing", "speaking", "idle"]
         assert h.played() == ["פותח."]  # no "listening" acknowledgement: the command was already said
 
+    async def test_the_name_and_a_command_wake_the_pipeline(self, tmp_path: Path) -> None:
+        stt = HeardSTT(["ג'רביס, מה השעה?"])
+        wake = NameWakeEngine(MarkerWake(), stt, language="he")
+        async with Harness(tmp_path, stt=stt, wake=wake, reply=SpeechReply(text="עשר.", follow_up=False)) as h:
+            h.source.append(speechlike(1.2))
+            await wait_for(lambda: h.handled and h.quiet, what="the command said with the name")
+            await h.pipeline.flush_events()
+        assert h.handled[0].text == "מה השעה?" and h.handled[0].language == "he"
+        assert h.events.transitions() == ["idle", "wake", "processing", "speaking", "idle"]
+        assert h.played() == ["עשר."]
+        assert len(stt.calls) == 1                                       # nothing checked while it answered
+
     async def test_speak_responses_off(self, tmp_path: Path) -> None:
         async with Harness(tmp_path, texts=["open chrome"], options=fast_options(speak_responses=False)) as h:
             h.say(1.0)
@@ -1789,6 +1893,7 @@ class TestService:
             _check_info_shape(info)
             assert info["state"] == "idle" and info["enabled"] and info["wake_word"] == "hey jarvis"
             assert info["engines"] == {"wake": "fake", "stt": "fake_stt", "tts": "fake_tts"}
+            assert ("fake", "hey jarvis") in events.of("info")      # the UI is told once the wake word is loaded
             assert info["devices"]["input"] == "array"
             assert service.details()["warmup"]["phrases"]["synthesized"] == sum(len(v) for v in ACK_PHRASES.values())
             source.append_frames([marker_frame()])

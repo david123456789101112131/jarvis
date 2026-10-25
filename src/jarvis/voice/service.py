@@ -330,7 +330,9 @@ class VoiceService:
 
         async def listening() -> None:
             await self._load_wake(pipeline)
+            await self._announce()
             await self._warm_stt()
+            await self._announce()
 
         await asyncio.gather(speech_output(), listening())
         self.warmup["seconds"] = round(time.monotonic() - started, 2)
@@ -564,6 +566,17 @@ class VoiceService:
         self._disabled_reason = reason
         log.info("Voice disabled: %s", reason)
         await self._emit_state(VoiceState.DISABLED, reason)
+
+    async def _announce(self) -> None:
+        """`info()` again, once a model finished loading in the background (the wake word, speech recognition):
+        until then the UI shows it as loading."""
+        sink = getattr(self.events, "on_info", None)
+        if sink is None or self.pipeline is None or not self._started:
+            return
+        try:
+            await sink(self.info())
+        except Exception:
+            log.debug("Voice event sink failed", exc_info=True)
 
     async def _emit_state(self, state: VoiceState, error: str | None) -> None:
         try:

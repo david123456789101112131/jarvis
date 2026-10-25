@@ -507,6 +507,7 @@ export type ServerEvent =
   | { type: 'audit'; data: AuditEntry; ts?: string }
   | { type: 'system.stats'; data: SystemStats; ts?: string }
   | { type: 'voice.state'; data: VoiceStateEvent; ts?: string }
+  | { type: 'voice.info'; data: VoiceInfo; ts?: string }
   | { type: 'voice.level'; data: VoiceLevelEvent; ts?: string }
   | { type: 'voice.transcript'; data: TranscriptEvent; ts?: string }
   | { type: 'voice.pipeline'; data: PipelineEvent; ts?: string }
@@ -543,6 +544,7 @@ export const SERVER_EVENT_TYPES: readonly ServerEventType[] = [
   'audit',
   'system.stats',
   'voice.state',
+  'voice.info',
   'voice.level',
   'voice.transcript',
   'voice.pipeline',

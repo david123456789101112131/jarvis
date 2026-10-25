@@ -98,6 +98,16 @@ describe('selectOrbState', () => {
     const s = event(createInitialState(), { type: 'voice.state', data: { state: 'listening' } });
     expect(selectOrbState(s, 2000)).toBe('listening');
   });
+
+  it('replaces a loading wake word once it has loaded', () => {
+    const start = createInitialState();
+    const loading = { ...start, voice: { ...start.voice, state: 'idle' as const, engines: { wake: 'loading', stt: 'faster_whisper', tts: 'edge' } } };
+    const info = { ...loading.voice, engines: { wake: 'name', stt: 'faster_whisper', tts: 'edge' }, wake_word: 'jarvis', state: 'listening' as const };
+    const s = event(loading, { type: 'voice.info', data: info });
+    expect(s.voice.engines.wake).toBe('name');
+    expect(s.voice.wake_word).toBe('jarvis');
+    expect(s.voice.state).toBe('idle'); // the state itself comes only from voice.state
+  });
 });
 
 describe('planLevels', () => {

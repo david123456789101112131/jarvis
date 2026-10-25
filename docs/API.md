@@ -354,6 +354,7 @@ Every server message: `{ "type": string, "data": any, "ts": string }`.
 | `audit` | audit entry | every tool decision |
 | `system.stats` | `SystemStats` | every 2 s |
 | `voice.state` | `{state, muted, error, trigger}` | voice state change |
+| `voice.info` | `VoiceInfo` | once the wake word or speech recognition finished loading in the background (until then `engines.wake` is `"loading"`) |
 | `voice.level` | `{level}` (mic or speech RMS 0..1) | up to 15×/s while listening/speaking (sent straight to the UI, not via the bus) |
 | `voice.transcript` | `{text, final: boolean, language}` | live (partial) and final transcripts |
 | `voice.pipeline` | `{step: "transcribing"\|"understanding"\|"routing"\|"selecting_tool"\|"preparing_action"\|"executing"\|"done", status: "active"\|"done"\|"error", label}` | processing steps for the orb panel |

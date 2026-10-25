@@ -384,6 +384,11 @@ export function applyEvent(state: AppState, event: ServerEvent, at: number): App
       }
       return { ...state, voice, voiceLevel: level, overlay: prev === next ? state.overlay : transitionOverlay(state.overlay, prev, next, at) };
     }
+    case 'voice.info': {
+      // A model finished loading in the background: its name (and the wake word) replace "loading".
+      const { engines, wake_word, devices } = event.data;
+      return { ...state, voice: { ...state.voice, engines: engines ?? state.voice.engines, wake_word: wake_word ?? state.voice.wake_word, devices: devices ?? state.voice.devices } };
+    }
     case 'voice.level': {
       const raw = Number(event.data?.level);
       const level = Number.isFinite(raw) ? Math.max(0, Math.min(1, raw)) : 0;

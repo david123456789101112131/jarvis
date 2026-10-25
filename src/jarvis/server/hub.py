@@ -27,7 +27,7 @@ log = logging.getLogger(__name__)
 # Bus topics the UI receives (docs/API.md, "WebSocket /ws").
 FORWARDED_TOPICS = (
     "chat.message", "agent.status", "task.updated", "task.subtask", "task.timeline", "activity", "audit",
-    "system.stats", "voice.state", "voice.transcript", "voice.pipeline", "action", "speech",
+    "system.stats", "voice.state", "voice.info", "voice.transcript", "voice.pipeline", "action", "speech",
     "confirm.request", "confirm.response", "mode", "killswitch", "notification", "settings", "providers",
     "ui.navigate", "job",
 )

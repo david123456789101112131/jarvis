@@ -135,6 +135,8 @@ class VoiceEventSink(Protocol):
 
     async def on_speech(self, text: str, language: str) -> None: ...
 
+    # Optional: `async def on_info(self, info: dict) -> None` gets `VoiceService.info()` once a model has loaded.
+
 
 class NullVoiceEvents:
     async def on_state(self, state: VoiceState, info: dict[str, Any]) -> None:

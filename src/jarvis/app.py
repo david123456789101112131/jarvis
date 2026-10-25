@@ -772,6 +772,9 @@ class _VoiceEvents:
                                                          "muted": bool(info.get("muted")), "error": info.get("error"),
                                                          "trigger": info.get("trigger")}, sender="voice"))
 
+    async def on_info(self, info: dict[str, Any]) -> None:
+        await self.app.bus.publish(event("voice.info", info, sender="voice"))
+
     async def on_level(self, level: float) -> None:
         self.app._emit_level(round(float(level), 3))
 
