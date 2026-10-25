@@ -23,6 +23,10 @@ takes as long as the sound would. Measured from the last sound of the question (
   first   the first sound JARVIS makes: the short "one moment" cue, or the answer itself
   answer  the answer starts
 (`--compare` adds the same without the cue.)
+
+`--wake` runs the same pipeline with JARVIS's real wake word (the wake model and the name alone) listening all
+the time, as in the background: the name alone and then a question, the name with the question in one breath,
+"Hey Jarvis", and speech without the name (which must not wake it). Measured from the last sound of what was said.
 """
 
 from __future__ import annotations
@@ -46,6 +50,14 @@ QUESTIONS = [
     ("explain", "מה ההבדל בין זיכרון RAM לזיכרון של כרטיס מסך?"),
     ("advice", "תן לי טיפ אחד לשינה טובה"),
     ("time", "מה השעה?"),                     # answered by JARVIS itself, without the model
+]
+
+# (name, what is said and in which voice, then the question after "כן?" or None)
+WAKE_CASES = [
+    ("name", ("ג'רביס", "he"), "מה השעה?"),
+    ("name + question", ("ג'רביס, מה השעה?", "he"), None),
+    ("hey jarvis", ("Hey Jarvis", "en"), "מה השעה?"),
+    ("no name", ("אני הולך להכין קפה עכשיו", "he"), None),
 ]
 
 
@@ -142,7 +154,8 @@ async def run(rounds: int, real: dict[str, Any], *, compare: bool = False) -> di
     return out
 
 
-async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = False) -> dict[str, Any]:
+async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = False,
+                         wake: bool = False) -> dict[str, Any]:
     from jarvis.app import JarvisApp
     from jarvis.config.loader import update_settings
     from jarvis.config.settings import Settings
@@ -151,7 +164,7 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
     from jarvis.voice.pipeline import PipelineOptions, VoicePipeline
     from jarvis.voice.stt import create_stt_engine
     from jarvis.voice.tts import PhraseCache, create_tts_engine
-    from jarvis.voice.wakeword import NullWakeEngine
+    from jarvis.voice.wakeword import NullWakeEngine, WakeWordEngine, create_wake_engine
 
     class Speaker(NullSink):
         """Plays nothing, for as long as the sound lasts; notes when each clip starts."""
@@ -168,13 +181,15 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
         def __init__(self) -> None:
             self.state: VoiceState | None = None
             self.heard = ""
+            self.said: list[str] = []
 
         async def on_state(self, state: VoiceState, info: dict[str, Any]) -> None:
             self.state = state
 
         async def on_level(self, level: float) -> None: ...
         async def on_pipeline(self, step: str, status: str, label: str) -> None: ...
-        async def on_speech(self, text: str, language: str) -> None: ...
+        async def on_speech(self, text: str, language: str) -> None:
+            self.said.append(text)
 
         async def on_transcript(self, transcript: Transcript) -> None:
             if transcript.final:
@@ -197,6 +212,73 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
             if time.perf_counter() > deadline:
                 raise TimeoutError(f"waited too long for {what}")
             await asyncio.sleep(0.01)
+
+    async def spoken(text: str, language: str) -> Any:
+        clip = await tts.synthesize(text, language)
+        return words_only(resample(clip.samples, clip.sample_rate, SAMPLE_RATE))
+
+    def now_in(*states: Any) -> bool:
+        """The pipeline's state right now (the events about it arrive a moment later)."""
+        return pipeline is not None and pipeline.state in states
+
+    async def hear(audio: Any) -> float:
+        """Say it into the microphone; the moment its last sound was heard."""
+        source.append(audio)
+        await until(lambda: not source.pending or now_in(VoiceState.PROCESSING), "the audio to be heard", 60)
+        source.clear()
+        return time.perf_counter()
+
+    async def answered() -> None:
+        await until(lambda: not now_in(VoiceState.WAKE, VoiceState.LISTENING, VoiceState.PROCESSING), "the answer", 120)
+        await until(lambda: not now_in(VoiceState.SPEAKING) and not speaker.playing, "the end", 120)
+        if now_in(VoiceState.LISTENING) and pipeline is not None:   # a question back: stop listening
+            pipeline.cancel()
+
+    async def wake_rounds() -> dict[str, Any]:
+        """The wake cases, `rounds` times each: whether it woke, and when "כן?" and the answer started."""
+        assert pipeline is not None
+        audio = {key: await spoken(*said) for key, said, _ in WAKE_CASES}
+        question = {q: await spoken(q, "he") for _, _, q in WAKE_CASES if q}
+        results: dict[str, Any] = {}
+        for _n in range(rounds):
+            for key, _said, then in WAKE_CASES:
+                await until(lambda: now_in(VoiceState.IDLE) and not pipeline.busy and not speaker.playing, "quiet")
+                await asyncio.sleep(1.0)
+                row = results.setdefault(key, {"tries": 0, "woke": 0, "ack": [], "answer": [], "heard": [], "said": []})
+                row["tries"] += 1
+                wakes, said_before = pipeline.stats["wakes"], len(events.said)
+                speaker.starts.clear()
+                begin = time.perf_counter()
+                end = await hear(audio[key])
+                try:
+                    await until(lambda w=wakes: pipeline.stats["wakes"] > w, "the name", 6)
+                except TimeoutError:
+                    continue
+                row["woke"] += 1
+                if then is None:
+                    await answered()
+                    starts = [t - end for t in speaker.starts if t >= begin]
+                    if starts:
+                        row["answer"].append(starts[0] * 1000)
+                else:
+                    await until(lambda: now_in(VoiceState.LISTENING) and not speaker.playing, "the yes", 10)
+                    starts = [t - end for t in speaker.starts if t >= begin]
+                    if starts:
+                        row["ack"].append(starts[0] * 1000)
+                    await asyncio.sleep(0.3)
+                    speaker.starts.clear()
+                    asked = await hear(question[then])
+                    await answered()
+                    starts = [t - asked for t in speaker.starts if t >= asked]
+                    if starts:
+                        row["answer"].append(starts[0] * 1000)
+                row["heard"].append(events.heard)
+                row["said"].append(" ".join(events.said[said_before:]))
+        for row in results.values():
+            for m in ("ack", "answer"):
+                row[m] = round(statistics.median(row[m])) if row[m] else None
+            row["heard"], row["said"] = (row["heard"] or [""])[0], (row["said"] or [""])[0]
+        return results
 
     settings = update_settings(Settings(), real)
     out: dict[str, Any] = {}
@@ -223,11 +305,19 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
         out["chat_model"] = server.runtime.describe() if server is not None and server.runtime else "none"
         options = PipelineOptions.from_settings(settings.voice)
         out["end_silence_ms"] = options.end_silence_ms
-        pipeline = VoicePipeline(source=source, sink=speaker, wake=NullWakeEngine("bench"), stt=stt, tts=tts,
+        listener: WakeWordEngine = NullWakeEngine("bench")
+        if wake:
+            listener, out["wake_engine"] = await asyncio.to_thread(create_wake_engine, settings.voice, app.paths, None,
+                                                                   stt, load=True)
+            options.always_listening = True
+        pipeline = VoicePipeline(source=source, sink=speaker, wake=listener, stt=stt, tts=tts,
                                  handler=app._voice_command, events=events, options=options,
                                  phrase_cache=cache)
         pipeline.start()
         await until(lambda: events.state is VoiceState.IDLE, "the voice to start", 60)
+        if wake:
+            out["wake"] = await wake_rounds()
+            return out
         cue_s = options.thinking_cue_s
         rows: dict[str, list[dict[str, float]]] = {}
         said: dict[str, dict[str, str]] = {}
@@ -287,6 +377,7 @@ def main() -> int:
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--compare", action="store_true", help="also measure speaking only after the whole answer")
     parser.add_argument("--voice", action="store_true", help="through the whole voice path, as the user hears it")
+    parser.add_argument("--wake", action="store_true", help="the wake word and the name alone, always listening")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     sys.path.insert(0, str(ROOT / "src"))
@@ -295,8 +386,11 @@ def main() -> int:
     os.environ["JARVIS_HOME"] = str(home)
     os.environ["JARVIS_KEYRING"] = "0"
     try:
-        bench = run_voice_path if args.voice else run
-        result = asyncio.run(bench(args.rounds, real, compare=args.compare))
+        if args.wake:
+            result = asyncio.run(run_voice_path(args.rounds, real, wake=True))
+        else:
+            bench = run_voice_path if args.voice else run
+            result = asyncio.run(bench(args.rounds, real, compare=args.compare))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     if args.json:
@@ -305,6 +399,15 @@ def main() -> int:
     warm = f" · first-run warm-up {result['preload_ms'] / 1000:.1f} s" if result.get("preload_ms") else ""
     print(f"ready after {result['ready_s']} s{warm} · chat model: {result['chat_model']}")
     print(f"speech recognition: {result['stt_engine']} · voice: {result['tts_engine']}")
+    if args.wake:
+        print(f"wake word: {result['wake_engine']}")
+        print("from the last sound of what was said:")
+        for key, row in result["wake"].items():
+            ack = f" · \"כן?\" after {row['ack']:5} ms" if row["ack"] is not None else ""
+            answer = f" · answer after {row['answer']:5} ms" if row["answer"] is not None else ""
+            print(f"  {key:16} woke {row['woke']}/{row['tries']}{ack}{answer}"
+                  f"  (heard: {row['heard']!r}; said: {row['said']!r})")
+        return 0
     if args.voice:
         print(f"from the question's last sound (the {result['end_silence_ms']} ms end-of-speech pause included):")
         for key, ms in result["ms"].items():

@@ -1664,6 +1664,35 @@ class TestPipeline:
         assert h.played() == ["עשר."]
         assert len(stt.calls) == 1                                       # nothing checked while it answered
 
+    async def test_the_name_alone_heard_as_english_keeps_the_conversation_in_hebrew(self, tmp_path: Path) -> None:
+        class RememberingSTT(HeardSTT):
+            """As the real engine: a final transcript remembers its language for the next unsure one."""
+
+            def __init__(self, texts: Any) -> None:
+                super().__init__(texts)
+                self.started_with: list[str] = []
+
+            async def transcribe(self, audio: Any, language: str = "auto", *, hint: bool = True,
+                                 partial: bool = False) -> Transcript:
+                self.started_with.append(self.last_language)
+                heard = await super().transcribe(audio, language, hint=hint, partial=partial)
+                if heard.text and not partial:
+                    self.last_language = heard.language or self.last_language
+                return heard
+
+        stt = RememberingSTT(["Jarvis", "מה השעה?"])
+        wake = NameWakeEngine(MarkerWake(), stt, language="auto")
+        async with Harness(tmp_path, stt=stt, wake=wake, reply=SpeechReply(text="עשר.", follow_up=False)) as h:
+            await h.cache.warm()
+            h.source.append(speechlike(0.8))
+            await wait_for(lambda: h.pipeline.state is VoiceState.LISTENING, what="listening after the name")
+            assert stt.last_language == "he"                             # "Jarvis" did not make it English
+            await wait_for(lambda: not h.pipeline.sink.playing, what="the yes")
+            h.source.append(speechlike(1.0))
+            await wait_for(lambda: h.handled and h.quiet, what="the command")
+        assert h.played() == ["כן?", "עשר."]                              # not "Yes?"
+        assert stt.started_with == ["he", "he"] and h.handled[0].language == "he"
+
     async def test_speak_responses_off(self, tmp_path: Path) -> None:
         async with Harness(tmp_path, texts=["open chrome"], options=fast_options(speak_responses=False)) as h:
             h.say(1.0)

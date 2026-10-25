@@ -653,7 +653,9 @@ class VoicePipeline:
         else:
             log.info("Wake word detected (%s %.2f)", detection.engine, detection.score)
         self._interrupt()
-        lang = detection.language if detection.language in ("he", "en") else self.language
+        # The name sounds the same in both languages ("ג'רביס" is often heard as English "Jarvis"): only a command
+        # said with it tells the language; otherwise the conversation's stays.
+        lang = detection.language if detection.command and detection.language in ("he", "en") else self.language
         self._set_state(VoiceState.WAKE, trigger="wake")
         if detection.command:  # "ג'ארוויס פתח את כרום" — the command came with the wake word
             heard = detection.transcript
@@ -696,6 +698,9 @@ class VoicePipeline:
     ) -> None:
         self._listen_seq += 1
         self._listen = _Listen(self._listen_seq, trigger, explicit, retries, echo_text)
+        # Speech recognition guesses unsure (short) speech in the language spoken last: that is the conversation's,
+        # never what the name check overheard meanwhile (other people, a video, the name alone).
+        self.stt.last_language = self.language
         if trigger == "ptt":
             self.endpointer.reset(manual=True, max_utterance_s=max(30.0, 2 * self.options.max_utterance_s))
         else:
