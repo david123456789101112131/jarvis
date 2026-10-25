@@ -159,6 +159,7 @@ class PipelineOptions:
     level_rate_hz: float = 15.0
     min_speech_ms: int = 200
     max_speech_chars: int = 900
+    thinking_cue_s: float = 0.4  # nothing to say this long after the command: a short "one moment" (0: never)
 
     @classmethod
     def from_settings(cls, settings: VoiceSettings, **overrides: Any) -> PipelineOptions:
@@ -169,6 +170,7 @@ class PipelineOptions:
             "speak_responses": settings.speak_responses,
             "always_listening": settings.always_listening,
             "partial_transcripts": settings.partial_transcripts,
+            "thinking_cue_s": 0.4 if settings.thinking_cue else 0.0,
             "stt_language": settings.stt_language,
             "default_language": settings.stt_language if settings.stt_language in ("he", "en") else "he",
         }
@@ -295,7 +297,7 @@ class VoicePipeline:
         self.last_transcript: Transcript | None = None
         self.last_error: str | None = None
         self.disabled_reason: str | None = None
-        self.stats = {"wakes": 0, "talk_keys": 0, "barge_ins": 0, "turns": 0, "early_replies": 0, "errors": 0,
+        self.stats = {"wakes": 0, "talk_keys": 0, "barge_ins": 0, "turns": 0, "early_replies": 0, "cues": 0, "errors": 0,
                       "frames": 0}
         self._listen: _Listen | None = None
         self._listen_seq = 0
@@ -817,6 +819,8 @@ class VoicePipeline:
         final.stream = stream
         early = self._spawn(self._say_early(stream, language, lambda: self._is_current(turn), measured)) \
             if stream is not None else None
+        if stream is not None and o.thinking_cue_s > 0:
+            self._spawn(self._thinking_cue(stream, language, lambda: self._is_current(turn)))
         try:
             reply = coerce_reply(await self._call_handler(final))
         except Exception as exc:
@@ -901,6 +905,22 @@ class VoicePipeline:
         # A brief error flash counts as busy; a lasting microphone problem does not.
         while not self._stopping and (self.busy or (self.state is VoiceState.ERROR and self._source_problem is None)):
             await asyncio.sleep(0.05)
+
+    async def _thinking_cue(self, stream: SpeechStream, language: str, guard: Callable[[], bool]) -> None:
+        """Nothing to say yet `thinking_cue_s` after the command (the AI is still writing): a short cached "one
+        moment", so the user hears at once that JARVIS is on it. The answer waits for it to end; the state stays
+        PROCESSING. Only a phrase already cached: waiting for the voice service would defeat it."""
+        await asyncio.sleep(self.options.thinking_cue_s)
+        if not guard() or stream.said or stream.closed or self._speech_lock.locked():
+            return
+        key = "thinking" if self.stats["cues"] % 2 == 0 else "thinking_2"
+        clip = self.cache.lookup(key, language) if self.cache is not None else None
+        if clip is None:
+            return
+        async with self._speech_lock:
+            if guard() and not stream.said:
+                self.stats["cues"] += 1
+                await self._play(clip)
 
     async def _say_early(self, stream: SpeechStream, language: str, guard: Callable[[], bool],
                          heard_at: float | None) -> bool:

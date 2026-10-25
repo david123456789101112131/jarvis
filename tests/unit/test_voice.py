@@ -884,6 +884,7 @@ class FakeWhisperWorld:
         self.runs: list[tuple[str, str]] = []              # (device, language or "detect")
         self.card_gate = threading.Event()                 # a model being loaded on the card waits for this
         self.card_gate.set()
+        self.detected: tuple[str, list[tuple[str, float]]] = ("he", [("he", 0.99)])
 
     def install(self, monkeypatch: pytest.MonkeyPatch) -> None:
         world = self
@@ -905,7 +906,7 @@ class FakeWhisperWorld:
 
             def detect_language(self, audio: Any = None) -> tuple[str, float, list[tuple[str, float]]]:
                 world.runs.append((self.device, "detect"))
-                return "he", 0.99, [("he", 0.99)]
+                return world.detected[0], world.detected[1][0][1], world.detected[1]
 
             def transcribe(self, audio: Any, **kwargs: Any) -> tuple[Any, Any]:
                 world.runs.append((self.device, kwargs.get("language") or "auto"))
@@ -1006,6 +1007,27 @@ class TestWhisperOnTheGraphicsCard:
         engine.load()
         assert engine.settle(0) and engine.model_used == "small" and engine.device_used == "cpu"
         assert no_cpu_model.loads == [("small", "cpu", True), ("large-v3-turbo", "cuda", True), ("small", "cpu", False)]
+        engine.close()
+
+    async def test_a_short_unsure_question_keeps_the_language_spoken_last(self, tmp_path: Path,
+                                                                         monkeypatch: pytest.MonkeyPatch) -> None:
+        world = FakeWhisperWorld({"small"})
+        world.install(monkeypatch)
+        engine = FasterWhisperSTT("small", download_root=tmp_path)
+        engine.load()
+        world.detected = ("en", [("en", 0.5), ("he", 0.3), ("ml", 0.1)])   # "מה השעה?" heard as English "Masha?"
+        heard = await engine.transcribe(speechlike(0.8), "auto")
+        assert heard.language == "he" and world.runs[-1][1] == "he"
+        world.detected = ("en", [("en", 0.9), ("he", 0.02)])                # clearly English: it switches
+        assert (await engine.transcribe(speechlike(0.8), "auto")).language == "en"
+        assert engine.last_language == "en"
+        world.detected = ("he", [("he", 0.55), ("en", 0.4)])                # and back only when clearly Hebrew
+        assert (await engine.transcribe(speechlike(0.8), "auto")).language == "en"
+        world.detected = ("he", [("he", 0.85), ("en", 0.1)])
+        assert (await engine.transcribe(speechlike(0.8), "auto")).language == "he"
+        world.detected = ("ml", [("ml", 0.9)])                              # neither: the last one stays
+        assert (await engine.transcribe(speechlike(0.8), "auto")).language == "he"
+        assert (await engine.transcribe(speechlike(0.8), "en")).language == "en"   # a set language is never guessed
         engine.close()
 
     def test_missing_cuda_libraries_or_no_card(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1139,6 +1161,9 @@ class TestTTS:
         assert listed == "Steps: open the folder. run the tests."
         assert split_sentences(listed, max_chars=30) == ["Steps: open the folder.", "run the tests."]
         assert split_sentences(listed) == [listed]  # short sentences are synthesized together
+        # a stray word in another script (seen once from the local model) is not read out; Hebrew and accents are
+        assert prepare_speech_text("בטח, ושי ഉറר הנה התשובה") == "בטח, ושי הנה התשובה."
+        assert prepare_speech_text("שָׁלוֹם, café 3.5 GB") == "שָׁלוֹם, café 3.5 GB."
 
     def test_split_sentences(self) -> None:
         text = " ".join(f"Sentence number {i} is here." for i in range(30))
@@ -1286,6 +1311,32 @@ class TestTTS:
 
     @needs_numpy
     @pytest.mark.network
+    async def test_a_slow_voice_request_gets_a_twin(self) -> None:
+        calls: list[str] = []
+
+        async def first_slow() -> bytes:
+            calls.append("call")
+            if len(calls) == 1:
+                await asyncio.sleep(2.0)
+                return b"slow"
+            return b"fast"
+
+        assert await tts_mod._hedged(first_slow, 0.05) == b"fast" and len(calls) == 2
+
+        async def quick() -> bytes:
+            calls.append("quick")
+            return b"ok"
+
+        calls.clear()
+        assert await tts_mod._hedged(quick, 0.05) == b"ok" and calls == ["quick"]   # no twin when not needed
+
+        async def broken() -> bytes:
+            await asyncio.sleep(0.1)
+            raise RuntimeError("the service is down")
+
+        with pytest.raises(RuntimeError, match="down"):
+            await tts_mod._hedged(broken, 0.05)                                # both failed: the error is raised
+
     @pytest.mark.skipif(not (_have("edge_tts") and _have("miniaudio")), reason="edge-tts/miniaudio not installed")
     async def test_edge_tts_neural_voice(self) -> None:
         engine = tts_mod.EdgeTTS(timeout_s=20.0)
@@ -1570,6 +1621,29 @@ class TestPipeline:
         assert h.handled[0].text == "פתח את כרום" and h.handled[0].language == "he"
         assert h.events.transitions() == ["idle", "wake", "processing", "speaking", "idle"]
         assert h.played() == ["פותח."]  # no "listening" acknowledgement: the command was already said
+
+    async def test_a_slow_answer_is_preceded_by_a_short_cue(self, tmp_path: Path) -> None:
+        async def slow(transcript: Transcript) -> SpeechReply:
+            await asyncio.sleep(0.6)
+            return SpeechReply(text="הנה התשובה.", follow_up=False)
+
+        async with Harness(tmp_path, texts=["ספר לי בדיחה"], handler=slow, options=fast_options(thinking_cue_s=0.2)) as h:
+            await h.cache.warm()
+            h.say(1.0)
+            await wait_for(lambda: h.pipeline.stats["turns"] == 1 and h.quiet, what="the slow turn")
+            await h.pipeline.flush_events()
+        assert h.played() == ["כן?", "רק רגע.", "הנה התשובה."] and h.pipeline.stats["cues"] == 1
+        assert h.events.transitions() == ["idle", "wake", "listening", "processing", "speaking", "idle"]
+        assert ("רק רגע.", "he") not in h.events.of("speech")                # heard, not shown as the answer
+
+    async def test_a_quick_answer_has_no_cue(self, tmp_path: Path) -> None:
+        async with Harness(tmp_path, texts=["מה השעה"], reply=SpeechReply(text="עשר.", follow_up=False),
+                           options=fast_options(thinking_cue_s=0.2)) as h:
+            await h.cache.warm()
+            h.say(1.0)
+            await wait_for(lambda: h.handled and h.quiet, what="the quick turn")
+            await asyncio.sleep(0.3)
+        assert h.played() == ["כן?", "עשר."] and h.pipeline.stats["cues"] == 0
 
     async def test_the_name_and_a_command_wake_the_pipeline(self, tmp_path: Path) -> None:
         stt = HeardSTT(["ג'רביס, מה השעה?"])

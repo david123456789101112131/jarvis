@@ -78,6 +78,7 @@ _HALLUCINATIONS = {
     "כתוביות",
 }
 _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
+LANGUAGE_SWITCH = 2.0       # how much likelier the other language must sound to switch from the one spoken last
 
 
 class STTError(VoiceError):
@@ -533,13 +534,17 @@ class FasterWhisperSTT(STTEngine):
         except Exception as exc:  # pragma: no cover - depends on the model
             log.debug("Language detection failed: %s", exc)
             return self.last_language, None
-        if language in ("he", "en"):
-            return language, float(probability)
-        probs = dict(all_probs or [])
-        he, en = float(probs.get("he", 0.0)), float(probs.get("en", 0.0))
-        if he == 0.0 and en == 0.0:
+        probs = {lang: float(p) for lang, p in (all_probs or [])}
+        probs.setdefault(language, float(probability))
+        p = {"he": probs.get("he", 0.0), "en": probs.get("en", 0.0)}
+        if p["he"] == 0.0 and p["en"] == 0.0:
             return self.last_language, None
-        return ("he" if he >= en else "en"), max(he, en)
+        # A short question is often heard unsure ("מה השעה?" alone came out as English "Masha?"): the language
+        # spoken last stays unless the other one is clearly more likely.
+        last = self.last_language if self.last_language in p else "he"
+        other = "en" if last == "he" else "he"
+        choice = other if p[other] > LANGUAGE_SWITCH * p[last] else last
+        return choice, p[choice]
 
     def _transcribe_sync(self, audio: Any, language: str, hint: bool, partial: bool) -> Transcript:
         current = self._current            # the model and its device together (a better one can take over meanwhile)

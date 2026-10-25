@@ -162,6 +162,8 @@ class NullVoiceEvents:
 # Short phrases pre-synthesized at start-up so acknowledgements play with no delay.
 ACK_PHRASES: dict[str, dict[str, str]] = {
     "listening": {"he": "כן?", "en": "Yes?"},
+    "thinking": {"he": "רק רגע.", "en": "One moment."},       # the AI is still writing the answer
+    "thinking_2": {"he": "שנייה.", "en": "Just a second."},
     "ok": {"he": "בסדר.", "en": "Okay."},
     "on_it": {"he": "מיד.", "en": "On it."},
     "done": {"he": "בוצע.", "en": "Done."},

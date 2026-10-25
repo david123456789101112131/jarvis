@@ -30,7 +30,9 @@ import re
 import sys
 import tempfile
 import time
+import unicodedata
 from abc import ABC, abstractmethod
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -88,8 +90,21 @@ _SYMBOLS_RE = re.compile("[\U0001f300-\U0001faff☀-➿️]")
 _SENTENCE_END = ".!?…:;,"
 
 
+def _foreign(ch: str) -> bool:
+    """A letter or vowel sign of a script the Hebrew and English voices can't read (the local model now and then
+    slips in a word of Malayalam or Thai)."""
+    code = ord(ch)
+    if code < 0x250 or 0x0590 <= code <= 0x05FF or 0xFB1D <= code <= 0xFB4F or 0x0300 <= code <= 0x036F:
+        return False                     # Latin, Hebrew (with its points) and the accents written over Latin letters
+    return unicodedata.category(ch)[0] in "LM"
+
+
+def _drop_foreign_words(text: str) -> str:
+    return " ".join(w for w in text.split(" ") if not any(_foreign(ch) for ch in w))
+
+
 def prepare_speech_text(text: str, *, max_chars: int = 900) -> str:
-    """Make chat-style text speakable: drop code, URLs, markdown marks and emoji; one line per
+    """Make chat-style text speakable: drop code, URLs, markdown marks, emoji and words in other scripts; one line per
     sentence; cut at a sentence boundary when longer than `max_chars`."""
     t = _CODE_BLOCK_RE.sub(" ", text or "")
     t = _LINK_RE.sub(r"\1", t)
@@ -98,6 +113,7 @@ def prepare_speech_text(text: str, *, max_chars: int = 900) -> str:
     t = _LINE_MARK_RE.sub("", t)
     t = _EMPHASIS_RE.sub("", t)
     t = _SYMBOLS_RE.sub("", t)
+    t = "\n".join(_drop_foreign_words(line) for line in t.splitlines())
     lines = []
     for raw in t.splitlines():
         line = re.sub(r"\s+", " ", raw).strip()
@@ -202,8 +218,10 @@ class EdgeTTS(TTSEngine):
         *,
         timeout_s: float = 15.0,
         connect_timeout_s: float = 5.0,
+        hedge_s: float = 1.2,
     ) -> None:
         super().__init__()
+        self.hedge_s = hedge_s
         self.voice_he = voice_he or "he-IL-AvriNeural"
         self.voice_en = voice_en or "en-GB-RyanNeural"
         pct = _percent(rate)
@@ -232,9 +250,9 @@ class EdgeTTS(TTSEngine):
         except ImportError as exc:
             raise TTSUnavailable("edge-tts is not installed") from exc
         voice = self.voice_for(lang)
-        audio = bytearray()
 
-        async def collect() -> None:
+        async def collect() -> bytes:
+            audio = bytearray()
             communicate = edge_tts.Communicate(
                 text,
                 voice,
@@ -245,9 +263,10 @@ class EdgeTTS(TTSEngine):
             async for chunk in communicate.stream():
                 if chunk.get("type") == "audio" and chunk.get("data"):
                     audio.extend(chunk["data"])
+            return bytes(audio)
 
         try:
-            await asyncio.wait_for(collect(), timeout=self.timeout_s)
+            audio = await asyncio.wait_for(_hedged(collect, self.hedge_s), timeout=self.timeout_s)
         except TimeoutError as exc:
             raise TTSError("edge-tts timed out") from exc
         except Exception as exc:
@@ -255,10 +274,39 @@ class EdgeTTS(TTSEngine):
             raise TTSError(f"edge-tts failed: {_short(exc)}" + (f" (HTTP {status})" if status else "")) from exc
         if not audio:
             raise TTSError("edge-tts returned no audio")
-        clip = await asyncio.to_thread(decode_audio_bytes, bytes(audio), sample_rate=24_000)
+        clip = await asyncio.to_thread(decode_audio_bytes, audio, sample_rate=24_000)
         clip.text, clip.language, clip.engine, clip.voice = text, lang, self.name, voice
         clip.source_id = self.cache_id(lang)
         return clip
+
+
+async def _hedged(fetch: Callable[[], Awaitable[bytes]], after_s: float) -> bytes:
+    """`fetch()`, and a second `fetch()` when the first has not finished after `after_s`: the first to bring audio
+    wins. Microsoft's voice service usually answers in under a second, but now and then a request takes three."""
+    first = asyncio.ensure_future(fetch())
+    tasks = [first]
+    try:
+        if after_s <= 0:
+            return await first
+        done, _ = await asyncio.wait(tasks, timeout=after_s)
+        if not done:
+            tasks.append(asyncio.ensure_future(fetch()))
+        error: BaseException | None = None
+        pending = set(tasks)
+        while pending:
+            done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
+            for task in done:
+                if task.exception() is not None:
+                    error = task.exception()
+                elif task.result():
+                    return task.result()
+        if error is not None:
+            raise error
+        return b""
+    finally:
+        for task in tasks:
+            if not task.done():
+                task.cancel()
 
 
 _VOICE_LANG_HINTS = {"he": ("he",), "en": ("en",)}

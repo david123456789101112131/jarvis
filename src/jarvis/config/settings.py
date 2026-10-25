@@ -276,6 +276,7 @@ class VoiceSettings(_Section):
     tts_voice_en: str = "en-GB-RyanNeural"
     tts_rate: str = "+5%"
     speak_responses: bool = True
+    thinking_cue: bool = True              # a short "רק רגע" when the answer takes more than a moment to start
     follow_up_window_s: float = 6.0
     max_utterance_s: float = 15.0
     end_silence_ms: int = 700
