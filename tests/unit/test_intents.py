@@ -127,6 +127,8 @@ CASES: list[tuple[str, str, dict]] = [
     ("what time is it", I.TIME, {}),
     ("Hey Jarvis, what time is it", I.TIME, {}),
     ("מה השעה", I.TIME, {}),
+    ("משעה?", I.TIME, {}),
+    ("מה שעה עכשיו?", I.TIME, {}),
     ("מה התאריך היום", I.DATE, {}),
     ("help", I.HELP, {}),
     ("מה אתה יכול לעשות", I.HELP, {}),

@@ -12,7 +12,7 @@ what JARVIS hears. Only the voice (edge-tts, when online) leaves the computer.
 
 Measured from the moment the "user" stops speaking:
   stt     the question recognised (speech to text)
-  text    the first sentence of the answer written
+  text    the first piece of the answer written (a sentence, or the first clause of a long one)
   sound   that sentence synthesized, ready to play: when the user hears JARVIS start
   whole   the whole answer written
 (the end-of-speech pause, `voice.end_silence_ms`, comes before all of these and is not included).

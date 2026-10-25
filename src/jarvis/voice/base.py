@@ -39,6 +39,7 @@ class Transcript:
 
 
 _SENTENCE_END = re.compile(r"[.!?…:](?=\s)|\n")
+_CLAUSE_END = re.compile(r"[,;–—](?=\s)")
 
 
 class SpeechStream:
@@ -47,12 +48,15 @@ class SpeechStream:
     is still coming. When the handler returns its full reply, `said` is what was spoken already.
 
     A piece is at least `min_chars` long (a tiny first sentence waits for the next one), so the first sound comes
-    with the first complete sentence. Nothing more is handed out after `max_chars` (a long reply is cut there).
+    with the first complete sentence, or sooner with the first clause of a long one (a comma after at least
+    `first_clause_chars`): the voice takes longer the longer the piece. Nothing more is handed out after
+    `max_chars` (a long reply is cut there).
     """
 
-    def __init__(self, *, min_chars: int = 12, max_chars: int = 900) -> None:
+    def __init__(self, *, min_chars: int = 12, max_chars: int = 900, first_clause_chars: int = 30) -> None:
         self.min_chars = min_chars
         self.max_chars = max_chars
+        self.first_clause_chars = first_clause_chars
         self.text = ""
         self.taken = 0                 # characters of `text` handed out
         self.complete = False          # the writer finished the reply
@@ -81,9 +85,12 @@ class SpeechStream:
         rest = self.text[self.taken:]
         if not rest.strip() or self.taken >= self.max_chars:
             return None
-        for end in _SENTENCE_END.finditer(rest):
-            if len(rest[:end.end()].strip()) >= self.min_chars:
-                return self.taken + end.end()
+        ends = [(m.end(), self.min_chars) for m in _SENTENCE_END.finditer(rest)]
+        if self.taken == 0 and self.first_clause_chars:
+            ends += [(m.end(), self.first_clause_chars) for m in _CLAUSE_END.finditer(rest)]
+        for end, least in sorted(ends):
+            if len(rest[:end].strip()) >= least:
+                return self.taken + end
         return len(self.text) if self.complete else None
 
     async def next(self) -> str | None:

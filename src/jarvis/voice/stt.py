@@ -79,6 +79,7 @@ _HALLUCINATIONS = {
 }
 _WORD_RE = re.compile(r"[\w']+", re.UNICODE)
 LANGUAGE_SWITCH = 2.0       # how much likelier the other language must sound to switch from the one spoken last
+LANGUAGE_SURE = 0.7         # ... and at least this likely: Whisper is never this sure of a short Hebrew word as English
 
 
 class STTError(VoiceError):
@@ -539,11 +540,13 @@ class FasterWhisperSTT(STTEngine):
         p = {"he": probs.get("he", 0.0), "en": probs.get("en", 0.0)}
         if p["he"] == 0.0 and p["en"] == 0.0:
             return self.last_language, None
-        # A short question is often heard unsure ("מה השעה?" alone came out as English "Masha?"): the language
-        # spoken last stays unless the other one is clearly more likely.
+        # Short Hebrew is heard unsure, and often likelier English than Hebrew: on the PC "מה השעה?" scored English
+        # 0.44 / Hebrew 0.002 ("Masha?"), "כן" 0.21 / 0.002 ("Ken"), while real English scores 0.99 or more. So the
+        # language spoken last stays unless the other one is both sure and clearly likelier.
         last = self.last_language if self.last_language in p else "he"
         other = "en" if last == "he" else "he"
-        choice = other if p[other] > LANGUAGE_SWITCH * p[last] else last
+        switch = p[other] >= LANGUAGE_SURE and p[other] > LANGUAGE_SWITCH * p[last]
+        choice = other if switch else last
         return choice, p[choice]
 
     def _transcribe_sync(self, audio: Any, language: str, hint: bool, partial: bool) -> Transcript:

@@ -1020,6 +1020,11 @@ class TestWhisperOnTheGraphicsCard:
         world.detected = ("en", [("en", 0.5), ("he", 0.3), ("ml", 0.1)])   # "מה השעה?" heard as English "Masha?"
         heard = await engine.transcribe(speechlike(0.8), "auto")
         assert heard.language == "he" and world.runs[-1][1] == "he"
+        for detected in ([("yi", 0.5), ("en", 0.438), ("he", 0.002)],    # as measured on the PC: "מה השעה?"
+                         [("en", 0.208), ("he", 0.002)],                 # "כן"
+                         [("en", 0.161), ("he", 0.003)]):                # "עצור"
+            world.detected = (detected[0][0], detected)
+            assert (await engine.transcribe(speechlike(0.8), "auto")).language == "he"
         world.detected = ("en", [("en", 0.9), ("he", 0.02)])                # clearly English: it switches
         assert (await engine.transcribe(speechlike(0.8), "auto")).language == "en"
         assert engine.last_language == "en"

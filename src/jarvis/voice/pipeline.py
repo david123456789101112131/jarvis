@@ -943,8 +943,8 @@ class VoicePipeline:
             ready.put_nowait(None)
 
         spoken: list[str] = []
+        producer = self._spawn(synthesize_pieces(piece))     # the voice starts on it even while the cue still plays
         async with self._speech_lock:
-            producer = self._spawn(synthesize_pieces(piece))
             try:
                 while (item := await ready.get()) is not None:
                     body, lang, job = item

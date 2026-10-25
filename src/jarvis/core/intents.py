@@ -803,6 +803,7 @@ _RULES: list[Rule] = [
     Rule(I.TIME, _named(
         r"^(?:what(?:'s| is) the time|what time is it(?: now)?|time|current time|tell me the time|(?:tell me )?what time it is)$",
         r"^(?:מה\s+)?(?:ה)?שעה(?:\s+עכשיו)?$",
+        r"^מה?שעה(?:\s+עכשיו)?$",          # said quickly, speech recognition joins it: "משעה", "מהשעה"
         r"^כמה\s+(?:ה)?שעה$",
     ), "instant"),
     Rule(I.DATE, _named(

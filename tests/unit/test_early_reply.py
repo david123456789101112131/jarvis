@@ -76,6 +76,18 @@ class TestSpeechStream:
         assert (await stream.next()).strip() == "And the last one"
         assert await stream.next() is None and stream.said.endswith("the last one")
 
+    async def test_a_long_first_sentence_starts_with_its_first_clause(self) -> None:
+        stream = SpeechStream(min_chars=12, first_clause_chars=30)
+        stream.update("זיכרון רם משמש את המעבד, בעוד")             # a comma too early: not yet
+        waiting = asyncio.ensure_future(stream.next())
+        await asyncio.sleep(0.01)
+        assert not waiting.done()
+        stream.update("זיכרון רם משמש את המעבד, בעוד שזיכרון כרטיס המסך, 3,5 GB, משמש")
+        assert await waiting == "זיכרון רם משמש את המעבד, בעוד שזיכרון כרטיס המסך,"
+        stream.update("זיכרון רם משמש את המעבד, בעוד שזיכרון כרטיס המסך, 3,5 GB, משמש לתמונה. ואז, עוד משהו כאן", True)
+        assert (await stream.next()).strip() == "3,5 GB, משמש לתמונה."   # after the first piece: whole sentences
+        assert (await stream.next()).strip() == "ואז, עוד משהו כאן"
+
     async def test_closing_ends_it_and_the_full_reply_decides_the_rest(self) -> None:
         stream = SpeechStream()
         stream.update("The answer is forty two. Then")
