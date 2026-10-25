@@ -259,7 +259,10 @@ the orb is drawn once at its big size (pixel ratio at most 1.25) and scaled, and
 time. Esc, the X or a click outside puts it away until the next wake. With only the mini orb on screen, the same
 view runs in a third, transparent, always-on-top window in the middle of the screen (`?view=focus`) that never takes
 the keyboard: it asks for itself with `/api/window/focus_show` and `focus_hide`, the mini orb steps aside meanwhile
-and does the acting part (its action card) in the corner.
+and does the acting part (its action card) in the corner. The mini orb and this window are Windows tool windows:
+neither has a taskbar button or an Alt+Tab entry, so the taskbar shows one JARVIS. pywebview shows a transparent
+window whenever its page loads, hidden or not, so after each load the shell puts both back as they should be (the
+orb only while the main window is away, the voice view only while it is wanted).
 
 ## 11. Extending
 

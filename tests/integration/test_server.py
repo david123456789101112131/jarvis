@@ -176,6 +176,10 @@ class TestAccess:
         async with httpx.AsyncClient(base_url=live.base) as browser:
             r = await browser.get(f"/?launch={live.token}&view=orb")
             assert r.headers["location"] == "/?view=orb"
+            r = await browser.get(f"/?launch={live.token}&view=focus")      # the voice view keeps its own page
+            assert r.headers["location"] == "/?view=focus"
+            r = await browser.get(f"/?launch={live.token}&view=<script>")
+            assert r.headers["location"] == "/"
         async with httpx.AsyncClient(base_url=live.base, cookies={"jarvis_session": live.token}) as browser:
             assert (await browser.get("/")).status_code == 401          # the token is not a session id
             assert (await browser.get("/api/state")).status_code == 403

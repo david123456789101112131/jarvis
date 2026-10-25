@@ -586,7 +586,7 @@ def create_api(app: JarvisApp) -> FastAPI:
             if not auth.check_token(launch):
                 return _gate_page(403)
             # Swap the launch link for a session cookie, and drop the token from the address bar.
-            response = RedirectResponse("/?view=orb" if view == "orb" else "/", status_code=303)
+            response = RedirectResponse(f"/?view={view}" if view in ("orb", "focus") else "/", status_code=303)
             response.set_cookie(COOKIE, auth.new_session(), httponly=True, samesite="strict", path="/")
             return response
         if not auth.check_session(request.cookies.get(COOKIE)):

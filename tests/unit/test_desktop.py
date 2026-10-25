@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from jarvis.config.settings import Settings
+from jarvis.ui import desktop as desktop_mod
 from jarvis.ui.desktop import APP_USER_MODEL_ID, CoreThread, DesktopShell, app_icon, set_app_user_model_id
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -38,7 +39,7 @@ class FakeWindow:
         self.visible = not kw.get("hidden", False)
         self.destroyed = False
         self.events = SimpleNamespace(closing=FakeEvent(), shown=FakeEvent(), restored=FakeEvent(),
-                                      minimized=FakeEvent())
+                                      minimized=FakeEvent(), loaded=FakeEvent())
 
     def show(self) -> None:
         self.visible = True
@@ -243,6 +244,45 @@ def test_the_process_carries_the_app_id() -> None:
         assert value.value == APP_USER_MODEL_ID
     finally:
         ctypes.windll.ole32.CoTaskMemFree(value)
+
+
+def test_the_orb_and_the_voice_view_stay_off_the_taskbar_and_hidden_until_wanted(
+        tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    restyled: list[str] = []
+
+    def tool_window(window: Any) -> bool:
+        first = window.title not in restyled
+        restyled.append(window.title)
+        return first
+
+    monkeypatch.setattr(desktop_mod, "keep_off_taskbar", tool_window)
+    shell, web, _core, app = make_shell(tmp_path)
+    main, orb, focus = web.windows
+    app.ui_visible = True                                     # opened from the shortcut: the main window is up
+    for overlay in (orb, focus):                              # pywebview shows a transparent window as its page loads
+        overlay.visible = True
+        overlay.events.loaded.fire()
+    eventually(lambda: not orb.visible and not focus.visible)
+    assert sorted(set(restyled)) == ["JARVIS Orb", "JARVIS Voice"]   # no taskbar button for either
+
+    assert app.window_handler("hide") is True                 # to the background: the orb, still no button
+    eventually(lambda: orb.visible and not main.visible)
+    orb.events.loaded.fire()                                  # its page reloads: it stays, the voice view does not show
+    focus.visible = True
+    focus.events.loaded.fire()
+    eventually(lambda: orb.visible and not focus.visible)
+    assert app.window_handler("focus_show") is True
+    eventually(lambda: focus.visible and not orb.visible)
+    focus.events.loaded.fire()
+    time.sleep(0.1)
+    assert focus.visible and not orb.visible
+    assert app.window_handler("focus_hide") is True
+    eventually(lambda: orb.visible and not focus.visible)
+    main.visible = True                                       # back from the taskbar: one JARVIS on screen
+    main.events.restored.fire()
+    eventually(lambda: not orb.visible)
+    assert app.window_handler("quit") is True
+    assert shell is not None
 
 
 def test_the_voice_view_comes_to_the_middle_only_while_the_mini_orb_is_alone(tmp_path: Path) -> None:

@@ -8,6 +8,10 @@ While only the mini orb is on screen, a third, transparent window in the middle 
 big while JARVIS listens and speaks ("focus orb"); its page asks for it with `focus_show` / `focus_hide` and the
 mini orb steps aside meanwhile. It never takes the keyboard from the app the user is in.
 
+The orb and the voice view are parts of JARVIS, not windows of their own: neither has a taskbar button or an
+Alt+Tab entry (Windows "tool windows"), so the taskbar shows one JARVIS. pywebview shows a transparent window each
+time its page loads, hidden or not, so after every load both are put back as JARVIS wants them.
+
 Closing the main window keeps JARVIS running as the mini orb when "mini orb" is on in the
 settings (it keeps listening for the wake word); otherwise it quits. Double-clicking the orb
 brings the main window back. When WebView2 is missing, the UI opens as an Edge app window
@@ -39,6 +43,34 @@ log = logging.getLogger(__name__)
 ORB_SIZE = 260
 FOCUS_CAPTION = 170          # room under the big orb for what is being said
 BACKGROUND = "#02070d"
+_GWL_EXSTYLE = -20
+_WS_EX_TOOLWINDOW = 0x80
+_WS_EX_APPWINDOW = 0x40000
+
+
+def keep_off_taskbar(window: Any) -> bool:
+    """Make a pywebview window a Windows tool window: no taskbar button, no Alt+Tab entry. True when its style
+    changed now (the taskbar takes it in the next time the window is shown)."""
+    if sys.platform != "win32":
+        return False
+    try:
+        import ctypes
+
+        hwnd = int(window.native.Handle.ToInt64())
+        user32 = ctypes.windll.user32
+        user32.GetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.GetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int]
+        user32.SetWindowLongPtrW.restype = ctypes.c_ssize_t
+        user32.SetWindowLongPtrW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_ssize_t]
+        style = user32.GetWindowLongPtrW(hwnd, _GWL_EXSTYLE)
+        wanted = (style | _WS_EX_TOOLWINDOW) & ~_WS_EX_APPWINDOW
+        if wanted == style:
+            return False
+        user32.SetWindowLongPtrW(hwnd, _GWL_EXSTYLE, wanted)
+        return True
+    except Exception as exc:   # no native window yet, or not the WinForms backend
+        log.debug("Could not keep a window off the taskbar: %s", exc)
+        return False
 
 
 class CoreThread(threading.Thread):
@@ -179,6 +211,8 @@ class DesktopShell:
             resizable=False, frameless=True, easy_drag=False, on_top=True, hidden=True, transparent=True,
             shadow=False, focus=False, background_color=BACKGROUND)
         self.focus.events.closing += lambda: self._quitting
+        for overlay in (self.orb, self.focus):
+            overlay.events.loaded += lambda: self._later(self._settle_overlays)
         self.main.events.closing += self._on_main_closing
         self.main.events.shown += lambda: self._visible(True)
         self.main.events.restored += lambda: self._visible(True)
@@ -218,12 +252,15 @@ class DesktopShell:
     # ------------------------------------------------------------------ events (GUI thread: never block)
     def _visible(self, value: bool) -> None:
         self.app.ui_visible = value
-        if value and self._focus_up:              # the main window is back (e.g. from the taskbar): it shows the orb
-            self._later(self._put_focus_away)
+        if value:              # the main window is back (e.g. from the taskbar): it has the orb, the others step aside
+            self._later(self._put_overlays_away)
 
-    def _put_focus_away(self) -> None:
+    def _put_overlays_away(self) -> None:
         with self._lock:
             self._drop_focus()
+            if self.app.ui_visible:
+                with contextlib.suppress(Exception):
+                    self.orb.hide()
 
     def _on_minimized(self) -> None:
         self._visible(False)
@@ -291,6 +328,7 @@ class DesktopShell:
             self._focus_up = want
             with contextlib.suppress(Exception):
                 if want:
+                    keep_off_taskbar(self.focus)
                     self.focus.show()
                 else:
                     self.focus.hide()
@@ -300,6 +338,20 @@ class DesktopShell:
                         self.orb.hide()
                     else:
                         self.orb.show()
+
+    def _settle_overlays(self) -> None:
+        """A page of the orb or the voice view loaded, and pywebview showed its window: off the taskbar, and each
+        shown only if JARVIS wants it now."""
+        with self._lock:
+            orb_wanted = (not self.app.ui_visible and bool(self.app.settings.ui.mini_orb) and not self._computer_mode
+                          and not self._focus_up)
+            for window, wanted in ((self.orb, orb_wanted), (self.focus, self._focus_up)):
+                restyled = keep_off_taskbar(window)
+                with contextlib.suppress(Exception):
+                    if restyled or not wanted:
+                        window.hide()
+                    if wanted:
+                        window.show()
 
     def _drop_focus(self) -> None:
         """The main window or computer control takes over: put the voice view away (lock held)."""
@@ -328,6 +380,7 @@ class DesktopShell:
 
     def _show_orb(self) -> None:
         with contextlib.suppress(Exception):
+            keep_off_taskbar(self.orb)
             self.orb.show()
 
     def _hide_all(self) -> None:
