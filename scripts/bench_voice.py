@@ -180,6 +180,17 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
             if transcript.final:
                 self.heard = transcript.text
 
+    def words_only(samples: Any) -> Any:
+        """The recording without its silent start and end: the voice adds up to a second of quiet after the words,
+        and JARVIS stops listening during it (that pause is the end of the question)."""
+        import numpy as np
+
+        loud = np.flatnonzero(np.abs(samples.astype(np.int32)) > 300)
+        if not len(loud):
+            return samples
+        edge = int(0.04 * SAMPLE_RATE)
+        return samples[max(0, int(loud[0]) - edge): int(loud[-1]) + edge]
+
     async def until(check: Any, what: str, timeout: float = 120.0) -> None:
         deadline = time.perf_counter() + timeout
         while not check():
@@ -220,11 +231,12 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
         cue_s = options.thinking_cue_s
         rows: dict[str, list[dict[str, float]]] = {}
         said: dict[str, dict[str, str]] = {}
+        cut: dict[str, int] = {}
         modes = ["cue", "no cue"] if compare else ["cue"]
         for n in range(rounds):
             for key, question in QUESTIONS:
                 clip = await tts.synthesize(question, "he")
-                audio = resample(clip.samples, clip.sample_rate, SAMPLE_RATE)
+                audio = words_only(resample(clip.samples, clip.sample_rate, SAMPLE_RATE))
                 for mode in modes:
                     options.thinking_cue_s = cue_s if mode == "cue" else 0.0
                     await until(lambda: events.state is VoiceState.IDLE and not speaker.playing, "quiet")
@@ -233,8 +245,10 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
                     await until(lambda: events.state is VoiceState.LISTENING and not speaker.playing, "listening")
                     await asyncio.sleep(0.3)
                     source.append(audio)
-                    await source.drained(timeout=60)
+                    await until(lambda: not source.pending or events.state is not VoiceState.LISTENING,
+                                "the question to be heard", 60)
                     end = time.perf_counter()                            # the question's last sound
+                    was_cut = source.clear() > 0                         # stopped listening in the middle of it
                     await until(lambda: events.state in (VoiceState.SPEAKING, VoiceState.IDLE, VoiceState.ERROR)
                                 and events.state is not VoiceState.PROCESSING, "the answer")
                     await until(lambda: events.state is not VoiceState.SPEAKING and not speaker.playing, "the end")
@@ -242,7 +256,9 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
                         pipeline.cancel()
                     starts = [t - end for t in speaker.starts if t >= end]
                     cued = pipeline.stats["cues"] > cues
-                    if not starts:
+                    if was_cut or not starts:                            # not timed: say so instead
+                        cut[key] = cut.get(key, 0) + 1
+                        speaker.starts.clear()
                         continue
                     answer = starts[1] if cued and len(starts) > 1 else starts[0]
                     key_mode = key if mode == "cue" else f"{key} (no cue)"
@@ -254,6 +270,7 @@ async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = F
         out["ms"] = {k: {m: round(statistics.median(r[m] for r in v)) for m in ("first", "answer")}
                      for k, v in rows.items()}
         out["said"] = said
+        out["cut"] = cut
     finally:
         if pipeline is not None:
             await pipeline.stop()
@@ -294,6 +311,8 @@ def main() -> int:
             s = result["said"].get(key, {})
             print(f"  {key:20} first sound {ms['first']:5} ms · answer starts {ms['answer']:5} ms"
                   f"  (cue: {s.get('cue', '')}; heard: {s.get('heard', '')!r})")
+        for key, n in result.get("cut", {}).items():
+            print(f"  {key:20} not timed {n}x: JARVIS stopped listening before the question ended, or said nothing")
         return 0
     for key, ms in result["ms"].items():
         s = result["said"].get(key, {})

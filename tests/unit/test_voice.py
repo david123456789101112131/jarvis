@@ -470,6 +470,8 @@ class TestAudio:
         await filler.start()
         first, second = await filler.read(), await filler.read()
         assert first.any() and not second.any() and not filler.exhausted
+        filler.append(speechlike(0.4))
+        assert filler.clear() == 5 and filler.pending == 0 and filler.clear() == 0
 
     async def test_null_sink_stop_interrupts(self) -> None:
         sink = NullSink(realtime=True)

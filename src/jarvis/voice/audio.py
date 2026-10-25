@@ -873,6 +873,12 @@ class ArraySource(AudioSource):
         np = np_module()
         return self.append(np.zeros(int(seconds * SAMPLE_RATE), dtype=np.int16))
 
+    def clear(self) -> int:
+        """Drop the queued frames nobody read (e.g. the microphone closed before the end). Returns how many."""
+        n = len(self._frames)
+        self._frames.clear()
+        return n
+
     async def drained(self, timeout: float | None = None) -> None:
         """Wait until every queued frame has been read."""
         async def _wait() -> None:
