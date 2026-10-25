@@ -35,7 +35,10 @@ body {
 /* Mini orb window: fully transparent page. */
 html.view-orb,
 html.view-orb body,
-html.view-orb #root {
+html.view-orb #root,
+html.view-focus,
+html.view-focus body,
+html.view-focus #root {
   background: transparent !important;
   background-image: none !important;
 }

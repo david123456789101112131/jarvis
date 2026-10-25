@@ -106,6 +106,46 @@ export function selectOrbState(state: AppState, now: number): OrbVisualState {
   }
 }
 
+export type FocusMode = 'off' | 'talk' | 'act';
+
+export interface FocusView {
+  /** `talk`: the orb big in the middle (listening, thinking, speaking); `act`: small, saying what it does. */
+  mode: FocusMode;
+  /** The action a spoken command is carrying out (or has just finished). */
+  action: (ActionEvent & { at: number; startedAt: number }) | null;
+  /** The newest task a spoken command started that is still under way. */
+  task: TaskSummary | null;
+  nextChangeAt: number | null;
+}
+
+const TASK_UNDER_WAY: readonly TaskSummary['status'][] = ['pending', 'planning', 'queued', 'running', 'waiting', 'verifying'];
+
+/** What the voice view (the orb that comes forward) shows right now. Only what was said aloud moves it:
+ *  typed commands and their actions leave it where it is. Pure: same state and `now`, same answer. */
+export function selectFocus(state: AppState, now: number): FocusView {
+  if (!state.ui.focus_orb || state.killSwitch.global) return { mode: 'off', action: null, task: null, nextChangeAt: null };
+  const vs = state.voice.state;
+  let nextChangeAt: number | null = null;
+  let action: FocusView['action'] = null;
+  const a = state.overlay.action;
+  if (a && a.source === 'voice') {
+    const end = a.at + HOLD.actionDone;
+    if (a.status === 'running') action = a;
+    else if (now < end) {
+      action = a;
+      nextChangeAt = end;
+    }
+  }
+  const task = state.tasks.active.filter((t) => t.source === 'voice' && TASK_UNDER_WAY.includes(t.status)).sort(newestFirst)[0] ?? null;
+  const acting = action?.status === 'running' || task !== null;
+  let mode: FocusMode = 'off';
+  if (vs === 'wake' || vs === 'listening' || vs === 'speaking') mode = 'talk';
+  else if (acting) mode = 'act';
+  else if (vs === 'processing') mode = 'talk';
+  else if (action && !(state.overlay.speech && state.overlay.speech.at >= action.at)) mode = 'act'; // its result stays a moment, unless it was just said
+  return { mode, action, task, nextChangeAt };
+}
+
 function newestFirst(a: TaskSummary, b: TaskSummary): number {
   return a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0;
 }

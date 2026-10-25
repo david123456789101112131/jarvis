@@ -149,8 +149,8 @@ def test_background_start_shows_only_the_mini_orb(tmp_path: Path) -> None:
         web = FakeWebview()
         shell = DesktopShell(web, core, background=True)
         shell.run()
-        main, orb = web.windows
-        assert not main.visible and orb.visible and app.ui_visible is False
+        main, orb, focus = web.windows
+        assert not main.visible and orb.visible and not focus.visible and app.ui_visible is False
         assert app.window_handler("reveal") is True       # "show me the agents" by voice
         eventually(lambda: main.visible and not orb.visible)
         assert app.ui_visible is True

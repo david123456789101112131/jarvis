@@ -621,7 +621,7 @@ class JarvisCore:
         await self._pipeline("routing", "done", lang, R.agent_name(agent, lang))
         await self._pipeline("selecting_tool", "done", lang, skill_name)
         await self._pipeline("executing", "active", lang, title)
-        await self._action(turn.cmd_id, title, icon, "running")
+        await self._action(turn.cmd_id, title, icon, "running", source=turn.source)
         token = CancelToken()
         fast = _Fast(token=token, title=title, icon=icon, agent=agent, source=turn.source, lang=lang, cmd_id=turn.cmd_id)
         self._fast[turn.cmd_id] = fast
@@ -655,7 +655,7 @@ class JarvisCore:
         ok = result.ok
         summary = result.summary or (fast.title if ok else t(lang, "הפעולה נכשלה.", "The action failed."))
         state = self._settle(turn, result)
-        await self._action(turn.cmd_id, summary, fast.icon, state, progress=1.0)
+        await self._action(turn.cmd_id, summary, fast.icon, state, progress=1.0, source=turn.source)
         await self._pipeline("executing", "error" if state == "error" else "done", lang, summary)
         text = summary
         if result.details and turn.intent.name in (I.SYSTEM_STATUS, I.FIND_FILES):
@@ -683,7 +683,7 @@ class JarvisCore:
         ok = result.ok
         summary = result.summary or fast.title
         state = self._settle(turn, result)
-        await self._action(turn.cmd_id, summary, fast.icon, state, progress=1.0)
+        await self._action(turn.cmd_id, summary, fast.icon, state, progress=1.0, source=turn.source)
         await self._pipeline("executing", "error" if state == "error" else "done", lang, summary)
         await self._record(turn, ok=ok)
         if result.status.value == "cancelled" and turn.cmd_id in self._quiet:
@@ -1010,7 +1010,8 @@ class JarvisCore:
                 newest = fast[-1]              # the most recent thing started is a fast-path command
                 self._quiet.add(newest.cmd_id)
                 newest.token.cancel(reason)
-                await self._action(newest.cmd_id, t(lang, "בוטל", "Cancelled"), newest.icon, "error", progress=1.0)
+                await self._action(newest.cmd_id, t(lang, "בוטל", "Cancelled"), newest.icon, "error", progress=1.0,
+                                   source=newest.source)
                 return await self._reply(turn, t(lang, "עצרתי את הפעולה.", "I stopped the action."),
                                          ack="cancelled", speak_text=False, follow_up=False)
             if not active:
@@ -1273,9 +1274,11 @@ class JarvisCore:
         await self._publish("voice.pipeline", {"step": step, "status": status, "label": label})
 
     async def _action(self, action_id: str, title: str, icon: str, status: str, *, progress: float | None = None,
-                      detail: str | None = None) -> None:
+                      detail: str | None = None, source: str | None = None) -> None:
+        # `source` ("voice", "text"...): the UI turns its voice view to the action only for what was said aloud.
         await self._publish("action", {"id": action_id, "title": title, "detail": detail, "icon": icon,
-                                       "progress": progress, "status": status, "ts": iso(utcnow())})
+                                       "progress": progress, "status": status, "source": source,
+                                       "ts": iso(utcnow())})
 
     def _measure(self, name: str, started: float, *, ok: bool = True) -> None:
         if self.metrics is not None:

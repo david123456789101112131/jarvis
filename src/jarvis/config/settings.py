@@ -292,6 +292,7 @@ class UISettings(_Section):
     follow_mouse: bool = False
     always_active: bool = True
     mini_orb: bool = True
+    focus_orb: bool = True                 # while JARVIS talks the orb comes big to the middle; while it acts, small
     window_width: int = 1480
     window_height: int = 920
     debug_devtools: bool = False

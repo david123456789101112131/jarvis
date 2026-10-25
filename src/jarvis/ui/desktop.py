@@ -4,6 +4,10 @@ Threads: the window toolkit must own the main thread (a Windows GUI rule), so JA
 loop runs in a background thread (`CoreThread`). The windows load `/?launch=<token>` once the
 local server is up; everything else (commands, events) goes through the same API as any UI.
 
+While only the mini orb is on screen, a third, transparent window in the middle of the screen carries the orb
+big while JARVIS listens and speaks ("focus orb"); its page asks for it with `focus_show` / `focus_hide` and the
+mini orb steps aside meanwhile. It never takes the keyboard from the app the user is in.
+
 Closing the main window keeps JARVIS running as the mini orb when "mini orb" is on in the
 settings (it keeps listening for the wake word); otherwise it quits. Double-clicking the orb
 brings the main window back. When WebView2 is missing, the UI opens as an Edge app window
@@ -33,6 +37,7 @@ from jarvis.common.console import show_error
 log = logging.getLogger(__name__)
 
 ORB_SIZE = 260
+FOCUS_CAPTION = 170          # room under the big orb for what is being said
 BACKGROUND = "#02070d"
 
 
@@ -149,8 +154,11 @@ class DesktopShell:
         self.orb: Any = None
         self._quitting = False
         self._lock = threading.Lock()
+        self.focus: Any = None
         self._computer_mode = False       # JARVIS's windows are hidden while it controls the computer
         self._resume_full = False          # whether the main window was up before the session
+        self._focus_wanted = False         # the voice view's page wants to be on screen (the latest word wins)
+        self._focus_up = False
 
     # ------------------------------------------------------------------ windows
     def create(self) -> None:
@@ -165,6 +173,12 @@ class DesktopShell:
             resizable=False, frameless=True, easy_drag=True, on_top=True,
             hidden=not (self.background and ui.mini_orb), transparent=True,
             shadow=False, focus=False, background_color=BACKGROUND)
+        fx, fy, fw, fh = self._focus_box()
+        self.focus = self.webview.create_window(
+            f"{name} Voice", url=self.app.launch_url + "&view=focus", width=fw, height=fh, x=fx, y=fy,
+            resizable=False, frameless=True, easy_drag=False, on_top=True, hidden=True, transparent=True,
+            shadow=False, focus=False, background_color=BACKGROUND)
+        self.focus.events.closing += lambda: self._quitting
         self.main.events.closing += self._on_main_closing
         self.main.events.shown += lambda: self._visible(True)
         self.main.events.restored += lambda: self._visible(True)
@@ -181,6 +195,18 @@ class DesktopShell:
         except Exception:
             return None, None
 
+    def _focus_box(self) -> tuple[int | None, int | None, int, int]:
+        """The voice view's window: a square for the orb plus room for the caption, in the middle of the screen."""
+        try:
+            screen = self.webview.screens[0]
+            sw, sh = int(screen.width), int(screen.height)
+        except Exception:
+            return None, None, 640, 640 + FOCUS_CAPTION
+        side = max(420, min(760, int(min(sw, sh) * 0.6)))
+        side = min(side, max(300, sh - FOCUS_CAPTION - 40))
+        width, height = side, side + FOCUS_CAPTION
+        return (sw - width) // 2, max(0, (sh - height) // 2 - 20), width, height
+
     def run(self) -> None:
         self.create()
         storage = self.app.paths.cache / "webview"
@@ -192,6 +218,12 @@ class DesktopShell:
     # ------------------------------------------------------------------ events (GUI thread: never block)
     def _visible(self, value: bool) -> None:
         self.app.ui_visible = value
+        if value and self._focus_up:              # the main window is back (e.g. from the taskbar): it shows the orb
+            self._later(self._put_focus_away)
+
+    def _put_focus_away(self) -> None:
+        with self._lock:
+            self._drop_focus()
 
     def _on_minimized(self) -> None:
         self._visible(False)
@@ -222,10 +254,13 @@ class DesktopShell:
         actions = {"show": self.to_full, "full": self.to_full, "hide": self.to_mini, "mini": self.to_mini,
                    "toggle": self.toggle, "reveal": self.reveal, "quit": self.quit,
                    "computer_on": self.computer_on, "computer_off": self.computer_off,
-                   "computer_hide": self._hide_all, "computer_show": self.to_full}
+                   "computer_hide": self._hide_all, "computer_show": self.to_full,
+                   "focus_show": self._apply_focus, "focus_hide": self._apply_focus}
         fn = actions.get(action)
         if fn is None:
             return False
+        if action.startswith("focus_"):
+            self._focus_wanted = action == "focus_show"   # set now: the threads may run out of order
         self._later(fn)
         return True
 
@@ -246,8 +281,36 @@ class DesktopShell:
             return [result]
         return [str(p) for p in result]
 
+    def _apply_focus(self) -> None:
+        """Show or hide the voice view as its page last asked; only while the mini orb alone is on screen."""
+        with self._lock:
+            want = (self._focus_wanted and not self.app.ui_visible and not self._computer_mode
+                    and bool(getattr(self.app.settings.ui, "focus_orb", True)))
+            if want == self._focus_up:
+                return
+            self._focus_up = want
+            with contextlib.suppress(Exception):
+                if want:
+                    self.focus.show()
+                else:
+                    self.focus.hide()
+            if self.app.settings.ui.mini_orb:          # the small orb steps aside while the big one is out
+                with contextlib.suppress(Exception):
+                    if want:
+                        self.orb.hide()
+                    else:
+                        self.orb.show()
+
+    def _drop_focus(self) -> None:
+        """The main window or computer control takes over: put the voice view away (lock held)."""
+        if self._focus_up:
+            self._focus_up = False
+            with contextlib.suppress(Exception):
+                self.focus.hide()
+
     def to_full(self) -> None:
         with self._lock:
+            self._drop_focus()
             with contextlib.suppress(Exception):
                 self.main.show()
                 self.main.restore()
@@ -270,6 +333,7 @@ class DesktopShell:
     def _hide_all(self) -> None:
         """Hide both windows (the orb too), so JARVIS is not on screen while it controls the computer."""
         with self._lock:
+            self._drop_focus()
             for window in (self.main, self.orb):
                 with contextlib.suppress(Exception):
                     window.hide()
@@ -311,7 +375,7 @@ class DesktopShell:
         self.app.window_handler = None
         self.app.dialog_handler = None
         self.core.stop()                       # JARVIS shuts down cleanly (tasks saved as interrupted)
-        for window in (self.orb, self.main):
+        for window in (self.focus, self.orb, self.main):
             with contextlib.suppress(Exception):
                 window.destroy()
 

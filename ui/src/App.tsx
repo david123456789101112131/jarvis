@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import type { Lang } from './api/types';
 import { BootScreen } from './components/BootScreen';
 import { ConfirmModal } from './components/ConfirmModal';
+import { VoiceFocus } from './components/core/VoiceFocus';
 import { Rail, TopBar, useScreenShortcuts } from './components/shell/Shell';
 import { Toasts } from './components/Toasts';
 import { I18nProvider, useI18n } from './i18n';
@@ -107,6 +108,7 @@ function AppShell() {
           <ScreenSwitch route={route} navigate={navigate} />
         )}
       </main>
+      <VoiceFocus />
       {current ? <ConfirmModal key={current.id} request={current} waiting={pending.length - 1} onLater={() => setDeferred((prev) => new Set(prev).add(current.id))} /> : null}
       <Toasts />
     </div>
@@ -119,7 +121,7 @@ export function App({ services, initialLang, onLangChange }: { services: AppServ
       <I18nProvider initial={initialLang}>
         <ThemeSync />
         <LangSync onChange={onLangChange} />
-        {services.boot.view === 'orb' ? <OrbView /> : <AppShell />}
+        {services.boot.view === 'orb' ? <OrbView /> : services.boot.view === 'focus' ? <VoiceFocus standalone /> : <AppShell />}
       </I18nProvider>
     </ServicesProvider>
   );

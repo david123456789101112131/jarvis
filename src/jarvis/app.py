@@ -75,7 +75,7 @@ PRELOAD_DELAY_S = 3.0      # the chat model loads this long after start-up, once
 RUNTIME_FILE = "runtime.json"
 # Files the UI only shows in Explorer, never opens: opening them would run code.
 REVEAL_ONLY_EXT = RUNS_CODE_EXT
-UI_KEYS = ("theme_color", "orb_size", "orb_opacity", "follow_mouse", "always_active", "mini_orb")
+UI_KEYS = ("theme_color", "orb_size", "orb_opacity", "follow_mouse", "always_active", "mini_orb", "focus_orb")
 # Changing these needs a restart (they shape objects built once at start-up).
 RESTART_SECTIONS = ("paths", "server", "memory")
 SECTION_NAMES_HE = {"general": "כללי", "paths": "תיקיות", "server": "שרת", "ai": "AI", "agents": "סוכנים",

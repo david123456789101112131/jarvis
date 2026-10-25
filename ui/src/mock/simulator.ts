@@ -164,6 +164,7 @@ export class Simulator {
       follow_mouse: false,
       always_active: true,
       mini_orb: true,
+      focus_orb: true,
       ...(storedUi ?? {}),
     };
     this.voice = {
@@ -1023,7 +1024,7 @@ export class Simulator {
     if (script.action) {
       const actionId = mockId('act');
       const title = pick(script.action.title, lang);
-      const base: ActionEvent = { id: actionId, title, icon: script.action.icon, progress: 0, status: 'running' };
+      const base: ActionEvent = { id: actionId, title, icon: script.action.icon, progress: 0, status: 'running', source: 'voice' };
       at(t, () => {
         this.pipe('executing', 'active');
         this.emit('action', base);
@@ -1132,7 +1133,7 @@ export class Simulator {
         this.setVoice('processing');
         for (const step of ['transcribing', 'understanding', 'routing', 'selecting_tool', 'preparing_action'] as const) this.pipe(step, 'done');
         this.pipe('executing', 'active');
-        this.emit('action', { id: 'scene-action', title: pick(script.action!.title, lang), icon: 'chrome', progress: 0.62, status: 'running' });
+        this.emit('action', { id: 'scene-action', title: pick(script.action!.title, lang), icon: 'chrome', progress: 0.62, status: 'running', source: 'voice' });
         return;
       case 'speaking':
         this.setVoice('wake');
@@ -1145,7 +1146,7 @@ export class Simulator {
         const fails = VOICE_SCRIPTS[3].fails!;
         this.setVoice('wake');
         this.setVoice('processing');
-        this.emit('action', { id: 'scene-error', title: pick(fails.title, lang), detail: pick(fails.detail, lang), icon: 'chrome', progress: 0.55, status: 'error' });
+        this.emit('action', { id: 'scene-error', title: pick(fails.title, lang), detail: pick(fails.detail, lang), icon: 'chrome', progress: 0.55, status: 'error', source: 'voice' });
         this.setVoice('error');
         return;
       }

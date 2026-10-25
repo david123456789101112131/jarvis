@@ -6,6 +6,7 @@ import { HOLD, selectCoreOverlay, selectOrbState } from '../../state/selectors';
 import { Orb } from '../orb/Orb';
 import { Waveform } from '../Waveform';
 import { ActionCard, ErrorCard, IdleWave, PipelineSteps, SpeechBubble, TranscriptBubble, WakeLabel } from './Overlays';
+import { useFocusHandOff } from './focusHandOff';
 import { QuickToolsRing } from './QuickTools';
 
 interface CoreStageProps {
@@ -56,6 +57,7 @@ export function CoreStage({ variant, toolsOpen, onToggleTools, onCloseTools, res
   useAppState((s) => s.killSwitch.global);
   useAppState((s) => s.tasks.active);
   const assistantName = useAppState((s) => s.assistantName);
+  const handedOff = useFocusHandOff();
 
   const now = Date.now();
   const full = store.getState();
@@ -121,7 +123,7 @@ export function CoreStage({ variant, toolsOpen, onToggleTools, onCloseTools, res
               aria-expanded={toolsOpen}
               data-testid="orb-button"
             >
-              <Orb state={orbState} theme={ui.theme_color} size={g.orbPx} opacity={ui.orb_opacity} followMouse={ui.follow_mouse} level={getLevel} testId="orb" className="stage__orb-canvas" quality={mini ? 'low' : 'high'} />
+              <Orb state={orbState} theme={ui.theme_color} size={g.orbPx} opacity={ui.orb_opacity} followMouse={ui.follow_mouse} level={getLevel} testId="orb" className="stage__orb-canvas" quality={mini ? 'low' : 'high'} paused={!mini && handedOff} />
             </button>
             {view.band && !toolsOpen ? (
               <div className="stage__band" style={{ left: g.cx, top: g.cy, width: bandW, height: bandH }}>

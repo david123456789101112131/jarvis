@@ -43,6 +43,7 @@ export const DEFAULT_UI: UISettings = {
   follow_mouse: false,
   always_active: true,
   mini_orb: true,
+  focus_orb: true,
 };
 
 export const DEFAULT_VOICE: VoiceInfo = {

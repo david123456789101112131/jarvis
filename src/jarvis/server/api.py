@@ -544,7 +544,8 @@ def create_api(app: JarvisApp) -> FastAPI:
         return app.quick_tools(lang)
 
     @api.post("/api/window/{action}")
-    async def window(action: Literal["show", "hide", "toggle", "mini", "full", "quit"]) -> dict[str, Any]:
+    async def window(action: Literal["show", "hide", "toggle", "mini", "full", "quit", "focus_show",
+                                     "focus_hide"]) -> dict[str, Any]:
         if not await app.window_action(action):
             raise HTTPException(409, "There is no JARVIS window in this run.")
         return {"ok": True}

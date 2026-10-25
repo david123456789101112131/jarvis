@@ -216,6 +216,8 @@ export interface UISettings {
   follow_mouse: boolean;
   always_active: boolean;
   mini_orb: boolean;
+  /** While JARVIS talks the orb comes big to the middle of the window; while it acts, small, saying what it does. */
+  focus_orb: boolean;
 }
 
 export interface KillSwitchState {
@@ -475,6 +477,8 @@ export interface ActionEvent {
   progress?: number;
   /** `info`: JARVIS asked the user for a missing detail ("which city?"); neither done nor failed. */
   status: 'running' | 'done' | 'error' | 'info';
+  /** How the command came in: the voice view follows only what was said aloud. */
+  source?: InputSource | null;
 }
 
 export interface SpeechEvent {
@@ -492,7 +496,7 @@ export interface NotificationEvent {
 export type AgentAction = 'start' | 'stop' | 'restart' | 'kill' | 'release';
 export type VoiceAction = 'start' | 'stop' | 'mute' | 'unmute' | 'ptt_start' | 'ptt_stop' | 'cancel';
 /** Desktop window actions (POST /api/window/{action}); 409 when JARVIS runs without a window. */
-export type WindowAction = 'show' | 'hide' | 'toggle' | 'mini' | 'full' | 'quit';
+export type WindowAction = 'show' | 'hide' | 'toggle' | 'mini' | 'full' | 'quit' | 'focus_show' | 'focus_hide';
 
 /** Every server → client WebSocket message: `{type, data, ts}`. */
 export type ServerEvent =

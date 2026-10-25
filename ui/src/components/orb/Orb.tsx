@@ -14,6 +14,9 @@ export interface OrbProps {
   /** Read once per frame: mic/speech level 0..1. */
   level?: () => number;
   quality?: 'high' | 'low';
+  /** Stop drawing (the orb is out of sight); it keeps its last frame and resumes at once. */
+  paused?: boolean;
+  maxPixelRatio?: number;
   className?: string;
   style?: CSSProperties;
   testId?: string;
@@ -28,18 +31,20 @@ function forcedFallback(): boolean {
 }
 
 /** The JARVIS core orb: Three.js when WebGL works, a CSS rendition otherwise. */
-export function Orb({ state, theme, size, opacity = 1, followMouse = false, level, quality = 'high', className, style, testId }: OrbProps) {
+export function Orb({ state, theme, size, opacity = 1, followMouse = false, level, quality = 'high', paused = false, maxPixelRatio, className, style, testId }: OrbProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<OrbEngine | null>(null);
   const [fallback, setFallback] = useState(() => forcedFallback() || !webglAvailable());
   const initial = useRef({ state, theme, followMouse, level });
+  const pausedNow = useRef(paused);
+  pausedNow.current = paused;
 
   useEffect(() => {
     if (fallback || !canvasRef.current) return;
     let engine: OrbEngine;
     try {
       const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches ?? false;
-      engine = new OrbEngine(canvasRef.current, { theme: initial.current.theme, quality, reducedMotion: reduced, onContextLost: () => setFallback(true) });
+      engine = new OrbEngine(canvasRef.current, { theme: initial.current.theme, quality, maxPixelRatio, reducedMotion: reduced, onContextLost: () => setFallback(true) });
     } catch (err) {
       console.warn('JARVIS orb: WebGL unavailable, using the CSS fallback.', err);
       setFallback(true);
@@ -58,18 +63,21 @@ export function Orb({ state, theme, size, opacity = 1, followMouse = false, leve
     const observer = typeof ResizeObserver !== 'undefined' ? new ResizeObserver(resize) : null;
     observer?.observe(canvas);
     window.addEventListener('resize', resize);
-    if (!document.hidden) engine.start();
+    engine.setPaused(pausedNow.current);
     return () => {
       observer?.disconnect();
       window.removeEventListener('resize', resize);
       engine.dispose();
       engineRef.current = null;
     };
-  }, [fallback, quality]);
+  }, [fallback, quality, maxPixelRatio]);
 
   useEffect(() => {
     engineRef.current?.setState(state);
   }, [state]);
+  useEffect(() => {
+    engineRef.current?.setPaused(paused);
+  }, [paused]);
   useEffect(() => {
     engineRef.current?.setTheme(theme);
   }, [theme]);

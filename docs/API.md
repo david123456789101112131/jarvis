@@ -116,7 +116,7 @@ interface VoiceInfo {
 }
 
 interface UISettings { theme_color: Theme; orb_size: number; orb_opacity: number; follow_mouse: boolean;
-  always_active: boolean; mini_orb: boolean; }
+  always_active: boolean; mini_orb: boolean; focus_orb: boolean; }
 
 interface Job {                        // one action of a work screen (code, images, video, apps)
   id: string;
@@ -204,7 +204,7 @@ interface StateSnapshot {
 | POST `/api/voice/{action}` | action ∈ `start, stop, mute, unmute, ptt_start, ptt_stop, cancel` | `VoiceInfo` |
 | POST `/api/voice/speak` | `{text}` | `{ok}` |
 | GET `/api/quick-tools?lang=he\|en` | – | `{id, label, label_he, icon, command}[]` (the radial menu entries) |
-| POST `/api/window/{action}` | action ∈ `show, hide, toggle, mini, full, reveal, quit` (`reveal`: show the main window only if it is hidden) | `{ok}` (409 when there is no desktop window) |
+| POST `/api/window/{action}` | action ∈ `show, hide, toggle, mini, full, quit, focus_show, focus_hide` (`focus_*`: the voice view's own window in the middle of the screen asks to be shown or hidden; shown only while the mini orb alone is on screen) | `{ok}` (409 when there is no desktop window) |
 
 ## Work screens (code, images, video, apps, privacy)
 
@@ -358,7 +358,7 @@ Every server message: `{ "type": string, "data": any, "ts": string }`.
 | `voice.level` | `{level}` (mic or speech RMS 0..1) | up to 15×/s while listening/speaking (sent straight to the UI, not via the bus) |
 | `voice.transcript` | `{text, final: boolean, language}` | live (partial) and final transcripts |
 | `voice.pipeline` | `{step: "transcribing"\|"understanding"\|"routing"\|"selecting_tool"\|"preparing_action"\|"executing"\|"done", status: "active"\|"done"\|"error", label}` | processing steps for the orb panel |
-| `action` | `{id, title, detail?, icon?: string, progress?: number, status: "running"\|"done"\|"error"}` | current fast-path action card ("Opening Google Chrome…") |
+| `action` | `{id, title, detail?, icon?: string, progress?: number, status: "running"\|"done"\|"error"\|"info", source?: "voice"\|"text"\|"api"\|"system"}` | current fast-path action card ("Opening Google Chrome…"); the voice view follows only `source: "voice"` |
 | `speech` | `{text, language}` | what JARVIS is saying (speech bubble) |
 | `confirm.request` | `ConfirmationRequest` | approval needed |
 | `confirm.response` | `ConfirmationRequest` | decided / expired |

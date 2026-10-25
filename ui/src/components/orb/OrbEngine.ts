@@ -73,6 +73,8 @@ const PRESETS: Record<OrbVisualState, Params> = {
 export interface OrbEngineOptions {
   theme: Theme;
   quality?: 'high' | 'low';
+  /** The sharpest the canvas is drawn on a high-DPI screen (a big orb looks the same at less, for far less work). */
+  maxPixelRatio?: number;
   reducedMotion?: boolean;
   onContextLost?: () => void;
 }
@@ -148,8 +150,10 @@ export class OrbEngine {
   private last = 0;
   private raf = 0;
   private running = false;
+  private paused = false;
   private disposed = false;
   private cssHeight = 300;
+  private maxPixelRatio: number;
   private onContextLost?: () => void;
 
   constructor(canvas: HTMLCanvasElement, options: OrbEngineOptions) {
@@ -157,6 +161,7 @@ export class OrbEngine {
     this.theme = options.theme;
     this.reducedMotion = !!options.reducedMotion;
     this.onContextLost = options.onContextLost;
+    this.maxPixelRatio = Math.max(1, options.maxPixelRatio ?? 2);
     this.allowThink = options.theme === 'blue';
     this.renderer = new WebGLRenderer({ canvas, alpha: true, antialias: true, premultipliedAlpha: true, powerPreference: 'high-performance' });
     this.renderer.setClearColor(0x000000, 0);
@@ -368,7 +373,7 @@ export class OrbEngine {
 
   resize(width: number, height: number, dpr: number) {
     if (this.disposed || width < 2 || height < 2) return;
-    const ratio = Math.min(2, Math.max(1, dpr || 1));
+    const ratio = Math.min(this.maxPixelRatio, Math.max(1, dpr || 1));
     this.renderer.setPixelRatio(ratio);
     this.renderer.setSize(width, height, false);
     const aspect = width / height;
@@ -391,6 +396,13 @@ export class OrbEngine {
   stop() {
     this.running = false;
     cancelAnimationFrame(this.raf);
+  }
+
+  /** A paused orb draws nothing (it is off screen) until it is resumed, and stays paused when the page comes back. */
+  setPaused(paused: boolean) {
+    this.paused = paused;
+    if (paused) this.stop();
+    else if (!document.hidden) this.start();
   }
 
   dispose() {
@@ -417,7 +429,7 @@ export class OrbEngine {
   };
 
   private handleVisibility = () => {
-    if (document.hidden) this.stop();
+    if (document.hidden || this.paused) this.stop();
     else this.start();
   };
 

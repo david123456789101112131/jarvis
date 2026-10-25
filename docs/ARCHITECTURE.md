@@ -249,6 +249,18 @@ is live, so JARVIS is used hands-free. `jarvis.host.autostart` keeps the per-use
 with `general.start_with_windows`; only the windowed app writes it. "Show yourself" / "hide
 yourself" (and any voice command that opens a screen) bring the main window up or send it back.
 
+The voice view (`ui.focus_orb`, on by default; `VoiceFocus`): while JARVIS listens, thinks or speaks, the orb
+comes out of the Command Center to the middle of the window, big, with what is being said under it, over a dimmed
+window; while a spoken command is carried out (an `action` or a task whose `source` is `voice`) it shrinks into a
+card at the top that says what is being done and its steps; then it goes back into the panel. Typed commands never
+move it. It arrives at once, changes between talking and acting only after 0.28 s, and leaves 1.4 s after the voice
+goes quiet, so a quick action or a pause before the reply does not bounce it. Only transform and opacity animate;
+the orb is drawn once at its big size (pixel ratio at most 1.25) and scaled, and only one of the two orbs draws at a
+time. Esc, the X or a click outside puts it away until the next wake. With only the mini orb on screen, the same
+view runs in a third, transparent, always-on-top window in the middle of the screen (`?view=focus`) that never takes
+the keyboard: it asks for itself with `/api/window/focus_show` and `focus_hide`, the mini orb steps aside meanwhile
+and does the acting part (its action card) in the corner.
+
 ## 11. Extending
 
 - New tool: subclass `Tool`, declare capability, params model and risk; register it.

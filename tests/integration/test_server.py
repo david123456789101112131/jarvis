@@ -245,7 +245,7 @@ class TestRest:
         assert state["mode"] == "normal" and state["kill_switch"]["global"] is False
         assert state["voice"]["state"] == "disabled" and state["providers"]["active"] is None
         assert set(state["ui"]) == {"theme_color", "orb_size", "orb_opacity", "follow_mouse", "always_active",
-                                    "mini_orb"}
+                                    "mini_orb", "focus_orb"}
         assert state["files"]["workspace"] == str(live.app.paths.workspace)
         assert live.token not in json.dumps(state)
 

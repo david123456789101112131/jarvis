@@ -58,6 +58,7 @@ async function boot() {
   document.documentElement.lang = lang;
   document.documentElement.dir = lang === 'he' ? 'rtl' : 'ltr';
   if (config.view === 'orb') document.documentElement.classList.add('view-orb');
+  if (config.view === 'focus') document.documentElement.classList.add('view-focus');
 
   let currentLang = lang;
   const store = createStore();

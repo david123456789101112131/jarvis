@@ -540,6 +540,9 @@ function OrbSection() {
           <FieldRow label={t('settings.miniOrb')} hint={t('settings.miniOrbHint')}>
             <Toggle checked={ui.mini_orb} onChange={(v) => change({ mini_orb: v })} label={t('settings.miniOrb')} hideLabel testId="set-mini-orb" />
           </FieldRow>
+          <FieldRow label={t('settings.focusOrb')} hint={t('settings.focusOrbHint')}>
+            <Toggle checked={ui.focus_orb} onChange={(v) => change({ focus_orb: v })} label={t('settings.focusOrb')} hideLabel testId="set-focus-orb" />
+          </FieldRow>
         </div>
       </div>
     </Panel>

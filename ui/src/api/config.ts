@@ -14,7 +14,7 @@ declare global {
   }
 }
 
-export type AppView = 'app' | 'orb';
+export type AppView = 'app' | 'orb' | 'focus';
 
 export interface BootConfig {
   /** Run the in-browser simulator instead of talking to the core. */
@@ -59,7 +59,7 @@ export function readBootConfig(loc: LocationLike, injected: InjectedConfig | und
     version: injected?.version ?? '',
     wsUrl: injected?.wsUrl ?? `${wsProto}//${loc.host}/ws`,
     apiBase: injected?.apiBase ?? '',
-    view: params.get('view') === 'orb' ? 'orb' : 'app',
+    view: params.get('view') === 'orb' ? 'orb' : params.get('view') === 'focus' ? 'focus' : 'app',
     scene: mock ? params.get('scene') : null,
     lang: langParam === 'he' || langParam === 'en' ? langParam : null,
   };

@@ -133,7 +133,7 @@ def test_core_thread_reports_a_failed_start(tmp_path: Path) -> None:
 
 def test_windows_and_orb_position(tmp_path: Path) -> None:
     _shell, web, core, app = make_shell(tmp_path)
-    main, orb = web.windows
+    main, orb, _focus = web.windows
     assert main.kw["url"] == app.launch_url and main.visible
     assert orb.kw["url"].endswith("&view=orb") and not orb.visible and orb.kw["on_top"] and orb.kw["frameless"]
     assert (orb.kw["x"], orb.kw["y"]) == (1920 - 260 - 40, 1080 - 260 - 80)
@@ -162,7 +162,7 @@ def test_file_dialogs_open_over_the_main_window(tmp_path: Path) -> None:
 
 def test_closing_the_window_keeps_jarvis_as_the_mini_orb(tmp_path: Path) -> None:
     _shell, web, core, app = make_shell(tmp_path)
-    main, orb = web.windows
+    main, orb, _focus = web.windows
     assert main.events.closing.fire() is True                 # the close is cancelled...
     eventually(lambda: orb.visible and not main.visible)      # ...and JARVIS shrinks to the orb
     assert app.ui_visible is False and not app.stopped
@@ -177,7 +177,7 @@ def test_closing_the_window_keeps_jarvis_as_the_mini_orb(tmp_path: Path) -> None
 
 def test_computer_mode_hides_jarvis_and_restores_it(tmp_path: Path) -> None:
     _shell, web, core, app = make_shell(tmp_path)
-    main, orb = web.windows
+    main, orb, _focus = web.windows
     eventually(lambda: main.visible)
     assert app.window_handler("computer_on") is True          # a session starts: JARVIS gets out of the way
     eventually(lambda: not main.visible and not orb.visible)
@@ -193,7 +193,7 @@ def test_computer_mode_hides_jarvis_and_restores_it(tmp_path: Path) -> None:
 
 def test_quit_shuts_jarvis_down_and_closes_the_windows(tmp_path: Path) -> None:
     _shell, web, core, app = make_shell(tmp_path)
-    main, orb = web.windows
+    main, orb, _focus = web.windows
     assert app.window_handler("quit") is True
     eventually(lambda: main.destroyed and orb.destroyed)
     assert app.stopped and core.finished.is_set()
@@ -204,7 +204,7 @@ def test_without_mini_orb_closing_quits(tmp_path: Path) -> None:
     _shell, web, _core, app = make_shell(tmp_path)
     app.settings.ui.mini_orb = False
     app.settings.ui.always_active = False
-    main, orb = web.windows
+    main, orb, _focus = web.windows
     main.events.closing.fire()
     eventually(lambda: app.stopped and main.destroyed)
     assert not orb.visible
@@ -243,3 +243,46 @@ def test_the_process_carries_the_app_id() -> None:
         assert value.value == APP_USER_MODEL_ID
     finally:
         ctypes.windll.ole32.CoTaskMemFree(value)
+
+
+def test_the_voice_view_comes_to_the_middle_only_while_the_mini_orb_is_alone(tmp_path: Path) -> None:
+    shell, web, _core, app = make_shell(tmp_path)
+    main, orb, focus = web.windows
+    assert focus.kw["url"].endswith("&view=focus") and not focus.visible
+    assert focus.kw["transparent"] and focus.kw["on_top"] and focus.kw["focus"] is False   # never takes the keyboard
+    x, y, w, h = focus.kw["x"], focus.kw["y"], focus.kw["width"], focus.kw["height"]
+    assert (x + w / 2, w) == (960, 648) and 0 < y and y + h < 1080                          # centred on the screen
+    assert app.window_handler("focus_show") is True           # main window up: its own view does it, nothing here
+    time.sleep(0.1)
+    assert not focus.visible
+
+    assert app.window_handler("hide") is True                 # to the background: only the mini orb
+    eventually(lambda: orb.visible and not main.visible)
+    assert app.window_handler("focus_show") is True
+    eventually(lambda: focus.visible and not orb.visible)     # the big orb in the middle, the small one steps aside
+    assert app.window_handler("focus_hide") is True
+    eventually(lambda: orb.visible and not focus.visible)
+
+    for _ in range(5):                                        # quick back and forth: the last word wins
+        app.window_handler("focus_show")
+        app.window_handler("focus_hide")
+    time.sleep(0.2)
+    assert not focus.visible and orb.visible
+
+    assert app.window_handler("focus_show") is True
+    eventually(lambda: focus.visible)
+    assert app.window_handler("computer_on") is True          # computer control: nothing of JARVIS on screen
+    eventually(lambda: not focus.visible and not orb.visible)
+    assert app.window_handler("focus_show") is True
+    time.sleep(0.1)
+    assert not focus.visible
+    assert app.window_handler("computer_off") is True
+    eventually(lambda: orb.visible)
+
+    assert app.window_handler("focus_show") is True
+    eventually(lambda: focus.visible)
+    assert app.window_handler("show") is True                 # the main window comes up: the view goes
+    eventually(lambda: main.visible and not focus.visible)
+    assert app.window_handler("quit") is True
+    eventually(lambda: focus.destroyed)
+    assert shell is not None
