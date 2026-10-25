@@ -2,6 +2,7 @@
 
     python scripts/bench_voice.py              # the questions below, two rounds each
     python scripts/bench_voice.py --compare    # also as before: speaking only once the whole answer is written
+    python scripts/bench_voice.py --voice      # through the whole voice path, as the user hears it
     python scripts/bench_voice.py --json
 
 JARVIS runs in a fresh temporary home (its own memory and settings, deleted afterwards) with the models the
@@ -15,6 +16,13 @@ Measured from the moment the "user" stops speaking:
   sound   that sentence synthesized, ready to play: when the user hears JARVIS start
   whole   the whole answer written
 (the end-of-speech pause, `voice.end_silence_ms`, comes before all of these and is not included).
+
+`--voice` instead runs JARVIS's real voice pipeline: the talk key, the question fed as microphone audio at its
+real pace, the end-of-speech pause, speech recognition, the answer and the voice, into a silent speaker that
+takes as long as the sound would. Measured from the last sound of the question (the pause included):
+  first   the first sound JARVIS makes: the short "one moment" cue, or the answer itself
+  answer  the answer starts
+(`--compare` adds the same without the cue.)
 """
 
 from __future__ import annotations
@@ -76,8 +84,6 @@ async def run(rounds: int, real: dict[str, Any], *, compare: bool = False) -> di
         await tts.prepare()
         out["stt_engine"] = stt.describe()
         server = app.chat_server
-        while server is not None and not server.running and time.perf_counter() - started < 300:
-            await asyncio.sleep(0.2)
         warming = [t for t in app._tasks if t.get_name() == "jarvis-chat-preload"]
         if warming:                                      # the start-up warm-up: as when the user asks a while later
             await asyncio.wait(warming, timeout=300)
@@ -136,10 +142,134 @@ async def run(rounds: int, real: dict[str, Any], *, compare: bool = False) -> di
     return out
 
 
+async def run_voice_path(rounds: int, real: dict[str, Any], *, compare: bool = False) -> dict[str, Any]:
+    from jarvis.app import JarvisApp
+    from jarvis.config.loader import update_settings
+    from jarvis.config.settings import Settings
+    from jarvis.voice.audio import SAMPLE_RATE, ArraySource, AudioClip, NullSink, resample
+    from jarvis.voice.base import Transcript, VoiceState
+    from jarvis.voice.pipeline import PipelineOptions, VoicePipeline
+    from jarvis.voice.stt import create_stt_engine
+    from jarvis.voice.tts import PhraseCache, create_tts_engine
+    from jarvis.voice.wakeword import NullWakeEngine
+
+    class Speaker(NullSink):
+        """Plays nothing, for as long as the sound lasts; notes when each clip starts."""
+
+        def __init__(self) -> None:
+            super().__init__(realtime=True)
+            self.starts: list[float] = []
+
+        async def _play(self, clip: AudioClip) -> bool:
+            self.starts.append(time.perf_counter())
+            return await super()._play(clip)
+
+    class Events:
+        def __init__(self) -> None:
+            self.state: VoiceState | None = None
+            self.heard = ""
+
+        async def on_state(self, state: VoiceState, info: dict[str, Any]) -> None:
+            self.state = state
+
+        async def on_level(self, level: float) -> None: ...
+        async def on_pipeline(self, step: str, status: str, label: str) -> None: ...
+        async def on_speech(self, text: str, language: str) -> None: ...
+
+        async def on_transcript(self, transcript: Transcript) -> None:
+            if transcript.final:
+                self.heard = transcript.text
+
+    async def until(check: Any, what: str, timeout: float = 120.0) -> None:
+        deadline = time.perf_counter() + timeout
+        while not check():
+            if time.perf_counter() > deadline:
+                raise TimeoutError(f"waited too long for {what}")
+            await asyncio.sleep(0.01)
+
+    settings = update_settings(Settings(), real)
+    out: dict[str, Any] = {}
+    app = JarvisApp(settings, voice=False, use_keyring=False, serve=False)
+    started = time.perf_counter()
+    await app.start()
+    stt, out["stt_engine"] = create_stt_engine(settings.voice, app.paths, None)
+    tts, out["tts_engine"] = create_tts_engine(settings.voice)
+    source = ArraySource(realtime=True, fill_silence=True, name="bench")
+    speaker, events = Speaker(), Events()
+    pipeline: VoicePipeline | None = None
+    try:
+        await stt.warm_up()
+        await asyncio.to_thread(stt.settle, 300)
+        cache = PhraseCache(tts, app.paths.tts_cache)
+        await cache.warm(("he",))
+        out["stt_engine"] = stt.describe()
+        server = app.chat_server
+        warming = [t for t in app._tasks if t.get_name() == "jarvis-chat-preload"]
+        if warming:
+            await asyncio.wait(warming, timeout=300)
+        out["ready_s"] = round(time.perf_counter() - started, 1)
+        out["preload_ms"] = (app.metrics.summary("chat.preload").get("chat.preload") or {}).get("last_ms")
+        out["chat_model"] = server.runtime.describe() if server is not None and server.runtime else "none"
+        options = PipelineOptions.from_settings(settings.voice)
+        out["end_silence_ms"] = options.end_silence_ms
+        pipeline = VoicePipeline(source=source, sink=speaker, wake=NullWakeEngine("bench"), stt=stt, tts=tts,
+                                 handler=app._voice_command, events=events, options=options,
+                                 phrase_cache=cache)
+        pipeline.start()
+        await until(lambda: events.state is VoiceState.IDLE, "the voice to start", 60)
+        cue_s = options.thinking_cue_s
+        rows: dict[str, list[dict[str, float]]] = {}
+        said: dict[str, dict[str, str]] = {}
+        modes = ["cue", "no cue"] if compare else ["cue"]
+        for n in range(rounds):
+            for key, question in QUESTIONS:
+                clip = await tts.synthesize(question, "he")
+                audio = resample(clip.samples, clip.sample_rate, SAMPLE_RATE)
+                for mode in modes:
+                    options.thinking_cue_s = cue_s if mode == "cue" else 0.0
+                    await until(lambda: events.state is VoiceState.IDLE and not speaker.playing, "quiet")
+                    cues = pipeline.stats["cues"]
+                    pipeline.talk_key()                                  # Ctrl tapped: "yes?" and listening
+                    await until(lambda: events.state is VoiceState.LISTENING and not speaker.playing, "listening")
+                    await asyncio.sleep(0.3)
+                    source.append(audio)
+                    await source.drained(timeout=60)
+                    end = time.perf_counter()                            # the question's last sound
+                    await until(lambda: events.state in (VoiceState.SPEAKING, VoiceState.IDLE, VoiceState.ERROR)
+                                and events.state is not VoiceState.PROCESSING, "the answer")
+                    await until(lambda: events.state is not VoiceState.SPEAKING and not speaker.playing, "the end")
+                    if events.state is VoiceState.LISTENING:             # a question back: stop listening
+                        pipeline.cancel()
+                    starts = [t - end for t in speaker.starts if t >= end]
+                    cued = pipeline.stats["cues"] > cues
+                    if not starts:
+                        continue
+                    answer = starts[1] if cued and len(starts) > 1 else starts[0]
+                    key_mode = key if mode == "cue" else f"{key} (no cue)"
+                    rows.setdefault(key_mode, []).append({"first": starts[0] * 1000, "answer": answer * 1000})
+                    if n == 0:
+                        said[key_mode] = {"heard": events.heard, "cue": "yes" if cued else "no"}
+                    speaker.starts.clear()
+                    await asyncio.sleep(0.5)
+        out["ms"] = {k: {m: round(statistics.median(r[m] for r in v)) for m in ("first", "answer")}
+                     for k, v in rows.items()}
+        out["said"] = said
+    finally:
+        if pipeline is not None:
+            await pipeline.stop()
+        for engine in (stt, tts):
+            result = engine.close()
+            if asyncio.iscoroutine(result):
+                await result
+        await app.shutdown()
+    return out
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--rounds", type=int, default=2)
     parser.add_argument("--compare", action="store_true", help="also measure speaking only after the whole answer")
+    parser.add_argument("--voice", action="store_true", help="through the whole voice path, as the user hears it")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
     sys.path.insert(0, str(ROOT / "src"))
@@ -148,7 +278,8 @@ def main() -> int:
     os.environ["JARVIS_HOME"] = str(home)
     os.environ["JARVIS_KEYRING"] = "0"
     try:
-        result = asyncio.run(run(args.rounds, real, compare=args.compare))
+        bench = run_voice_path if args.voice else run
+        result = asyncio.run(bench(args.rounds, real, compare=args.compare))
     finally:
         shutil.rmtree(home, ignore_errors=True)
     if args.json:
@@ -157,6 +288,13 @@ def main() -> int:
     warm = f" · first-run warm-up {result['preload_ms'] / 1000:.1f} s" if result.get("preload_ms") else ""
     print(f"ready after {result['ready_s']} s{warm} · chat model: {result['chat_model']}")
     print(f"speech recognition: {result['stt_engine']} · voice: {result['tts_engine']}")
+    if args.voice:
+        print(f"from the question's last sound (the {result['end_silence_ms']} ms end-of-speech pause included):")
+        for key, ms in result["ms"].items():
+            s = result["said"].get(key, {})
+            print(f"  {key:20} first sound {ms['first']:5} ms · answer starts {ms['answer']:5} ms"
+                  f"  (cue: {s.get('cue', '')}; heard: {s.get('heard', '')!r})")
+        return 0
     for key, ms in result["ms"].items():
         s = result["said"].get(key, {})
         print(f"  {key:20} stt {ms['stt']:5} ms · first sentence {ms['text']:5} ms · first sound ready {ms['sound']:5} ms"
