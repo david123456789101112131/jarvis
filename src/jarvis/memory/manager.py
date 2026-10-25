@@ -144,6 +144,11 @@ class MemoryManager:
             self.short.add(rec)
         self._started = True
 
+    @property
+    def recovered(self) -> dict[str, Any] | None:
+        """Set when the store found its file damaged at start and began again from what could be read back."""
+        return getattr(self.store, "recovered", None)
+
     async def close(self) -> None:
         if self._started:
             await self._run(self.store.close)

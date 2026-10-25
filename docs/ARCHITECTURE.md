@@ -199,6 +199,18 @@ Plans are persisted after every state change, which is what makes resume possibl
   references resolve, acceptance criteria checked (LLM judge when available).
 - Checkpointing after every subtask; interrupted tasks are resumable without redoing
   completed subtasks.
+- A damaged memory database does not stop JARVIS from starting. `PRAGMA quick_check` runs at
+  every start (about 5 ms for a few MB); a damaged file is renamed to `jarvis.db.corrupt-<time>`
+  (with its `-wal`), never deleted, a fresh database starts, and every row still readable comes
+  back from a temporary copy (table pages read without indexes, from both ends; a conversation
+  message whose row is lost comes back from its search entry). The search index is rebuilt and
+  the user gets one notice. Clearing memory in the privacy panel deletes such copies too.
+- JARVIS's own helper processes (the local model servers, the media worker) join a Windows job
+  object that ends them when JARVIS ends, a crash or a forced close included: a helper left
+  behind would hold gigabytes of graphics memory.
+- When JARVIS dies in native code, Python's fault handler writes every thread's stack to
+  `logs/crash.log`; when its window stops answering for 10 s, `HangWatch` writes them to
+  `logs/hang.log`. The log file keeps going if Windows refuses to rename it at 5 MB.
 
 ## 9. Voice pipeline (latency budget)
 

@@ -450,7 +450,7 @@ def _keys(paths: Any, action: str, name: str | None, *, every: bool = False) -> 
 
 # ================================================================================ running JARVIS
 def _run(settings: Any, paths: Any, args: argparse.Namespace) -> int:
-    from jarvis.logs.setup import setup_logging
+    from jarvis.logs.setup import keep_crash_traces, setup_logging
 
     setup_logging(paths.logs, level=logging.DEBUG if args.debug else logging.INFO, console=not args.quiet)
     running = _running(paths)
@@ -468,6 +468,7 @@ def _run(settings: Any, paths: Any, args: argparse.Namespace) -> int:
         from jarvis.common.enums import Mode
 
         settings.general.default_mode = Mode.DEBUG
+    keep_crash_traces(paths.logs)
 
     def make_app() -> Any:
         from jarvis.app import JarvisApp

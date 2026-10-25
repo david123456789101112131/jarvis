@@ -2,14 +2,21 @@
 
 The search index uses the FTS5 `trigram` tokenizer when available: it matches substrings,
 which suits Hebrew, where prefixes attach to words ("הפרויקט" matches "פרויקט").
+
+A damaged database file does not stop JARVIS from starting: `open` checks the file's structure
+(`PRAGMA quick_check`) and, when it is damaged, renames it aside (nothing is deleted), starts a fresh
+database and brings back every record that can still be read (see `_recover`).
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import shutil
 import sqlite3
+import tempfile
 from collections.abc import Iterable, Sequence
 from datetime import datetime
 from pathlib import Path
@@ -81,6 +88,27 @@ _WHOLE = {"chat": ("chat", "conversation"), "commands": ("commands", "command"),
           "facts": ("facts", "long_term"), "projects": ("projects", "project")}
 _CHUNK = 400                     # ids per `IN (...)`, well under SQLite's limit on bound values
 
+# The tables a damaged database's rows are brought back from, and the columns each row needs readable timestamps in.
+_SALVAGED = {"chat": ("ts",), "facts": ("created_at", "updated_at"), "projects": ("created_at", "updated_at"),
+             "tasks": ("created_at", "updated_at"), "task_context": ("updated_at",), "results": ("created_at",),
+             "files": ("created_at",), "commands": ("ts",)}
+# The search index rebuilt from the tables: (layer, ref, ts, text, table), the same text that the add_*, upsert_*
+# and save_* methods index.
+_REINDEX = (
+    ("'conversation'", "id", "ts", "role || ': ' || text", "chat"),
+    ("'long_term'", "id", "updated_at", "'[' || category || '] ' || text", "facts"),
+    ("'project'", "id", "updated_at", "name || ' ' || coalesce(description, '') || ' ' || coalesce(path, '')",
+     "projects"),
+    ("'task'", "id", "updated_at", "trim(coalesce(title, '') || ' ' || coalesce(goal, '') || ' ' || "
+     "coalesce(summary, ''))", "tasks"),
+    ("'task'", "'result:' || id", "created_at", "summary", "results"),
+    ("'file'", "id", "created_at", "coalesce(name, '') || ' ' || path", "files"),
+    ("'command'", "id", "ts", "text", "commands"),
+)
+_KEPT = ".corrupt-"              # a damaged database is kept as jarvis.db.corrupt-<time> (+ -wal)
+# SQLite's primary result codes for a damaged file: SQLITE_CORRUPT and SQLITE_NOTADB.
+_DAMAGED_CODES = (11, 26)
+
 _WORD = re.compile(r"[\w'\-\.]+", re.UNICODE)
 _HEBREW_WORD = re.compile(r"^[\u05d0-\u05ea]+$")
 
@@ -95,6 +123,23 @@ def _term_forms(word: str) -> list[str]:
             base = base[:-2]
         forms.append(base)
     return list(dict.fromkeys(forms))
+
+
+class _Damaged(sqlite3.DatabaseError):
+    """`PRAGMA quick_check` found the database file damaged."""
+
+
+def is_damaged(exc: BaseException) -> bool:
+    """Whether a SQLite error means the database file itself is damaged (not busy, locked or out of space)."""
+    if isinstance(exc, _Damaged):
+        return True
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    code = getattr(exc, "sqlite_errorcode", None)
+    if code is not None:
+        return code & 0xFF in _DAMAGED_CODES
+    text = str(exc).lower()
+    return "malformed" in text or "not a database" in text
 
 
 def _ts(dt: datetime | None) -> str | None:
@@ -131,6 +176,8 @@ class SQLiteMemoryStore(MemoryStore):
         self.path = str(path)
         self._db: sqlite3.Connection | None = None
         self.tokenizer = "trigram"
+        # set when `open` found the file damaged: where it was kept, why, and how many rows of each table came back
+        self.recovered: dict[str, Any] | None = None
 
     # -- lifecycle -----------------------------------------------------------------------------
     def open(self) -> None:
@@ -139,18 +186,63 @@ class SQLiteMemoryStore(MemoryStore):
         if self.path != ":memory:":
             Path(self.path).parent.mkdir(parents=True, exist_ok=True)
         try:
-            db = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
+            self._db = self._connect(check=self.path != ":memory:")
         except sqlite3.Error as exc:
-            raise MemoryError_(f"Cannot open the memory database {self.path}: {exc}") from exc
-        db.row_factory = sqlite3.Row
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA synchronous=NORMAL")
-        db.execute("PRAGMA foreign_keys=ON")
-        db.executescript(_SCHEMA)
-        self._create_index(db)
-        db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
-        db.commit()
+            if not is_damaged(exc):
+                raise MemoryError_(f"Cannot open the memory database {self.path}: {exc}") from exc
+            self._recover(str(exc))
+
+    def _connect(self, *, check: bool) -> sqlite3.Connection:
+        db = sqlite3.connect(self.path, check_same_thread=False, timeout=10)
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute("PRAGMA journal_mode=WAL")
+            if check:
+                problems = [r[0] for r in db.execute("PRAGMA quick_check(5)")]
+                if problems != ["ok"]:
+                    raise _Damaged("; ".join(problems))
+            db.execute("PRAGMA synchronous=NORMAL")
+            db.execute("PRAGMA foreign_keys=ON")
+            db.executescript(_SCHEMA)
+            self._create_index(db)
+            db.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            db.commit()
+        except BaseException:
+            db.close()
+            raise
+        return db
+
+    def _recover(self, reason: str) -> None:
+        """Keep a damaged database aside, start a fresh one, and bring back every record still readable.
+
+        Nothing is deleted: the file and its write-ahead log are renamed next to it (jarvis.db.corrupt-<time>,
+        jarvis.db.corrupt-<time>-wal), and the rows are read from a temporary copy, so the kept files stay as
+        they were found. A conversation message whose row is lost but whose search entry survived comes back
+        from that entry. The search index is rebuilt from the tables."""
+        log.error("The memory database %s is damaged (%s); keeping it aside and starting a fresh one", self.path,
+                  reason)
+        kept = f"{self.path}{_KEPT}{datetime.now().strftime('%Y%m%d-%H%M%S')}"
+        while os.path.exists(kept):
+            kept += "-1"
+        try:
+            for suffix in ("", "-wal", "-shm"):
+                if os.path.exists(self.path + suffix):
+                    os.replace(self.path + suffix, kept + suffix)
+        except OSError as exc:
+            raise MemoryError_(f"The memory database {self.path} is damaged ({reason}) and cannot be moved aside: "
+                               f"{exc}") from exc
+        rows, entries = _salvage(kept)
+        db = self._connect(check=False)
+        try:
+            restored = _restore(db, rows, entries)
+            _reindex(db)
+            db.commit()
+        except BaseException:
+            db.close()
+            raise
         self._db = db
+        self.recovered = {"kept": kept, "reason": reason, "restored": restored}
+        log.warning("Memory database recovered: kept the damaged file as %s, brought back %s", kept, restored)
 
     def _create_index(self, db: sqlite3.Connection) -> None:
         row = db.execute("SELECT sql FROM sqlite_master WHERE name='search_index'").fetchone()
@@ -457,7 +549,8 @@ class SQLiteMemoryStore(MemoryStore):
 
         The deleted text does not linger in the file: the freed pages are zeroed (secure_delete), the search
         index drops what it had marked deleted ("optimize"), the database is rebuilt without the free pages
-        (VACUUM) and the write-ahead log, which still holds earlier copies of the pages, is emptied."""
+        (VACUUM) and the write-ahead log, which still holds earlier copies of the pages, is emptied. A damaged
+        database kept aside by `_recover` still holds everything it had, so it goes too."""
         wanted = list(dict.fromkeys(kinds))
         unknown = [k for k in wanted if k not in CLEARABLE]
         if unknown:
@@ -481,7 +574,19 @@ class SQLiteMemoryStore(MemoryStore):
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
         finally:
             db.execute("PRAGMA secure_delete=OFF")
+        self._drop_kept()
         return out
+
+    def _drop_kept(self) -> None:
+        if self.path == ":memory:":
+            return
+        target = Path(self.path)
+        for old in target.parent.glob(f"{target.name}*{_KEPT}*"):
+            try:
+                old.unlink()
+                log.info("Deleted %s, a damaged copy of the memory database, with the cleared records", old.name)
+            except OSError as exc:
+                log.warning("Could not delete %s (a damaged copy of the memory database): %s", old, exc)
 
     def _clear_finished_tasks(self, db: sqlite3.Connection) -> int:
         marks = ",".join("?" * len(FINISHED_TASKS))
@@ -496,6 +601,105 @@ class SQLiteMemoryStore(MemoryStore):
                 db.execute(f"DELETE FROM search_index WHERE layer='task' AND ref IN ({','.join('?' * len(refs))})",
                            refs)
         return len(ids)
+
+
+def _salvage(damaged: str) -> tuple[dict[str, list[dict[str, Any]]], list[tuple[str, str, str]]]:
+    """The rows of JARVIS's tables that can still be read from a damaged database, and its conversation search
+    entries (ref, ts, text), read from a temporary copy so the damaged files stay untouched."""
+    rows: dict[str, list[dict[str, Any]]] = {}
+    entries: list[tuple[str, str, str]] = []
+    with tempfile.TemporaryDirectory(prefix="jarvis-salvage-", ignore_cleanup_errors=True) as tmp:
+        copy = os.path.join(tmp, "salvage.db")
+        try:
+            shutil.copyfile(damaged, copy)
+            if os.path.exists(damaged + "-wal"):
+                shutil.copyfile(damaged + "-wal", copy + "-wal")
+            db = sqlite3.connect(copy)
+        except (OSError, sqlite3.Error) as exc:
+            log.warning("Nothing could be read back from the damaged memory database: %s", exc)
+            return rows, entries
+        try:
+            for table in _SALVAGED:
+                rows[table] = _readable_rows(db, table)
+            entries = [(r[0], r[1], r[2]) for r in _readable_rows_raw(
+                db, "search_index_content", "c1, c2, c3", "c0 = 'conversation'") if all(isinstance(v, str) for v in r)]
+        finally:
+            db.close()
+    return rows, entries
+
+
+def _readable_rows_raw(db: sqlite3.Connection, table: str, columns: str, where: str = "1") -> list[tuple[Any, ...]]:
+    """Rows of a table read straight from its own pages (no index), from both ends: a damaged page in the middle
+    stops one pass, and the other still reaches the rows beyond it."""
+    found: dict[int, tuple[Any, ...]] = {}
+    for order in ("ASC", "DESC"):
+        try:
+            for row in db.execute(f"SELECT rowid, {columns} FROM {table} NOT INDEXED WHERE {where} "
+                                  f"ORDER BY rowid {order}"):
+                found.setdefault(row[0], tuple(row[1:]))
+        except sqlite3.DatabaseError:
+            continue
+    return [found[k] for k in sorted(found)]
+
+
+def _readable_rows(db: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+    try:
+        columns = [r[1] for r in db.execute(f"PRAGMA table_info({table})")]
+    except sqlite3.DatabaseError:
+        return []
+    if not columns:
+        return []
+    return [dict(zip(columns, values, strict=True))
+            for values in _readable_rows_raw(db, table, ", ".join(f'"{c}"' for c in columns))]
+
+
+def _restore(db: sqlite3.Connection, rows: dict[str, list[dict[str, Any]]],
+             entries: list[tuple[str, str, str]]) -> dict[str, int]:
+    """Put salvaged rows into the fresh database; how many went back, per table. A row that does not fit the table
+    (a missing required value, a timestamp that does not read as one) is left out."""
+    restored: dict[str, int] = {}
+    for table, stamps in _SALVAGED.items():
+        columns = {r[1] for r in db.execute(f"PRAGMA table_info({table})")}
+        count = 0
+        for row in rows.get(table, []):
+            values = {k: v for k, v in row.items() if k in columns}
+            if not all(_is_time(values.get(c)) for c in stamps):
+                continue
+            names = list(values)
+            try:
+                cur = db.execute(f"INSERT OR IGNORE INTO {table}({', '.join(names)}) "
+                                 f"VALUES ({', '.join('?' * len(names))})", [values[n] for n in names])
+            except sqlite3.Error:
+                continue
+            count += cur.rowcount
+        if count:
+            restored[table] = count
+    # a message whose row was lost, from its search entry ("<role>: <text>"); its source and language are unknown
+    back = 0
+    for ref, ts, text in entries:
+        role, sep, said = text.partition(": ")
+        if not sep or role not in ("user", "jarvis", "system") or not _is_time(ts):
+            continue
+        back += db.execute("INSERT OR IGNORE INTO chat(id, role, text, ts) VALUES (?,?,?,?)",
+                           (ref, role, said, ts)).rowcount
+    if back:
+        restored["chat"] = restored.get("chat", 0) + back
+    return restored
+
+
+def _is_time(value: Any) -> bool:
+    try:
+        return isinstance(value, str) and parse_iso(value) is not None
+    except ValueError:
+        return False
+
+
+def _reindex(db: sqlite3.Connection) -> None:
+    """Rebuild the search index from the tables."""
+    db.execute("DELETE FROM search_index")
+    for layer, ref, ts, text, table in _REINDEX:
+        db.execute(f"INSERT INTO search_index(layer, ref, ts, text) SELECT {layer}, {ref}, {ts}, {text} FROM {table} "
+                   f"WHERE trim(coalesce({text}, '')) != ''")
 
 
 def _chunks(items: Sequence[str]) -> list[Sequence[str]]:

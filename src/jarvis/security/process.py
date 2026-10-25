@@ -7,17 +7,23 @@ Every program an agent runs goes through `run_process`:
 * output is captured with a size limit (head + tail kept),
 * timeout and cooperative cancellation kill the whole process tree,
 * live processes are tracked in a `ProcessRegistry` so kill switches can terminate them.
+
+JARVIS's own helpers (the local model servers, the media worker) are also tied to JARVIS with
+`end_with_jarvis`, so Windows ends them when JARVIS ends, even when JARVIS crashes: a helper left
+behind holds gigabytes of graphics memory.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
+import ctypes
 import locale
 import logging
 import os
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
@@ -120,6 +126,91 @@ def kill_tree(pid: int, timeout: float = 3.0) -> int:
         with contextlib.suppress(psutil.Error):
             p.kill()
     return len(procs)
+
+
+# A Windows job object that ends its processes when its last handle closes (JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE).
+# JARVIS holds the only handle, which is not inherited, so Windows closes it, and ends the helpers, when the
+# JARVIS process is gone, however it went.
+_JOB_KILL_ON_CLOSE = 0x2000
+_JOB_EXTENDED_LIMITS = 9          # JobObjectExtendedLimitInformation
+_PROCESS_SET_QUOTA, _PROCESS_TERMINATE = 0x0100, 0x0001
+
+
+class _BasicLimits(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64),
+                ("LimitFlags", ctypes.c_uint32), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", ctypes.c_uint32),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", ctypes.c_uint32), ("SchedulingClass", ctypes.c_uint32)]
+
+
+class _IoCounters(ctypes.Structure):
+    _fields_ = [(name, ctypes.c_uint64) for name in ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                                                    "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+
+class _ExtendedLimits(ctypes.Structure):
+    _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", _IoCounters),
+                ("ProcessMemoryLimit", ctypes.c_size_t), ("JobMemoryLimit", ctypes.c_size_t),
+                ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+_job: int | None = None
+_job_lock = threading.Lock()
+
+
+def _kernel32() -> ctypes.WinDLL:
+    from ctypes import wintypes
+
+    k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    k32.CreateJobObjectW.argtypes, k32.CreateJobObjectW.restype = (ctypes.c_void_p, wintypes.LPCWSTR), wintypes.HANDLE
+    k32.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+    k32.SetInformationJobObject.restype = wintypes.BOOL
+    k32.OpenProcess.argtypes, k32.OpenProcess.restype = (wintypes.DWORD, wintypes.BOOL, wintypes.DWORD), wintypes.HANDLE
+    k32.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+    k32.AssignProcessToJobObject.restype = wintypes.BOOL
+    k32.CloseHandle.argtypes, k32.CloseHandle.restype = (wintypes.HANDLE,), wintypes.BOOL
+    return k32
+
+
+def _helpers_job(k32: ctypes.WinDLL) -> int:
+    global _job
+    if _job is None:
+        job = k32.CreateJobObjectW(None, None)
+        if not job:
+            raise ctypes.WinError(ctypes.get_last_error())
+        limits = _ExtendedLimits()
+        limits.BasicLimitInformation.LimitFlags = _JOB_KILL_ON_CLOSE
+        if not k32.SetInformationJobObject(job, _JOB_EXTENDED_LIMITS, ctypes.byref(limits), ctypes.sizeof(limits)):
+            error = ctypes.get_last_error()
+            k32.CloseHandle(job)
+            raise ctypes.WinError(error)
+        _job = job
+    return _job
+
+
+def end_with_jarvis(pid: int) -> bool:
+    """Tie a helper process to JARVIS so that it ends when JARVIS ends, a crash included. True when tied.
+
+    Windows only (JARVIS's platform); elsewhere helpers get their own session and nothing is done. A helper
+    that cannot be tied still runs, and JARVIS still stops it on the way out."""
+    if not IS_WINDOWS:
+        return False
+    try:
+        with _job_lock:
+            k32 = _kernel32()
+            job = _helpers_job(k32)
+            handle = k32.OpenProcess(_PROCESS_SET_QUOTA | _PROCESS_TERMINATE, False, pid)
+            if not handle:
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                if not k32.AssignProcessToJobObject(job, handle):
+                    raise ctypes.WinError(ctypes.get_last_error())
+            finally:
+                k32.CloseHandle(handle)
+    except OSError as exc:
+        log.warning("Process %d will not end by itself if JARVIS crashes: %s", pid, exc)
+        return False
+    return True
 
 
 def decode_output(data: bytes) -> str:

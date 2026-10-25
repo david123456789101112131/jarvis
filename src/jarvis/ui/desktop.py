@@ -12,6 +12,9 @@ The orb and the voice view are parts of JARVIS, not windows of their own: neithe
 Alt+Tab entry (Windows "tool windows"), so the taskbar shows one JARVIS. pywebview shows a transparent window each
 time its page loads, hidden or not, so after every load both are put back as JARVIS wants them.
 
+When the main window stops answering (what Windows calls "not responding"), `HangWatch` writes where every thread
+of JARVIS is to logs/hang.log, so a hang can be traced afterwards.
+
 Closing the main window keeps JARVIS running as the mini orb when "mini orb" is on in the
 settings (it keeps listening for the wake word); otherwise it quits. Double-clicking the orb
 brings the main window back. When WebView2 is missing, the UI opens as an Edge app window
@@ -25,12 +28,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import faulthandler
 import logging
 import os
 import shutil
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from collections.abc import Callable
 from pathlib import Path
@@ -174,6 +179,104 @@ def app_icon() -> str | None:
     return None
 
 
+class HangWatch(threading.Thread):
+    """Notes where JARVIS is when its window stops answering.
+
+    Every few seconds `ping` asks the window for an answer (True: it answered, False: not in time, None: it is
+    gone). The first missed answer of a hang writes every thread's Python stack to hang.log, and a line when the
+    window answers again. Should even this thread be unable to run (a native call holding Python's lock), Python's
+    fault handler writes the stacks by itself a little later. `notes` adds what else was going on (memory, the
+    graphics card)."""
+
+    def __init__(self, ping: Callable[[], bool | None], path: Path, *, every_s: float = 5.0,
+                 limit_s: float = 10.0, notes: Callable[[], str] | None = None) -> None:
+        super().__init__(name="jarvis-hang-watch", daemon=True)
+        self.ping, self.path, self.every_s, self.limit_s, self.notes = ping, path, every_s, limit_s, notes
+        self.stopped = threading.Event()
+        self.hangs = 0
+
+    def stop(self) -> None:
+        self.stopped.set()
+
+    def run(self) -> None:
+        try:
+            out = self.path.open("a", encoding="utf-8")
+        except OSError as exc:
+            log.warning("Hangs will not be traced: %s", exc)
+            return
+        since: float | None = None
+        with out:
+            while not self.stopped.wait(self.every_s):
+                faulthandler.dump_traceback_later(self.limit_s + 10, file=out)
+                try:
+                    answered = self.ping()
+                finally:
+                    faulthandler.cancel_dump_traceback_later()
+                if answered is None:
+                    return
+                if answered:
+                    if since is not None:
+                        log.warning("The JARVIS window answers again, after about %.0f s", time.monotonic() - since)
+                        out.write(f"--- answers again {time.strftime('%Y-%m-%d %H:%M:%S')}\n")
+                        out.flush()
+                        since = None
+                    continue
+                if since is None:
+                    since = time.monotonic() - self.limit_s
+                    self.hangs += 1
+                    log.error("The JARVIS window has not answered for %.0f s; where each thread is: %s", self.limit_s,
+                              self.path)
+                    out.write(f"--- the window has not answered for {self.limit_s:.0f} s, "
+                              f"{time.strftime('%Y-%m-%d %H:%M:%S')} (process {os.getpid()})\n")
+                    out.flush()
+                    faulthandler.dump_traceback(file=out, all_threads=True)
+                    if self.notes is not None:
+                        try:
+                            out.write(self.notes().rstrip() + "\n")
+                        except Exception as exc:
+                            out.write(f"(no notes: {exc})\n")
+                    out.flush()
+
+
+def hang_notes() -> str:
+    """The memory in use and, with an NVIDIA card, its graphics memory: a full card stalls the windows' drawing."""
+    import psutil
+
+    vm = psutil.virtual_memory()
+    lines = [f"memory: {vm.percent:.0f}% in use, {vm.available / 2**30:.1f} GB free; JARVIS "
+             f"{psutil.Process().memory_info().rss / 2**30:.1f} GB"]
+    smi = shutil.which("nvidia-smi")
+    if smi:
+        flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        done = subprocess.run([smi, "--query-gpu=name,memory.used,memory.total,utilization.gpu",
+                               "--format=csv,noheader"], capture_output=True, text=True, timeout=5,
+                              creationflags=flags)
+        lines.append("graphics card: " + (done.stdout.strip() or done.stderr.strip()))
+    return "\n".join(lines)
+
+
+def window_ping(hwnd: int, timeout_s: float) -> Callable[[], bool | None]:
+    """Asks a window's thread to handle a no-op message (WM_NULL), as Windows does to tell "not responding"."""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.WinDLL("user32", use_last_error=True)
+    send = user32.SendMessageTimeoutW
+    send.argtypes = (wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM, wintypes.UINT, wintypes.UINT,
+                     ctypes.POINTER(ctypes.c_size_t))
+    send.restype = ctypes.c_ssize_t
+    user32.IsWindow.argtypes, user32.IsWindow.restype = (wintypes.HWND,), wintypes.BOOL
+    wm_null, smto_block = 0x0000, 0x0001
+
+    def ping() -> bool | None:
+        result = ctypes.c_size_t(0)
+        if send(hwnd, wm_null, 0, 0, smto_block, int(timeout_s * 1000), ctypes.byref(result)):
+            return True
+        return False if user32.IsWindow(hwnd) else None
+
+    return ping
+
+
 class DesktopShell:
     """The two pywebview windows and what the API's /api/window/{action} does with them."""
 
@@ -191,6 +294,7 @@ class DesktopShell:
         self._resume_full = False          # whether the main window was up before the session
         self._focus_wanted = False         # the voice view's page wants to be on screen (the latest word wins)
         self._focus_up = False
+        self.hang_watch: HangWatch | None = None
 
     # ------------------------------------------------------------------ windows
     def create(self) -> None:
@@ -214,13 +318,27 @@ class DesktopShell:
         for overlay in (self.orb, self.focus):
             overlay.events.loaded += lambda: self._later(self._settle_overlays)
         self.main.events.closing += self._on_main_closing
-        self.main.events.shown += lambda: self._visible(True)
+        # Not `shown`: pywebview fires it for a window made hidden too (it shows it for a moment, unseen, as it makes
+        # it), which on a background start would take the main window for up and put the orb away.
         self.main.events.restored += lambda: self._visible(True)
         self.main.events.minimized += self._on_minimized
+        self.main.events.loaded += self._watch_for_hangs
         self.orb.events.closing += self._on_orb_closing
         self.app.window_handler = self.handle
         self.app.dialog_handler = self.dialog
         self.app.ui_visible = not self.background
+
+    def _watch_for_hangs(self) -> None:
+        if sys.platform != "win32" or self.hang_watch is not None or self._quitting:
+            return
+        try:
+            hwnd = int(self.main.native.Handle.ToInt64())
+        except Exception as exc:
+            log.debug("Hangs will not be traced: %s", exc)
+            return
+        watch = HangWatch(window_ping(hwnd, 10.0), self.app.paths.logs / "hang.log", limit_s=10.0, notes=hang_notes)
+        self.hang_watch = watch
+        watch.start()
 
     def _orb_position(self) -> tuple[int | None, int | None]:
         try:
@@ -427,6 +545,8 @@ class DesktopShell:
             self._quitting = True
         self.app.window_handler = None
         self.app.dialog_handler = None
+        if self.hang_watch is not None:
+            self.hang_watch.stop()
         self.core.stop()                       # JARVIS shuts down cleanly (tasks saved as interrupted)
         for window in (self.focus, self.orb, self.main):
             with contextlib.suppress(Exception):

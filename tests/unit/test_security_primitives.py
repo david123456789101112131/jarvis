@@ -244,6 +244,41 @@ class TestProcess:
         assert res.truncated and len(res.stdout) < 6000
 
 
+class TestHelpersEndWithJarvis:
+    def test_the_job_limits_have_the_windows_layout(self) -> None:
+        import ctypes
+
+        from jarvis.security import process
+
+        if ctypes.sizeof(ctypes.c_void_p) == 8:
+            assert ctypes.sizeof(process._BasicLimits) == 64 and ctypes.sizeof(process._ExtendedLimits) == 144
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="the Windows behaviour is tested below")
+    def test_elsewhere_nothing_is_done(self) -> None:
+        from jarvis.security.process import end_with_jarvis
+
+        assert end_with_jarvis(1) is False
+
+    @pytest.mark.skipif(sys.platform != "win32", reason="job objects are Windows only")
+    async def test_a_helper_ends_when_jarvis_crashes(self) -> None:
+        import psutil
+
+        # a stand-in for JARVIS: starts a helper, ties it, then ends at once with no clean-up at all
+        code = ("import os, subprocess, sys\n"
+                "from jarvis.security.process import end_with_jarvis\n"
+                "helper = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+                "print(helper.pid, end_with_jarvis(helper.pid), flush=True)\n"
+                "os._exit(3)\n")
+        res = await run_process([sys.executable, "-c", code], timeout=60)
+        pid, tied = res.stdout.split()
+        assert res.exit_code == 3 and tied == "True"
+        for _ in range(100):
+            if not psutil.pid_exists(int(pid)):
+                break
+            await asyncio.sleep(0.1)
+        assert not psutil.pid_exists(int(pid)), "the helper outlived its parent"
+
+
 class TestLogs:
     async def test_activity_and_audit(self, tmp_path: Path) -> None:
         red = Redactor()
@@ -259,6 +294,42 @@ class TestLogs:
         await audit.record(AuditEntry(agent_id="system", tool="shell", params={"cmd": "echo sk-test-abcdefghijklmnopqrstuvwxyz"}))
         line = (tmp_path / "audit.jsonl").read_text(encoding="utf-8")
         assert "abcdefghij" not in line and '"tool": "shell"' in line
+
+    def test_the_log_keeps_going_when_it_cannot_start_afresh(self, tmp_path: Path,
+                                                             monkeypatch: pytest.MonkeyPatch) -> None:
+        from jarvis.logs.setup import JsonFormatter, RotatingLog
+
+        handler = RotatingLog(tmp_path / "jarvis.log", maxBytes=300, backupCount=2, encoding="utf-8")
+        handler.setFormatter(JsonFormatter())
+
+        def in_use(source: str, dest: str) -> None:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+
+        monkeypatch.setattr(handler, "rotate", in_use)          # Windows: another program has the file open
+        logger = logging.getLogger("jarvis.test.rotation")
+        logger.addHandler(handler)
+        logger.propagate = False
+        try:
+            for i in range(20):
+                logger.warning("line %d %s", i, "x" * 40)
+        finally:
+            logger.removeHandler(handler)
+            handler.close()
+        text = (tmp_path / "jarvis.log").read_text(encoding="utf-8")
+        assert "line 0 " in text and "line 19 " in text and text.count("not started afresh") == 1
+
+    def test_a_crash_leaves_every_threads_stack(self, tmp_path: Path) -> None:
+        import subprocess
+
+        code = ("import ctypes, sys\n"
+                "from pathlib import Path\n"
+                "from jarvis.logs.setup import keep_crash_traces\n"
+                "keep_crash_traces(Path(sys.argv[1]))\n"
+                "ctypes.string_at(0)\n")                     # an access violation inside native code
+        done = subprocess.run([sys.executable, "-c", code, str(tmp_path)], capture_output=True, timeout=60)
+        assert done.returncode != 0
+        text = (tmp_path / "crash.log").read_text(encoding="utf-8")
+        assert text.startswith("--- JARVIS started ") and "Fatal Python error" in text and "<string>" in text
 
     def test_logging_redacts(self, tmp_path: Path) -> None:
         from jarvis.security.redaction import default_redactor

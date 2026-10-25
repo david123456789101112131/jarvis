@@ -26,7 +26,7 @@ from typing import IO, Any
 from jarvis.common.gpu import GpuTurns
 from jarvis.config.settings import MediaSettings
 from jarvis.media.local import worker as worker_module
-from jarvis.security.process import ProcessRegistry, kill_tree
+from jarvis.security.process import ProcessRegistry, end_with_jarvis, kill_tree
 from jarvis.security.secrets import sanitized_env
 
 log = logging.getLogger(__name__)
@@ -154,6 +154,7 @@ class LocalEngine:
             self._close_log()
             raise LocalMediaError(f"the local engine could not start: {exc}", "start") from exc
         self._proc = proc
+        end_with_jarvis(proc.pid)                    # a crash of JARVIS must not leave it holding the graphics card
         self.processes.register(proc.pid, owner=OWNER)
         try:
             first = await asyncio.wait_for(self._read(), READY_TIMEOUT_S)

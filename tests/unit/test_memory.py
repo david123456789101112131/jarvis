@@ -178,3 +178,142 @@ class TestClear:
             await memory.clear(["chat", "everything"])
         assert (await memory.stats())["chat"] == 1             # refused before anything went
         assert await memory.clear([]) == {}
+
+
+def _break_page(db_file: Path, name: str) -> None:
+    """Overwrite the first page of a table or index with noise (the file must be checkpointed, no -wal)."""
+    import random
+    import sqlite3
+
+    db = sqlite3.connect(db_file)
+    try:
+        page_size = db.execute("PRAGMA page_size").fetchone()[0]
+        root = db.execute("SELECT rootpage FROM sqlite_master WHERE name=?", (name,)).fetchone()[0]
+    finally:
+        db.close()
+    noise = random.Random(7).randbytes(page_size)
+    with db_file.open("r+b") as f:
+        f.seek((root - 1) * page_size)
+        f.write(noise)
+
+
+async def _filled(tmp_path: Path, messages: int = 40) -> None:
+    mem = create_memory(tmp_path / "jarvis.db")
+    await mem.start()
+    for i in range(messages):
+        await mem.add_chat(ChatRecord(role="user" if i % 2 == 0 else "jarvis", text=f"הודעה מספר {i} " + "מילה " * 30))
+    await mem.remember("המשתמש אוהב קפה שחור", "preference")
+    await mem.save_task(TaskRecord(id="task_7", title="סיכום דוח", status="completed"))
+    await mem.close()                      # the last connection checkpoints and removes the -wal
+
+
+class TestDamagedDatabase:
+    async def test_a_damaged_index_keeps_the_file_aside_and_every_record_comes_back(self, tmp_path: Path) -> None:
+        await _filled(tmp_path)
+        _break_page(tmp_path / "jarvis.db", "chat_ts")
+        damaged = (tmp_path / "jarvis.db").read_bytes()
+        mem = create_memory(tmp_path / "jarvis.db")
+        await mem.start()                  # used to fail: "database disk image is malformed"
+        try:
+            info = mem.recovered
+            assert info is not None and info["restored"] == {"chat": 40, "facts": 1, "tasks": 1}
+            kept = Path(info["kept"])
+            assert kept.parent == tmp_path and kept.name.startswith("jarvis.db.corrupt-")
+            assert kept.read_bytes() == damaged                # kept exactly as it was found
+            history = await mem.chat_history()
+            assert len(history) == 40 and history[0].text.startswith("הודעה מספר 0 ")
+            assert history[1].role == "jarvis" and history[1].source == "text"
+            assert len(mem.short.recent()) == 30
+            assert [f.text for f in await mem.preferences()] == ["המשתמש אוהב קפה שחור"]
+            assert {h.layer for h in await mem.search("קפה שחור")} == {"long_term"}     # the index was rebuilt
+            assert len(await mem.search("הודעה מספר 39")) >= 1
+            await mem.add_chat(ChatRecord(role="user", text="אחרי השחזור"))
+        finally:
+            await mem.close()
+        again = create_memory(tmp_path / "jarvis.db")
+        await again.start()
+        try:
+            assert again.recovered is None and len(await again.chat_history()) == 41
+        finally:
+            await again.close()
+
+    async def test_messages_whose_rows_are_lost_come_back_from_their_search_entries(self, tmp_path: Path) -> None:
+        await _filled(tmp_path)
+        _break_page(tmp_path / "jarvis.db", "chat")
+        mem = create_memory(tmp_path / "jarvis.db")
+        await mem.start()
+        try:
+            assert mem.recovered is not None and mem.recovered["restored"]["chat"] == 40
+            history = await mem.chat_history()
+            assert [r.role for r in history[:2]] == ["user", "jarvis"]
+            assert history[0].text.startswith("הודעה מספר 0 ") and history[0].language == "he"
+        finally:
+            await mem.close()
+
+    async def test_a_file_that_is_not_a_database_is_kept_and_a_fresh_one_starts(self, tmp_path: Path) -> None:
+        (tmp_path / "jarvis.db").write_bytes(b"not a database at all" * 300)
+        mem = create_memory(tmp_path / "jarvis.db")
+        await mem.start()
+        try:
+            assert mem.recovered is not None and mem.recovered["restored"] == {}
+            assert Path(mem.recovered["kept"]).read_bytes().startswith(b"not a database")
+            await mem.add_chat(ChatRecord(role="user", text="שלום"))
+            assert [r.text for r in await mem.chat_history()] == ["שלום"]
+        finally:
+            await mem.close()
+
+    async def test_a_healthy_database_is_left_alone(self, tmp_path: Path) -> None:
+        await _filled(tmp_path, messages=3)
+        mem = create_memory(tmp_path / "jarvis.db")
+        await mem.start()
+        try:
+            assert mem.recovered is None and len(await mem.chat_history()) == 3
+            assert list(tmp_path.glob("*corrupt*")) == []
+        finally:
+            await mem.close()
+
+    def test_only_damage_counts_as_damage(self) -> None:
+        import sqlite3
+
+        from jarvis.memory.sqlite_store import is_damaged
+
+        assert not is_damaged(sqlite3.OperationalError("database is locked"))
+        assert not is_damaged(ValueError("malformed"))
+        assert is_damaged(sqlite3.DatabaseError("database disk image is malformed"))
+
+    async def test_clearing_memory_also_deletes_the_damaged_copy(self, tmp_path: Path) -> None:
+        await _filled(tmp_path, messages=3)
+        _break_page(tmp_path / "jarvis.db", "chat_ts")
+        mem = create_memory(tmp_path / "jarvis.db")
+        await mem.start()
+        try:
+            kept = Path(mem.recovered["kept"])
+            assert kept.exists()
+            await mem.clear(["facts"])
+            assert not kept.exists() and list(tmp_path.glob("*corrupt*")) == []
+            assert len(await mem.chat_history()) == 3           # the live database keeps what was not cleared
+        finally:
+            await mem.close()
+
+    async def test_the_rebuilt_search_index_matches_the_one_built_record_by_record(self, tmp_path: Path) -> None:
+        import sqlite3
+
+        from jarvis.memory.sqlite_store import _reindex
+
+        mem = create_memory(tmp_path / "jarvis.db")
+        await mem.start()
+        await TestClear()._fill(mem)
+        await mem.close()
+
+        def entries(db: sqlite3.Connection) -> set[tuple[str, str, str, str]]:
+            return {(r[0], r[1], r[2], " ".join(r[3].split()))
+                    for r in db.execute("SELECT layer, ref, ts, text FROM search_index")}
+
+        db = sqlite3.connect(tmp_path / "jarvis.db")
+        try:
+            before = entries(db)
+            assert {e[0] for e in before} == {"conversation", "command", "long_term", "project", "file", "task"}
+            _reindex(db)
+            assert entries(db) == before
+        finally:
+            db.close()

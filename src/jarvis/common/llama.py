@@ -32,7 +32,7 @@ from typing import IO, Any
 import httpx
 
 from jarvis.common.gpu import GpuTurns, busy_text
-from jarvis.security.process import ProcessRegistry, kill_tree
+from jarvis.security.process import ProcessRegistry, end_with_jarvis, kill_tree
 from jarvis.security.secrets import sanitized_env
 
 log = logging.getLogger(__name__)
@@ -408,6 +408,7 @@ class LlamaServer:
                 raise RuntimeError(f"Windows blocked {runtime.describe()} (Smart App Control).") from exc
             raise RuntimeError(f"{self.label} could not start: {exc}") from exc
         self._pid, self._proc = proc.pid, proc
+        end_with_jarvis(proc.pid)                    # a crash of JARVIS must not leave it holding the graphics card
         self.processes.register(proc.pid, owner=self.owner)
         try:
             await self._wait_healthy()

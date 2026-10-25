@@ -100,13 +100,13 @@ def eventually(check: Any, timeout: float = 5.0) -> None:
         time.sleep(0.01)
 
 
-def make_shell(tmp_path: Path) -> tuple[DesktopShell, FakeWebview, CoreThread, FakeApp]:
+def make_shell(tmp_path: Path, *, background: bool = False) -> tuple[DesktopShell, FakeWebview, CoreThread, FakeApp]:
     app = FakeApp(tmp_path)
     core = CoreThread(lambda: app)
     core.start()
     assert core.ready.wait(5) and core.error is None
     web = FakeWebview()
-    shell = DesktopShell(web, core)
+    shell = DesktopShell(web, core, background=background)
     shell.run()
     return shell, web, core, app
 
@@ -326,3 +326,41 @@ def test_the_voice_view_comes_to_the_middle_only_while_the_mini_orb_is_alone(tmp
     assert app.window_handler("quit") is True
     eventually(lambda: focus.destroyed)
     assert shell is not None
+
+
+def test_a_background_start_shows_the_orb_alone(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(desktop_mod, "keep_off_taskbar", lambda window: False)
+    shell, web, _core, app = make_shell(tmp_path, background=True)        # how Windows starts JARVIS at sign-in
+    main, orb, focus = web.windows
+    assert main.kw["hidden"] and not orb.kw["hidden"] and focus.kw["hidden"]
+    main.events.shown.fire()         # pywebview shows a window made hidden for a moment, unseen, as it makes it
+    orb.events.loaded.fire()
+    time.sleep(0.2)
+    assert app.ui_visible is False and orb.visible and not main.visible
+    assert app.window_handler("focus_show") is True                       # so the voice view can come out
+    eventually(lambda: focus.visible and not orb.visible)
+    assert app.window_handler("show") is True
+    eventually(lambda: main.visible and not orb.visible and not focus.visible and app.ui_visible)
+    assert app.window_handler("quit") is True
+    assert shell is not None
+
+
+def test_a_window_that_stops_answering_leaves_where_each_thread_was(tmp_path: Path) -> None:
+    from jarvis.ui.desktop import HangWatch
+
+    answers = iter([True, False, False, True, None])
+    log_file = tmp_path / "hang.log"
+    watch = HangWatch(lambda: next(answers), log_file, every_s=0.01, limit_s=10.0, notes=lambda: "memory: 91% in use")
+    watch.start()
+    watch.join(5)
+    assert not watch.is_alive() and watch.hangs == 1          # one hang, written once, then it answered again
+    text = log_file.read_text(encoding="utf-8")
+    assert text.count("--- the window has not answered for 10 s") == 1 and "--- answers again" in text
+    assert "most recent call first" in text and "memory: 91% in use" in text   # every thread's stack, and context
+
+
+def test_the_hang_notes_say_how_full_memory_is() -> None:
+    from jarvis.ui.desktop import hang_notes
+
+    assert hang_notes().startswith("memory: ")
+

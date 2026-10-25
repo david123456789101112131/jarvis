@@ -324,6 +324,8 @@ class JarvisApp:
         await self.activity.log(t(self.lang, f"JARVIS {__version__} פעיל", f"JARVIS {__version__} is online")
                                 + (f" ({self.url})" if self.server else ""), source="JARVIS", level="success",
                                 kind="system")
+        if self.memory.recovered:
+            await self._report_memory_recovery(self.memory.recovered)
 
     async def shutdown(self) -> None:
         if not self._started or self._stopping:
@@ -677,6 +679,21 @@ class JarvisApp:
         async with self._dialog_lock:
             picked = await asyncio.to_thread(handler, request)
         return [str(p) for p in picked] if picked else None
+
+    async def _report_memory_recovery(self, info: dict[str, Any]) -> None:
+        """The memory file was damaged and began again: say so once, with where the damaged file was kept."""
+        kept = Path(str(info.get("kept", ""))).name
+        restored = dict(info.get("restored") or {})
+        chat, other = restored.pop("chat", 0), sum(restored.values())
+        message = t(self.lang,
+                    f"קובץ הזיכרון של JARVIS נפגם. הוא נשמר בצד ({kept}), ונפתח קובץ חדש. "
+                    + (f"הוחזרו {chat} הודעות ו-{other} רשומות נוספות." if chat or other
+                       else "לא היה אפשר להחזיר ממנו רשומות."),
+                    f"JARVIS's memory file was damaged. It was kept aside ({kept}) and a fresh one was started. "
+                    + (f"{chat} messages and {other} other records were brought back." if chat or other
+                       else "Nothing could be brought back from it."))
+        await self.activity.log(message, source="JARVIS", level="warning", kind="system")
+        await self.notify("warning", t(self.lang, "הזיכרון שוחזר", "Memory recovered"), message, toast=True)
 
     async def notify(self, level: str, title: str, message: str, *, toast: bool | None = None) -> None:
         """A toast in the UI; a Windows notification too when the window is not on screen."""
